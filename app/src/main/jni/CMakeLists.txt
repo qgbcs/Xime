@@ -118,6 +118,7 @@ include_directories(
     "${CMAKE_SOURCE_DIR}/boost/libs/signals2/include"
     "${CMAKE_SOURCE_DIR}/boost/libs/utility/include"
     "${CMAKE_SOURCE_DIR}/boost/libs/uuid/include"
+    "${CMAKE_SOURCE_DIR}/boost/libs/vmd/include"
     "${CMAKE_SOURCE_DIR}/boost/libs/assert/include"
     "${CMAKE_SOURCE_DIR}/boost/libs/config/include"
     "${CMAKE_SOURCE_DIR}/boost/libs/core/include"

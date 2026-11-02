@@ -42,6 +42,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.tooling.preview.Preview
+import com.kingzcheung.xime.BuildConfig
 import com.kingzcheung.xime.settings.SchemaInfo
 import com.kingzcheung.xime.settings.BackgroundConfig
 import com.kingzcheung.xime.ui.theme.XimeTheme
@@ -129,7 +130,7 @@ fun SettingsItem(
 
 @Composable
 fun SettingsToggleItem(
-    icon: ImageVector,
+    icon: ImageVector? = null,
     title: String,
     subtitle: String,
     checked: Boolean,
@@ -147,21 +148,23 @@ fun SettingsToggleItem(
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(22.dp)
-            )
+        if (icon != null) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(16.dp))
         }
-        Spacer(modifier = Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
@@ -621,7 +624,7 @@ fun CodeDisplayCard(
                             if (showCodeInInputBox) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
-                                        text = "曦码 shu ru fa",
+                                        text = "${BuildConfig.APP_CHINESE_NAME} shu ru fa",
                                         fontSize = 12.sp,
                                         color = onSurface,
                                         maxLines = 1
@@ -711,7 +714,7 @@ fun CodeDisplayCard(
 fun CodeDisplayCardPreview_SelectedWithCode() {
     XimeTheme {
         CodeDisplayCard(
-            title = "曦码",
+            title = BuildConfig.APP_CHINESE_NAME,
             isSelected = true,
             showCodeInInputBox = true,
             onClick = {},
@@ -727,7 +730,7 @@ fun CodeDisplayCardPreview_SelectedWithCode() {
 fun CodeDisplayCardPreview_NotSelectedNoCode() {
     XimeTheme {
         CodeDisplayCard(
-            title = "曦码",
+            title = BuildConfig.APP_CHINESE_NAME,
             isSelected = true,
             showCodeInInputBox = false,
             onClick = {},

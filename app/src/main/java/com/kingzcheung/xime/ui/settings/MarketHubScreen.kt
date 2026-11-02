@@ -102,7 +102,7 @@ import com.kingzcheung.xime.viewmodel.SchemaMarketViewModel
 
 /**
  * 扩展商店：商店式统一入口。
- * 一级导航 Tab（方案 / 模型），二级分类 chips 过滤，列表使用商店卡片，下拉刷新。
+ * 一级导航 Tab（模型 / 方案 / 插件），二级分类 chips 过滤，列表使用商店卡片，下拉刷新。
  * 插件 Tab 待插件市场索引完成后接入。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -130,7 +130,7 @@ fun MarketHubContent(
                 actions = {
                     if (tabIndex == 0 || tabIndex == 1) {
                         TextButton(
-                            onClick = if (tabIndex == 0) onNavigateToLocal else onNavigateToModelLocal,
+                            onClick = if (tabIndex == 0) onNavigateToModelLocal else onNavigateToLocal,
                         ) {
                             Text("本地管理", style = MaterialTheme.typography.labelMedium)
                         }
@@ -152,12 +152,12 @@ fun MarketHubContent(
                 Tab(
                     selected = tabIndex == 0,
                     onClick = { tabIndex = 0 },
-                    text = { Text("方案") },
+                    text = { Text("模型") },
                 )
                 Tab(
                     selected = tabIndex == 1,
                     onClick = { tabIndex = 1 },
-                    text = { Text("模型") },
+                    text = { Text("方案") },
                 )
                 Tab(
                     selected = tabIndex == 2,
@@ -166,11 +166,11 @@ fun MarketHubContent(
                 )
             }
             when (tabIndex) {
-                0 -> SchemesMarketTab(
-                    onNavigateToDetail = onNavigateToDetail,
-                )
-                1 -> ModelsMarketTab(
+                0 -> ModelsMarketTab(
                     onNavigateToDetail = onNavigateToModelDetail,
+                )
+                1 -> SchemesMarketTab(
+                    onNavigateToDetail = onNavigateToDetail,
                 )
                 2 -> PluginsMarketTab(
                     onNavigateToDetail = onNavigateToPluginDetail,

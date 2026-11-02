@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -46,6 +47,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kingzcheung.xime.ui.rpc.UiBadgeHost
+import com.kingzcheung.xime.util.UiOverrides
 import com.kingzcheung.xime.viewmodel.SchemaSwitchUiState
 
 data class MenuItem(
@@ -53,6 +56,8 @@ data class MenuItem(
     val label: String,
     val action: () -> Unit,
     val textIcon: String? = null,
+    // 该菜单项右上角角标绑定的 RPC 槽位；null 表示不叠加角标
+    val badgeTarget: String? = null,
 )
 
 data class MenuBarState(
@@ -72,6 +77,7 @@ data class MenuBarCallbacks(
     val onQuickSend: () -> Unit,
     val onKeyboardResize: () -> Unit,
     val onEmoji: () -> Unit,
+    val onFeedback: () -> Unit = {},
     val onReloadConfig: () -> Unit,
     val onSettings: () -> Unit,
     val onSchemaList: () -> Unit,
@@ -125,6 +131,14 @@ fun MenuBar(
     val floatingLabel = if (state.isFloatingMode) "退出悬浮" else "悬浮模式"
     val floatingAction = callbacks.onFloatingModeToggle ?: {}
 
+    // RPC 槽位：菜单反馈入口的文字/图标/显隐由 ime.menu.feedback 动态下发
+    val feedbackVisible = UiOverrides.get(UiOverrides.TARGET_MENU_FEEDBACK, "visible") != "false"
+    val feedbackLabel = UiOverrides.get(UiOverrides.TARGET_MENU_FEEDBACK, "label")
+        ?.takeIf { it.isNotBlank() } ?: "问题反馈"
+    val feedbackGlyph = UiOverrides.get(UiOverrides.TARGET_MENU_FEEDBACK, "icon")
+        ?.takeIf { it.isNotBlank() }
+        ?: feedbackLabel.firstOrNull()?.toString() ?: "?"
+
     // 动态方案开关：图标取第一个状态的首字；标题若有 abbrev 则用 abbrev（多个用 🔁 连接），否则用所有状态 🔁 连接
     val switchItems = state.schemaSwitches.map { sw ->
         val textIcon = sw.states.firstOrNull()?.firstOrNull()?.toString() ?: ""
@@ -133,12 +147,22 @@ fun MenuBar(
         MenuItem(icon = null, label = label, action = { callbacks.onToggleSchemaSwitch?.invoke(sw) }, textIcon = textIcon)
     }
 
-    val menuItems = remember(darkModeIcon, darkModeLabel, state.isFloatingMode, state.schemaSwitches) {
+    val menuItems = remember(darkModeIcon, darkModeLabel, state.isFloatingMode, state.schemaSwitches, feedbackVisible, feedbackLabel, feedbackGlyph) {
         listOf(
             MenuItem(clipboardIcon, "剪贴板", callbacks.onClipboard),
             MenuItem(quickSendIcon, "快捷发送", callbacks.onQuickSend),
             MenuItem(schemaIcon, "输入方案", callbacks.onSchemaList),
             MenuItem(emojiIcon, "表情", callbacks.onEmoji),
+        ) + listOfNotNull(
+            if (feedbackVisible) {
+                MenuItem(
+                    icon = null,
+                    label = feedbackLabel,
+                    action = callbacks.onFeedback,
+                    textIcon = feedbackGlyph,
+                    badgeTarget = UiOverrides.TARGET_MENU_FEEDBACK,
+                )
+            } else null
         ) + switchItems + listOf(
             MenuItem(customizeIcon, "定制工具栏", callbacks.onToolbarCustomize),
             // 悬浮模式下键盘内容为缩放的浮动卡片，高度不可调节，隐藏该入口
@@ -289,9 +313,28 @@ fun MenuItemButton(
     modifier: Modifier = Modifier,
     isLandscape: Boolean = false
 ) {
+    val itemModifier = modifier
+        .then(if (isLandscape) Modifier.height(72.dp) else Modifier.aspectRatio(1f))
+    val badgeTarget = item.badgeTarget
+    if (badgeTarget != null) {
+        UiBadgeHost(target = badgeTarget, modifier = itemModifier) {
+            MenuItemButtonContent(item, bgColor, textColor, isLandscape, Modifier.fillMaxSize())
+        }
+    } else {
+        MenuItemButtonContent(item, bgColor, textColor, isLandscape, itemModifier)
+    }
+}
+
+@Composable
+private fun MenuItemButtonContent(
+    item: MenuItem,
+    bgColor: Color,
+    textColor: Color,
+    isLandscape: Boolean,
+    modifier: Modifier
+) {
     Column(
         modifier = modifier
-            .then(if (isLandscape) Modifier.height(72.dp) else Modifier.aspectRatio(1f))
             .clip(RoundedCornerShape(12.dp))
             .background(bgColor)
             .clickable { item.action() }

@@ -2,6 +2,7 @@ package com.kingzcheung.xime.settings
 
 import android.content.Context
 import androidx.test.platform.app.InstrumentationRegistry
+import com.kingzcheung.xime.util.RpcUiController
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -24,7 +25,7 @@ class SettingsPreferencesTest {
     @Test
     fun currentSchemaUsesDefaultThenMigratesLegacy() {
         // 引擎未初始化（测试环境）且无历史数据时使用默认方案
-        assertEquals("wubi86", SettingsPreferences.getCurrentSchema(context))
+        assertEquals("pinyin_simp", SettingsPreferences.getCurrentSchema(context))
         // 模拟旧版本 SharedPreferences 数据：一次性迁移读取
         context.getSharedPreferences("kime_settings", Context.MODE_PRIVATE)
             .edit()
@@ -43,6 +44,34 @@ class SettingsPreferencesTest {
     }
 
     @Test
+    fun rpcLogAndLauncherDefaultsAreSecure() {
+        assertFalse(SettingsPreferences.isRpcLogToDiskEnabled(context))
+        assertTrue(SettingsPreferences.isLauncherIconHidden(context))
+        assertEquals(1f, SettingsPreferences.getRpcLogHeightDp(context))
+
+        SettingsPreferences.setRpcLogToDiskEnabled(context, true)
+        SettingsPreferences.setRpcLogHeightDp(context, 20f)
+        SettingsPreferences.setLauncherIconHidden(context, false)
+
+        assertTrue(SettingsPreferences.isRpcLogToDiskEnabled(context))
+        assertEquals(20f, SettingsPreferences.getRpcLogHeightDp(context))
+        assertFalse(SettingsPreferences.isLauncherIconHidden(context))
+    }
+
+    @Test
+    fun rpcLogHeightStatePersistsAndTemporaryOverrideDoesNot() {
+        RpcUiController.initialize(context)
+        RpcUiController.setState("log.height.dp", "20")
+
+        assertEquals("20.0", RpcUiController.getState("log.height.dp"))
+        assertEquals(20f, SettingsPreferences.getRpcLogHeightDp(context))
+
+        RpcUiController.setState("log.height.override.dp", "360")
+
+        assertEquals(20f, SettingsPreferences.getRpcLogHeightDp(context))
+    }
+
+    @Test
     fun darkModeValues() {
         SettingsPreferences.setDarkMode(context, 0)
         assertEquals(0, SettingsPreferences.getDarkMode(context))
@@ -56,7 +85,7 @@ class SettingsPreferencesTest {
 
     @Test
     fun soundAndVibrationDefaultsAndUpdatesWork() {
-        assertTrue(SettingsPreferences.isSoundEnabled(context))
+        assertFalse(SettingsPreferences.isSoundEnabled(context))
         assertEquals(50, SettingsPreferences.getSoundVolume(context))
         assertTrue(SettingsPreferences.isVibrationEnabled(context))
         assertEquals(50, SettingsPreferences.getVibrationIntensity(context))
@@ -250,6 +279,11 @@ class SettingsPreferencesTest {
     
     @Test
     fun toolbarButtonsPersist() {
+        assertEquals(
+            listOf("emoji", "edit", "home", "end", "copy", "paste", "clipboard"),
+            SettingsPreferences.getToolbarButtons(context)
+        )
+
         SettingsPreferences.setToolbarButtons(context, listOf("symbols", "clipboard"))
         assertEquals(listOf("symbols", "clipboard"), SettingsPreferences.getToolbarButtons(context))
         
@@ -258,6 +292,15 @@ class SettingsPreferencesTest {
         
         SettingsPreferences.setToolbarButtons(context, listOf("symbols"))
         assertEquals(listOf("symbols"), SettingsPreferences.getToolbarButtons(context))
+    }
+
+    @Test
+    fun pageSizeDefaultsToThirtyAndPersists() {
+        assertEquals(30, SettingsPreferences.getPageSize(context))
+
+        SettingsPreferences.setPageSize(context, 36)
+
+        assertEquals(36, SettingsPreferences.getPageSize(context))
     }
     
     @Test
@@ -272,6 +315,6 @@ class SettingsPreferencesTest {
         
         assertEquals("wubi86", SettingsPreferences.getCurrentSchema(context))
         assertEquals(0, SettingsPreferences.getDarkMode(context))
-        assertTrue(SettingsPreferences.isSoundEnabled(context))
+        assertFalse(SettingsPreferences.isSoundEnabled(context))
     }
 }

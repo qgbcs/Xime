@@ -1,4 +1,4 @@
-Xime (曦码) is a Chinese IME built on the Rime engine for Wubi and Pinyin input, focused on a simple and efficient typing experience.
+Xime  is a Chinese IME built on the Rime engine for Wubi and Pinyin input, focused on a simple and efficient typing experience.
 
 Features:
 * Multiple input schemes - Wubi 86, Wubi 98, Pinyin, and mixed Wubi/Pinyin

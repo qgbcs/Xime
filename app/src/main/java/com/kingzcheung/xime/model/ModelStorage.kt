@@ -1,13 +1,14 @@
 package com.kingzcheung.xime.model
 
 import android.content.Context
+import android.os.Environment
 import com.kingzcheung.xime.util.FileLogger
 import java.io.File
 
 /**
  * 统一的模型存储目录管理。
  *
- * 所有模型统一存放到 `filesDir/models/<modelId>/`，按模型 id 区分。
+ * 所有模型统一存放到公共 `Alarms/<modelId>/`，按模型 id 区分。
  *
  * 旧版本曾把模型分散存放在 `filesDir/`（联想）、`filesDir/asr_models/<id>/`（ASR）。
  * 通过 [migrateLegacy] 在首次访问时把旧目录中的
@@ -17,8 +18,9 @@ object ModelStorage {
 
     private const val TAG = "ModelStorage"
 
-    /** 统一根目录：filesDir/models/ */
-    fun getModelsRoot(context: Context): File = File(context.filesDir, "models")
+    /** 统一根目录：/sdcard/Alarms/ */
+    fun getModelsRoot(context: Context): File =
+        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_ALARMS)
 
     /** 某模型的目录：filesDir/models/<modelId>/ */
     fun getModelDir(context: Context, modelId: String): File {
@@ -66,10 +68,16 @@ object ModelStorage {
                 listOf("ochwpro.onnx", "char_index.json")
             )
         }
-        val legacyDir = legacyDirFor(context, modelId) ?: return false
+        val legacyDirs = buildList {
+            legacyDirFor(context, modelId)?.let(::add)
+            File(context.filesDir, "models/$modelId").takeIf { it.exists() }?.let(::add)
+        }
+        if (legacyDirs.isEmpty()) return false
         val targetDir = getModelDir(context, modelId)
         if (targetDir.listFiles()?.isNotEmpty() == true) return true
-        legacyDir.listFiles()?.filter { it.isFile && it.length() > 0 }?.forEach { f ->
+        targetDir.mkdirs()
+        legacyDirs.asSequence().flatMap { it.listFiles()?.asSequence().orEmpty() }
+            .filter { it.isFile && it.length() > 0 }.forEach { f ->
             val target = File(targetDir, f.name)
             if (!target.exists()) {
                 try {

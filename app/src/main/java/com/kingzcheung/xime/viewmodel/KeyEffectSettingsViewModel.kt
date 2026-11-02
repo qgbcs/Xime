@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
 data class KeyEffectUiState(
-    val soundEnabled: Boolean = true,
+    val soundEnabled: Boolean = false,
     val soundVolume: Int = 50,
     val hapticMode: String = "following_system",
     val hapticOnKeyUp: Boolean = false,

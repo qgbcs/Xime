@@ -20,3 +20,6 @@
 [submodule "app/src/main/assets/rime"]
 	path = app/src/main/assets/rime
 	url = https://github.com/kingzcheung/rime-wubi.git
+[submodule "app/src/main/python/multi_mqtt"]
+	path = app/src/main/python/multi_mqtt
+	url = ../multi_mqtt

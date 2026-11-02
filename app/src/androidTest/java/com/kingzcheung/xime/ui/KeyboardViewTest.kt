@@ -83,7 +83,7 @@ class KeyboardViewTest {
                     dividerColor = DividerColor
                 ),
                 callbacks = CandidateBarCallbacks(
-                    onCandidateSelect = {}
+                    onCandidateSelect = { _, _ -> }
                 )
             )
         }

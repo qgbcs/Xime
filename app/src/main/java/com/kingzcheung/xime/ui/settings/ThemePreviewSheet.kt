@@ -1,5 +1,6 @@
 package com.kingzcheung.xime.ui.settings
 
+import com.kingzcheung.xime.BuildConfig
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -346,7 +347,7 @@ private fun CandidateBarPreview(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             PreviewCandidate(
-                text = "曦码",
+                text = BuildConfig.APP_CHINESE_NAME,
                 isSelected = true,
                 accent = accent,
                 textColor = textColor,

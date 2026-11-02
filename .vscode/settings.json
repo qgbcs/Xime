@@ -1,6 +1,6 @@
 {
   "git.repositoryScanMaxDepth": 1,
   "git.autoRepositoryDetection": "openEditors",
-  "git.detectSubmodules": false,
-  "git.ignoreSubmodules": true
+  "git.detectSubmodules": true,
+  "git.ignoreSubmodules": false
 }

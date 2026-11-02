@@ -48,7 +48,7 @@ class FeedbackManager(private val context: Context) {
 
     private val feedbackScope = CoroutineScope(Dispatchers.Default)
 
-    private var soundEnabled = true
+    private var soundEnabled = false
     private var soundVolume = 50
     private var hapticMode = HapticMode.FollowingSystem
     private var hapticOnKeyUp = false

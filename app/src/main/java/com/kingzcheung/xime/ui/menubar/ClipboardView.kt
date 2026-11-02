@@ -34,12 +34,14 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.twotone.Sync
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -51,6 +53,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
@@ -81,6 +85,13 @@ fun ClipboardView(
     onQuickSendEditItem: ((Long, String) -> Unit)? = null,
     onPullRemote: (() -> Unit)? = null,
     pullRemoteAvailable: Boolean = false,
+    // 搜索态由外部（键盘层/服务层）持有：开启时 IME 窗口撑满全屏，搜索框下方同屏
+    // 显示自研 QWERTY 键盘；按键仍走 RIME 引擎（中文可组词），上屏文本重定向写入
+    // searchQuery，不在 IME 窗口内唤起系统键盘。
+    searchActive: Boolean = false,
+    searchQuery: String = "",
+    onSearchActiveChange: ((Boolean) -> Unit)? = null,
+    onSearchQueryChange: ((String) -> Unit)? = null,
 ) {
     // 卡片/格子背景：与菜单项背景一致（keyBgColor，浅色纯白、深色跟随 keyboard.colors）
     val itemBgColor = keyBgColor
@@ -101,6 +112,15 @@ fun ClipboardView(
     var isMultiSelect by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var showClearConfirm by remember { mutableStateOf(false) }
+    val searchFocusRequester = remember { FocusRequester() }
+
+    // 搜索开启时仅获取焦点显示光标；输入法自身窗口内无法再唤起系统键盘，
+    // 实际输入由同屏自研 QWERTY 键盘经按键重定向完成（见 ImeKeyboardCallbacks）。
+    LaunchedEffect(searchActive, selectedTab) {
+        if (searchActive && selectedTab == 0) {
+            searchFocusRequester.requestFocus()
+        }
+    }
 
     fun exitMultiSelect() {
         isMultiSelect = false
@@ -184,9 +204,45 @@ fun ClipboardView(
                 }
             }
 
-            Spacer(modifier = Modifier.weight(1f))
+            if (selectedTab == 0 && searchActive) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { onSearchQueryChange?.invoke(it) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(52.dp)
+                        .focusRequester(searchFocusRequester),
+                    placeholder = { Text("搜索剪贴板历史", maxLines = 1) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = "搜索") },
+                    singleLine = true
+                )
+            }
+
+            Spacer(
+                modifier = if (selectedTab == 0 && searchActive) {
+                    Modifier.width(4.dp)
+                } else {
+                    Modifier.weight(1f)
+                }
+            )
 
             if (selectedTab == 0) {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(iconButtonContainer)
+                        .clickable { onSearchActiveChange?.invoke(!searchActive) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = if (searchActive) "关闭搜索" else "搜索剪贴板历史",
+                        tint = accentColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
                 if (isMultiSelect) {
                     Box(
                         modifier = Modifier
@@ -297,6 +353,7 @@ fun ClipboardView(
                     onLongPressItem = { item, isLeftColumn ->
                         menuAnchor = MenuAnchor(item, isLeftColumn, tab = 0)
                     },
+                    searchQuery = searchQuery,
                     isMultiSelect = isMultiSelect,
                     selectedIds = selectedIds,
                     onToggleSelect = { id ->
@@ -563,32 +620,41 @@ fun ClipboardTabContent(
     onAddToQuickSend: (Long) -> Unit,
     onSplitWords: (String, Long) -> Unit,
     onLongPressItem: (ClipboardItem, Boolean) -> Unit,
+    searchQuery: String = "",
     isMultiSelect: Boolean = false,
     selectedIds: Set<Long> = emptySet(),
     onToggleSelect: (Long) -> Unit = {},
     onExitMultiSelect: () -> Unit = {},
 ) {
-    if (items.isEmpty()) {
+    val filteredItems = if (searchQuery.isBlank()) {
+        items
+    } else {
+        items.filter { it.text.contains(searchQuery.trim(), ignoreCase = true) }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (filteredItems.isEmpty()) {
         Box(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.weight(1f).fillMaxWidth(),
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = "剪贴板为空",
+                text = if (items.isEmpty()) "剪贴板为空" else "没有匹配的剪贴板记录",
                 color = subTextColor,
                 fontSize = 13.sp
             )
         }
-    } else {
+        } else {
         LazyVerticalGrid(
             columns = GridCells.Fixed(2),
             modifier = Modifier
+                .weight(1f)
                 .fillMaxSize()
                 .padding(horizontal = 10.dp, vertical = 2.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            itemsIndexed(items, key = { _, it -> it.id }) { index, item ->
+            itemsIndexed(filteredItems, key = { _, it -> it.id }) { index, item ->
                 GridItemCard(
                     text = item.text,
                     highlighted = isMultiSelect && item.id in selectedIds,
@@ -606,6 +672,7 @@ fun ClipboardTabContent(
                     }
                 )
             }
+        }
         }
     }
 }

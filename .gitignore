@@ -36,6 +36,7 @@ app/release
 *.tar.gz
 *.zip
 /.agents
+Chaquopy/
 # Association model weights (large files, manually placed)
 app/src/main/assets/association_model
 
@@ -48,8 +49,7 @@ plugins/funasr-speech/build
 plugins/meme-bunny/build
 plugins/kaomoji/build
 
-# Plugin APKs (development only, not packaged in main app)
-app/src/main/assets/plugins/*.apk
+# Plugin packages (development only, not packaged in main app)
 app/src/main/assets/plugins/*.xipk
 
 /.skills
@@ -60,3 +60,7 @@ app/src/main/jni/ncnn-build
 app/src/main/jni/ncnn
 # Downloaded at build time by gradle task downloadKnf
 app/src/main/jni/third_party/
+
+# Python bytecode cache
+__pycache__/
+*.pyc

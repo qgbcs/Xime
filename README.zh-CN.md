@@ -2,10 +2,10 @@
   <img src="docs/logo.jpg" alt="Xime Logo" width="600">
 </p>
 
-<h1 align="center">Xime（曦码） - 五笔/拼音输入法</h1>
+<h1 align="center">Xime - 五笔/拼音输入法</h1>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.zh-TW.md">繁體中文</a>
+  <a href="README.md">English</a> 
 </p>
 
 [Xime 输入法 (Windows 版)](https://github.com/ximeiorg/winxime) | [Xime 输入法 (Linux 版)](https://github.com/ximeiorg/xime-wayland) | [联想词预测模型](https://github.com/ximeiorg/predictive-text) | [手写输入法模型](https://github.com/ximeiorg/ochwpro)
@@ -127,6 +127,8 @@ git submodule update --init --recursive
 # 构建 Release APK
 ./gradlew assembleRelease
 ```
+
+常规 APK 构建只负责构建，不会自动运行 Rime 按键/候选测试。若修改了按键映射、翻页或候选选择，请在 Linux 主机上按需手动运行 `./scripts/test_rime_keys.sh`；它不需要 Android 设备。测试覆盖范围及其限制见[候选翻页排障文档](docs/rime-candidate-debugging.md)。
 
 ### AI 模型下载
 

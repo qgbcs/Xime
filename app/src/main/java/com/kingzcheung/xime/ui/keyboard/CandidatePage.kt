@@ -1,7 +1,9 @@
 package com.kingzcheung.xime.ui.keyboard
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,10 +28,16 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Icon
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +46,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.PopupProperties
 
 data class CandidatePageState(
     val candidates: List<String>,
@@ -51,8 +60,10 @@ data class CandidatePageState(
 )
 
 data class CandidatePageCallbacks(
-    val onCandidateSelect: (Int) -> Unit,
-    val onAssociationSelect: ((Int) -> Unit)? = null,
+    val onCandidateSelect: (Int, String) -> Unit,
+    val onAssociationSelect: ((Int, String) -> Unit)? = null,
+    val onCustomPhraseAction: ((String, String) -> Unit)? = null,
+    val onUiDiagnosticEvent: ((String, String) -> Unit)? = null,
     val onPageDown: (() -> Unit)? = null,
     val onPageUp: (() -> Unit)? = null,
     val onBack: (() -> Unit)? = null,
@@ -62,8 +73,10 @@ data class CandidatePageCallbacks(
 fun CandidatePage(
     state: CandidatePageState,
     callbacks: CandidatePageCallbacks,
+    customPhraseWords: Set<String> = emptySet(),
     modifier: Modifier = Modifier
 ) {
+    var longPressedWord by remember { mutableStateOf<String?>(null) }
     val configuration = LocalConfiguration.current
     val isLandscape =
         configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
@@ -192,12 +205,75 @@ fun CandidatePage(
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             state.candidates.forEachIndexed { index, candidate ->
-                                CandidatePageItem(
-                                    text = candidate,
-                                    comment = state.candidateComments.getOrElse(index) { "" },
-                                    onClick = { callbacks.onCandidateSelect(index) },
-                                    textColor = state.textColor
-                                )
+                                val isCustom = callbacks.onCustomPhraseAction != null &&
+                                    candidate in customPhraseWords
+                                Box {
+                                    CandidatePageItem(
+                                        text = candidate,
+                                        comment = state.candidateComments.getOrElse(index) { "" },
+                                        onClick = { callbacks.onCandidateSelect(index, candidate) },
+                                        onLongClick = if (isCustom) {
+                                            {
+                                                callbacks.onUiDiagnosticEvent?.invoke(
+                                                    "candidate_long_press",
+                                                    "source=candidate_page;candidate=$candidate"
+                                                )
+                                                longPressedWord = candidate
+                                            }
+                                        } else null,
+                                        textColor = state.textColor
+                                    )
+                                    if (isCustom) {
+                                        DropdownMenu(
+                                            expanded = longPressedWord == candidate,
+                                            properties = PopupProperties(focusable = false),
+                                            onDismissRequest = {
+                                                callbacks.onUiDiagnosticEvent?.invoke(
+                                                    "candidate_menu_dismissed",
+                                                    "source=candidate_page;candidate=$candidate;popup_focusable=false"
+                                                )
+                                                longPressedWord = null
+                                            }
+                                        ) {
+                                            LaunchedEffect(longPressedWord == candidate) {
+                                                if (longPressedWord == candidate) {
+                                                    callbacks.onUiDiagnosticEvent?.invoke(
+                                                        "candidate_menu_shown",
+                                                        "source=candidate_page;candidate=$candidate;popup_focusable=false"
+                                                    )
+                                                }
+                                            }
+                                            DropdownMenuItem(
+                                                text = { Text("移到第二屏") },
+                                                onClick = {
+                                                    callbacks.onUiDiagnosticEvent?.invoke(
+                                                        "candidate_menu_selected",
+                                                        "source=candidate_page;candidate=$candidate;action=moveSecondPage"
+                                                    )
+                                                    longPressedWord = null
+                                                    callbacks.onCustomPhraseAction?.invoke(
+                                                        candidate,
+                                                        "moveSecondPage"
+                                                    )
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("删除该词") },
+                                                onClick = {
+                                                    callbacks.onUiDiagnosticEvent?.invoke(
+                                                        "candidate_menu_selected",
+                                                        "source=candidate_page;candidate=$candidate;action=delete"
+                                                    )
+                                                    longPressedWord = null
+                                                    callbacks.onCustomPhraseAction?.invoke(
+                                                        candidate,
+                                                        "delete"
+                                                    )
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -214,7 +290,7 @@ fun CandidatePage(
                                 CandidatePageItem(
                                     text = candidate,
                                     comment = "",
-                                    onClick = { callbacks.onAssociationSelect?.invoke(index) },
+                                    onClick = { callbacks.onAssociationSelect?.invoke(index, candidate) },
                                     textColor = state.textColor
                                 )
                             }
@@ -236,10 +312,12 @@ fun CandidatePage(
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 fun CandidatePageItem(
     text: String,
     comment: String = "",
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
     textColor: Color,
     modifier: Modifier = Modifier
 ) {
@@ -249,7 +327,10 @@ fun CandidatePageItem(
 
         modifier = modifier
             .clip(RoundedCornerShape(6.dp))
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
             .padding(horizontal = 4.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

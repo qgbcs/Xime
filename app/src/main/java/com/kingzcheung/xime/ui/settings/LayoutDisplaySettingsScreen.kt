@@ -218,7 +218,11 @@ fun LayoutDisplaySettingsContent(
                     )
 
                     val pageSizePref = SettingsPreferences.getPageSize(context)
-                    val effectiveValue = if (pageSizePref == 0) 20f else pageSizePref.toFloat()
+                    val effectiveValue = if (pageSizePref == 0) {
+                        SettingsPreferences.DEFAULT_PAGE_SIZE.toFloat()
+                    } else {
+                        pageSizePref.toFloat()
+                    }
                     var pageSizeSlider by remember(effectiveValue) {
                         mutableStateOf(effectiveValue)
                     }

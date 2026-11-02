@@ -6,6 +6,7 @@ import com.kingzcheung.xime.rime.T9InputController
 import com.kingzcheung.xime.rime.buildT9DisplayState
 import com.kingzcheung.xime.settings.SchemaManager
 import com.kingzcheung.xime.settings.SettingsPreferences
+import com.kingzcheung.xime.settings.UserPhraseManager
 import com.kingzcheung.xime.ui.keyboard.isT9Schema
 import com.kingzcheung.xime.util.FileLogger
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +20,52 @@ import kotlinx.coroutines.withContext
  * 方案名称/开关刷新与切换、T9 切离提交等逻辑。共享状态通过 service 引用访问。
  */
 internal class ImeSessionController(private val service: XimeInputMethodService) {
+
+    /**
+     * 把自动学习词（前缀匹配）合并进候选：
+     * - 正常词（分值 >=0）只在第一页前置；降频词（负分）移到第二个 Rime 分页；
+     *   只有一个 Rime 分页时，降频词追加到唯一页末尾。
+     * - 仅在非 ascii、非 T9、且有字母编码时生效。
+     * 注释/候选不假定等长，按索引过滤以避免丢词。
+     */
+    private data class MergedResult(
+        val candidates: List<String>,
+        val comments: List<String>,
+        val frontCount: Int,
+        val tailCount: Int,
+    )
+
+    private fun mergeAutoCandidates(
+        input: String,
+        isAsciiMode: Boolean,
+        isT9: Boolean,
+        rimeCandidates: List<String>,
+        rimeComments: List<String>,
+        hasNextPage: Boolean,
+    ): MergedResult {
+        if (isAsciiMode || isT9 || input.isEmpty()) {
+            return MergedResult(rimeCandidates, rimeComments, 0, 0)
+        }
+        val schemaId = service.uiState.value.currentSchemaId
+        val match = UserPhraseManager.matchAutoPhrases(service, schemaId, input)
+        val rimePageNo = service.rimeEngine.getCandidatePageInfo().pageNo
+        val front = com.kingzcheung.xime.settings.LearnedCandidateIndex
+            .frontCandidatesForRimePage(match.front, rimePageNo)
+        val tail = com.kingzcheung.xime.settings.LearnedCandidateIndex
+            .tailCandidatesForRimePage(match.tail, rimePageNo, hasNextPage)
+        if (front.isEmpty() && match.tail.isEmpty()) {
+            return MergedResult(rimeCandidates, rimeComments, 0, 0)
+        }
+        val removeSet = (front + match.tail).toHashSet()
+        val keptIndices = rimeCandidates.indices.filterNot { rimeCandidates[it] in removeSet }
+        val keptTexts = keptIndices.map { rimeCandidates[it] }
+        val keptComments = keptIndices.map { rimeComments.getOrElse(it) { "" } }
+        val outCandidates = front + keptTexts + tail
+        val outComments =
+            List(front.size) { "" } + keptComments + List(tail.size) { "" }
+        return MergedResult(outCandidates, outComments, front.size, tail.size)
+    }
+
     internal fun applyComposition(composition: com.kingzcheung.xime.rime.RimeComposition) {
         val inputText = composition.input
         val codeInInputBox = SettingsPreferences.getInputTextLocation(service) == SettingsPreferences.INPUT_TEXT_INPUT_BOX
@@ -31,15 +78,14 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
         val pendingEnglish = service.candidateState.value.pendingEnglishText
 
         val (filteredTexts, filteredComments) = if (isAsciiMode) {
-            val filtered = candidatesWithComments.filterNot { candidate ->
-                candidate.text.any { it.code in 0x4E00..0x9FFF }
-            }
-            filtered.map { it.text } to filtered.map { it.comment }
+            // 英语模式每个按键直接上屏，不展示 Rime 候选或英语联想。
+            emptyList<String>() to emptyList()
         } else {
             candidatesWithComments.map { it.text } to candidatesWithComments.map { it.comment }
         }
 
         val isT9Schema = isT9Schema(service.uiState.value.currentSchemaId)
+        val partialCandidateText = service.partialCandidateSegments.joinToString("") { it.text }
         // T9 候选词过滤：根据左侧选择历史过滤不匹配的候选词
         val (t9FilteredTexts, t9FilteredComments) = if (isT9Schema) {
             service.keyboardCallbacks?.onFilterT9Candidates?.invoke(filteredTexts, filteredComments)
@@ -62,12 +108,12 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             displayComments = display.displayComments
             isComposing = display.isComposing
         } else {
-            // 非 T9 方案（如双拼）使用原始输入文本显示，
-            // 避免显示 rime speller 展开后的编码（如双拼 vjv → zhan b）
-            displayText = inputText
+            // 部分选中的候选保持在 composing 区；Rime 只处理尚未选择的尾码。
+            // 普通输入仍显示原始输入，避免显示 speller 展开的编码。
+            displayText = if (partialCandidateText.isNotEmpty()) partialCandidateText else inputText
             displayCandidates = filteredTexts
             displayComments = filteredComments
-            isComposing = inputText.isNotEmpty()
+            isComposing = inputText.isNotEmpty() || partialCandidateText.isNotEmpty()
         }
 
         // 用户开始实际输入时，清除候选栏中残留的 inline suggestions
@@ -75,29 +121,37 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             service.dismissInlineSuggestions()
         }
 
+        val candidateLookupInput =
+            if (partialCandidateText.isNotEmpty() && !isT9Schema) inputText else displayText
+        val merged = mergeAutoCandidates(
+            candidateLookupInput,
+            isAsciiMode,
+            isT9Schema,
+            displayCandidates,
+            displayComments,
+            hasNextPage,
+        )
+
         service.candidateState.value = service.candidateState.value.copy(
-            inputText = displayText,
+            inputText = if (partialCandidateText.isNotEmpty() && !isT9Schema) inputText else displayText,
             preeditText = displayText,
-            candidates = displayCandidates,
-            candidateComments = displayComments,
+            candidates = merged.candidates,
+            candidateComments = merged.comments,
             isComposing = isComposing,
             associationCandidates = if ((isAsciiMode || !service.isChineseMode) && pendingEnglish.isEmpty()) emptyList() else service.candidateState.value.associationCandidates,
             isShowingRecentClipboard = false,
             hasNextPage = hasNextPage,
-            hasPrevPage = hasPrevPage
+            hasPrevPage = hasPrevPage,
+            customPhraseCount = merged.frontCount,
+            demotedPhraseCount = merged.tailCount
         )
         if (isAsciiMode != service.uiState.value.isAsciiMode) {
             FileLogger.i(XimeInputMethodService.TAG, "applyComposition: ascii ${service.uiState.value.isAsciiMode}->$isAsciiMode")
         }
         service.uiState.value = service.uiState.value.copy(isAsciiMode = isAsciiMode)
 
-        if (pendingEnglish.isNotEmpty()) {
-            service.serviceScope.launch {
-                val candidates = service.predictionManager.getEnglishAssociations(pendingEnglish, PredictionManager.MAX_ASSOCIATION_COUNT)
-                withContext(Dispatchers.Main) {
-                    service.candidateState.value = service.candidateState.value.copy(associationCandidates = candidates)
-                }
-            }
+        if (!isAsciiMode && pendingEnglish.isNotEmpty()) {
+            service.requestEnglishAssociations(pendingEnglish)
         }
 
         if (codeInInputBox) {
@@ -140,6 +194,7 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
         // 非 T9 方案（如双拼）使用原始输入文本显示，
         // 避免显示 rime speller 展开后的编码（如双拼 i → ch）
         val isT9Schema = isT9Schema(service.uiState.value.currentSchemaId)
+        val partialCandidateText = service.partialCandidateSegments.joinToString("") { it.text }
         // T9 候选词过滤：根据左侧选择历史（全拼/简拼）过滤不匹配的候选词
         val (t9FilteredTexts, t9FilteredComments) = if (isT9Schema) {
             service.keyboardCallbacks?.onFilterT9Candidates?.invoke(filteredTexts, filteredComments)
@@ -166,10 +221,16 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             val hasExtraContent = result.preeditText.any { c ->
                 !c.isWhitespace() && c != '\'' && !lowerInput.contains(c.lowercaseChar())
             }
-            displayText = if (result.preeditText.isNotEmpty() && hasExtraContent) result.preeditText else result.inputText
+            displayText = if (partialCandidateText.isNotEmpty()) {
+                partialCandidateText
+            } else if (result.preeditText.isNotEmpty() && hasExtraContent) {
+                result.preeditText
+            } else {
+                result.inputText
+            }
             displayCandidates = filteredTexts
             displayComments = filteredComments
-            isComposing = result.inputText.isNotEmpty()
+            isComposing = result.inputText.isNotEmpty() || partialCandidateText.isNotEmpty()
         }
 
         // 用户开始实际输入时，清除候选栏中残留的 inline suggestions
@@ -177,26 +238,34 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             service.dismissInlineSuggestions()
         }
 
+        val candidateLookupInput =
+            if (partialCandidateText.isNotEmpty() && !isT9Schema) result.inputText else displayText
+        val merged = mergeAutoCandidates(
+            candidateLookupInput,
+            isAsciiMode,
+            isT9Schema,
+            displayCandidates,
+            displayComments,
+            result.hasNextPage,
+        )
+
         service.candidateState.value = service.candidateState.value.copy(
-            inputText = displayText,
+            inputText = if (partialCandidateText.isNotEmpty() && !isT9Schema) result.inputText else displayText,
             preeditText = displayText,
-            candidates = displayCandidates,
-            candidateComments = displayComments,
+            candidates = merged.candidates,
+            candidateComments = merged.comments,
             isComposing = isComposing,
             associationCandidates = if ((isAsciiMode || !service.isChineseMode) && pendingEnglish.isEmpty()) emptyList() else service.candidateState.value.associationCandidates,
             isShowingRecentClipboard = false,
             hasNextPage = result.hasNextPage,
-            hasPrevPage = result.hasPrevPage
+            hasPrevPage = result.hasPrevPage,
+            customPhraseCount = merged.frontCount,
+            demotedPhraseCount = merged.tailCount
         )
         service.uiState.value = service.uiState.value.copy(isAsciiMode = isAsciiMode)
         
         if (pendingEnglish.isNotEmpty()) {
-            service.serviceScope.launch {
-                val candidates = service.predictionManager.getEnglishAssociations(pendingEnglish, PredictionManager.MAX_ASSOCIATION_COUNT)
-                withContext(Dispatchers.Main) {
-                    service.candidateState.value = service.candidateState.value.copy(associationCandidates = candidates)
-                }
-            }
+            service.requestEnglishAssociations(pendingEnglish)
         }
 
         if (SettingsPreferences.getInputTextLocation(service) == SettingsPreferences.INPUT_TEXT_INPUT_BOX) {
@@ -212,7 +281,9 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
     internal fun updateSchemaName() {
         val context = service
         service.serviceScope.launch(Dispatchers.IO) {
-            val page = service.keyboardViewModel.page.value
+            val page = withContext(Dispatchers.Main) {
+                service.keyboardViewModel.page.value
+            }
             val isHandwritingMode = (page as? com.kingzcheung.xime.keyboard.KeyboardPage.Main)?.type == com.kingzcheung.xime.keyboard.MainType.HANDWRITING
             val engineSchemaId = service.rimeEngine.getCurrentSchema()
             // session 未就绪时 getCurrentSchema() 返回空串：用持久化方案兜底，
@@ -371,6 +442,7 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
                 t9SelectedCandidatePinyin = ""
             )
             service.t9PartialSegments.clear()
+            service.partialCandidateSegments.clear()
             service.candidateState.value = service.candidateState.value.copy(
                 inputText = "",
                 preeditText = "",

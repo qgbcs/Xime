@@ -37,8 +37,22 @@
 - [ ] 改动符合最小修改原则
 - [ ] 所有 commit 均已 GPG 签名
 - [ ] 本地构建通过：`./gradlew assembleDebug --quiet`
-- [ ] 测试通过：`./gradlew test`
+- [ ] 若改动影响 Rime 按键/候选行为，已手动运行 `./scripts/test_rime_keys.sh`
 - [ ] 已更新相关文档（如有需要）
+
+## Rime 按键/候选回归测试
+
+常规 APK 构建（包括 `./gradlew assembleDebug`、`./gradlew assembleRelease` 和 `./debug_build_secexp.sh`）不会运行这项测试。它是显式手动运行的桌面回归测试，不依赖 Android 设备或模拟器。Linux 主机安装 `librime-dev`、`pkg-config` 和 C++17 编译器后，在项目根目录执行：
+
+```bash
+./scripts/test_rime_keys.sh
+```
+
+详细范围、已定位的问题、修复机制和测试边界见 [Rime 候选翻页故障排查与回归测试](docs/rime-candidate-debugging.md)。
+
+调试接口可通过 RPC 调用 `RpcUiController.buildInfo()` 查询版本、Git 提交和确定性 `source_fingerprint`。该指纹覆盖 `app/src/main/java`、`app/src/main/jni/librime_jni`、Python、资源、assets 和 Manifest，不含构建时间；`imeState()` 另会返回方案名、键盘布局及 Rime 初始化状态。这些接口用于检查运行中的构建和输入状态，不会由 APK 构建过程调用。
+
+可从 Python 调整设置页条目显隐，例如 `from com.kingzcheung.xime.util import RpcUiController` 后调用 `RpcUiController.setSettingItemVisible("about_app", True)` 显示关于应用入口；`False` 隐藏该入口。该设置会持久化保存，未配置时关于应用入口默认隐藏。
 
 ## 提交信息格式
 
@@ -58,4 +72,3 @@
 
 ---
 
-再次感谢你的贡献！

@@ -38,12 +38,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.kingzcheung.xime.handwriting.HandwritingCandidate
 import com.kingzcheung.xime.keyboard.KeyboardPage
 import com.kingzcheung.xime.rime.RimeEngine
@@ -56,6 +60,7 @@ import com.kingzcheung.xime.rime.T9InputController
 import com.kingzcheung.xime.service.CandidateState
 import com.kingzcheung.xime.settings.KeysConfigHelper
 import com.kingzcheung.xime.settings.SettingsPreferences
+import com.kingzcheung.xime.ui.feedback.FeedbackActivity
 import com.kingzcheung.xime.ui.menubar.ClipboardView
 import com.kingzcheung.xime.ui.menubar.SchemaListView
 import com.kingzcheung.xime.ui.menubar.ToolbarCustomizeView
@@ -63,6 +68,7 @@ import com.kingzcheung.xime.ui.theme.KeyboardThemes
 import com.kingzcheung.xime.ui.theme.keyboardBackground
 import com.kingzcheung.xime.util.FileLogger
 import com.kingzcheung.xime.util.PermissionHelper
+import com.kingzcheung.xime.util.UiOverrides
 import com.kingzcheung.xime.viewmodel.KeyboardUiState
 import com.kingzcheung.xime.viewmodel.KeyboardViewModel
 import kotlin.math.abs
@@ -99,8 +105,10 @@ fun KeyboardView(
         callbacks.onKeyboardModeChange?.invoke(active)
     }
 
+    val context = LocalContext.current
     val t9Controller = remember {
         T9InputController(
+            context = context,
             onCompositionRefresh = { composition ->
                 callbacks.onT9RefreshComposition?.invoke(composition)
             },
@@ -222,6 +230,73 @@ fun KeyboardView(
         onCardPositioned = onCardPositioned,
     ) {
     Box(modifier = contentModifier) {
+        // 当前方案用户自定义候选词集合，供普通和展开候选栏的长按菜单判断；
+        // 切换方案，或自动学习 / 删除 / 降频后（UserPhraseManager.phraseRevision
+        // 递增）重新从磁盘加载。
+        val customPhraseContext = LocalContext.current
+        val customPhraseRevision =
+            com.kingzcheung.xime.settings.UserPhraseManager.phraseRevision.longValue
+        var customPhraseWords by remember(state.currentSchemaId) {
+            mutableStateOf(emptySet<String>())
+        }
+        LaunchedEffect(state.currentSchemaId, customPhraseRevision) {
+            customPhraseWords = withContext(Dispatchers.IO) {
+                com.kingzcheung.xime.settings.UserPhraseManager
+                    .loadWords(customPhraseContext, state.currentSchemaId)
+            }
+        }
+        // 剪贴板历史搜索态：页面为剪贴板覆盖层且搜索开启时，IME 窗口撑满全屏，
+        // 候选栏下方用全部剩余高度展示剪贴板面板（搜索结果），下方保留 QWERTY 键盘，
+        // 按键走 RIME 引擎可输中文，上屏文本由服务层重定向写入搜索框。
+        // 定义在 Box 层：Column 内主键盘区与 Column 外的 Overlay 分支都要访问。
+        val clipboardOverlayRoute = (page as? KeyboardPage.Overlay)?.route as? OverlayRoute.Clipboard
+        val showClipboardSearchPanel = clipboardOverlayRoute?.tab == 0 && state.clipboardSearchActive
+        // 切到快捷发送 tab、关闭覆盖层或跳转其他页面时，自动退出搜索态并恢复窗口高度
+        LaunchedEffect(page, state.clipboardSearchActive) {
+            if (state.clipboardSearchActive &&
+                ((page as? KeyboardPage.Overlay)?.route as? OverlayRoute.Clipboard)?.tab != 0) {
+                callbacks.onClipboardSearchToggle?.invoke(false)
+            }
+        }
+        val clipboardPanel: @Composable (Modifier) -> Unit = { panelModifier ->
+            ClipboardView(
+                clipboardItems = state.clipboardItems,
+                quickSendItems = state.quickSendItems,
+                selectedTab = clipboardOverlayRoute?.tab ?: 0,
+                backgroundColor = keyboardBgColor,
+                keyTextColor = keyTextColor,
+                keyBgColor = keyBgColor,
+                viewModel = viewModel,
+                onSelectItem = { text ->
+                    // 必须先同步退出搜索态：否则 commitText 重定向会把待粘贴文本吞进搜索框
+                    if (state.clipboardSearchActive) {
+                        callbacks.onClipboardSearchToggle?.invoke(false)
+                    }
+                    callbacks.onClipboardSelect?.invoke(text)
+                    viewModel.closeOverlay()
+                },
+                onSplitWords = { text, _ -> viewModel.pushOverlay(OverlayRoute.SplitWords(text)) },
+                onBack = { viewModel.closeOverlay() },
+                onClipboardTabChange = { viewModel.pushOverlay(OverlayRoute.Clipboard(it)) },
+                // 搜索态面板下方紧接自研键盘（键盘自带底部留白），面板内不再重复留白
+                bottomPaddingDp = if (state.clipboardSearchActive) 0 else state.keyboardBottomPaddingDp,
+                modifier = panelModifier,
+                onQuickSendAddClick = {
+                    viewModel.closeOverlay()
+                    callbacks.onShowQuickSendForm?.invoke()
+                },
+                onQuickSendEditItem = { id, text ->
+                    viewModel.closeOverlay()
+                    callbacks.onQuickSendEditItem?.invoke(id, text)
+                },
+                onPullRemote = callbacks.onClipboardPullRemote,
+                pullRemoteAvailable = state.clipboardSyncEnabled,
+                searchActive = state.clipboardSearchActive,
+                searchQuery = state.clipboardSearchQuery,
+                onSearchActiveChange = callbacks.onClipboardSearchToggle,
+                onSearchQueryChange = callbacks.onClipboardSearchQueryChange,
+            )
+        }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -238,7 +313,8 @@ fun KeyboardView(
             val candidateBarState = remember(
                 cs.candidates, cs.candidateComments, cs.inputText, cs.preeditText, cs.isComposing,
                 cs.associationCandidates, cs.pendingEnglishText, cs.isShowingRecentClipboard, cs.hasNextPage,
-                state.isCalculatorMode, handwritingCandidates, handwritingComments, showHandwritingCandidates,
+                cs.demotedPhraseCount, state.isCalculatorMode, handwritingCandidates, handwritingComments,
+                showHandwritingCandidates,
             ) {
                 if (showHandwritingCandidates) {
                     CandidateBarState.AssociationOnly(
@@ -261,6 +337,7 @@ fun KeyboardView(
                         isShowingRecentClipboard = cs.isShowingRecentClipboard,
                         hasNextPage = cs.hasNextPage,
                         isCalculatorActive = state.isCalculatorMode,
+                        demotedCandidateCount = cs.demotedPhraseCount,
                     )
                 }
             }
@@ -291,6 +368,23 @@ fun KeyboardView(
                 )
             }
 
+            // 剪贴板搜索态：面板占满键盘上方全部空间，候选栏放到面板下面紧贴按键区。
+            // 否则候选栏位于 IME 窗口最顶部（搜索框上方、屏幕顶边处），中文候选字看不见。
+            if (showClipboardSearchPanel) {
+                val searchPanelHeightDp = state.clipboardSearchExtraDp.coerceAtLeast(200)
+                clipboardPanel(Modifier.fillMaxWidth().height(searchPanelHeightDp.dp))
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onGloballyPositioned { coords ->
+                        // 键盘区（候选栏+按键）顶部绝对位置：搜索面板在其上方展开时此位置
+                        // 不变，上报给服务层作为稳定的 contentTopInsets，防止宿主被重排。
+                        callbacks.onKeyboardTopPositioned
+                            ?.invoke(coords.positionInWindow().y.toInt())
+                    }
+            ) {
             CandidateBar(
                 state = candidateBarState,
                 page = page,
@@ -300,6 +394,7 @@ fun KeyboardView(
                 voiceSpectrum = voiceSpectrumState.value,
                 voiceRecognitionState = state.voiceRecognitionState,
                 voicePluginName = state.voicePluginName,
+                customPhraseWords = customPhraseWords,
                 toolbarActions = state.toolbarButtons.mapNotNull { id ->
                     val button = ToolbarButton.fromId(id) ?: return@mapNotNull null
                     if (button == ToolbarButton.HANDWRITING_LOOKUP) {
@@ -340,15 +435,14 @@ fun KeyboardView(
                     isDarkTheme = state.isDarkTheme
                 ),
                 callbacks = CandidateBarCallbacks(
-                    onCandidateSelect = { index ->
+                    onCandidateSelect = { index, candidate ->
                         if (showHandwritingCandidates && index in handwritingCandidates.indices) {
-                            val ch = handwritingCandidates[index]
-                            callbacks.onCommitText?.invoke(ch)
+                            callbacks.onCommitText?.invoke(candidate)
                             handwritingCandidates = emptyList()
                             handwritingComments = emptyList()
                             handwritingClearSignal++
                         } else {
-                            callbacks.onCandidateSelect(index)
+                            callbacks.onCandidateSelect(index, candidate)
                         }
                     },
                     onClearAssociation = {
@@ -384,28 +478,45 @@ fun KeyboardView(
                     },
                     onShowMoreCandidates = { viewModel.showOverlay(OverlayRoute.CandidatePage) },
                     onInputTextClick = {
-                        if (candidateState.value.inputText.isNotEmpty()) {
-                            callbacks.onClipboardSelect?.invoke(candidateState.value.inputText)
+                        val rawInput = candidateState.value.inputText
+                        if (rawInput.isNotEmpty()) {
+                            if (state.clipboardSearchActive) {
+                                // 搜索态：点原始编码把字母并入搜索框（不走剪贴板选中/复制副作用）
+                                callbacks.onClipboardSearchQueryChange?.invoke(
+                                    state.clipboardSearchQuery + rawInput
+                                )
+                                callbacks.onKeyPress?.invoke("clear_composition", false)
+                            } else {
+                                callbacks.onClipboardSelect?.invoke(rawInput)
+                            }
                         }
                     },
-                    onAssociationSelect = { index ->
-                        if (showHandwritingCandidates && index in handwritingCandidates.indices) {
-                            val ch = handwritingCandidates[index]
+                    onAssociationSelect = { index, candidate ->
+                        val handwritingIndex = handwritingCandidates.indexOf(candidate)
+                        if (showHandwritingCandidates && handwritingIndex >= 0) {
+                            val ch = handwritingCandidates[handwritingIndex]
                             callbacks.onCommitText?.invoke(ch)
                             handwritingCandidates = emptyList()
                             handwritingComments = emptyList()
                             handwritingClearSignal++
                         } else {
-                            callbacks.onAssociationSelect?.invoke(index)
+                            callbacks.onAssociationSelect?.invoke(index, candidate)
                         }
                     },
+                    onCustomPhraseAction = { word, action ->
+                        // 服务层写文件；UserPhraseManager 写盘成功后递增 phraseRevision，
+                        // 本组件观察到变化会自动重新加载词条集合，无需在此手动刷新。
+                        callbacks.onCustomPhraseAction?.invoke(word, action)
+                    },
+                    onUiDiagnosticEvent = callbacks.onUiDiagnosticEvent,
                 ),
                 inlineSuggestions = inlineSuggestions,
             )
+            }
 
-            val isMainKeyboard = page is KeyboardPage.Main
+            val isMainKeyboard = page is KeyboardPage.Main || showClipboardSearchPanel
             if (isMainKeyboard) {
-                val mainType = (page as KeyboardPage.Main).type
+                val mainType = (page as? KeyboardPage.Main)?.type ?: MainType.FULL
                 when (mainType) {
                     MainType.FULL -> {
                         val currentOnCursorMove = rememberUpdatedState(callbacks.onCursorMove)
@@ -721,6 +832,8 @@ fun KeyboardView(
                             bottomActive = state.voiceBottomActive,
                             leftActive = state.voiceLeftActive,
                             rightActive = state.voiceRightActive,
+                            muteActive = state.voiceMuteActive,
+                            muteOthersEnabled = state.sttMuteOthers,
                             pluginName = state.voicePluginName,
                             recognitionState = state.voiceRecognitionState,
                             recognizedText = state.voiceRecognizedText,
@@ -807,6 +920,19 @@ fun KeyboardView(
             val isLandscapeBottom = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         }
 
+        // 语音状态悬浮标签：半透明覆盖在输入工具栏上方，只显示文本状态，
+        // 不拦截触摸（无 pointerInput/clickable，事件穿透到工具栏与语音按钮区）。
+        // 长按空格时键盘切到 MainType.VOICE 语音页（频谱+松开结束），标签同样
+        // 浮在该页工具栏上方；非语音态状态为 IDLE，标签自动隐藏，不影响其他页面。
+        // 系统悬浮窗生效时（开关开+已授权）状态由键盘外悬浮卡片展示，键盘内胶囊让位避免重复
+        if (page is KeyboardPage.Main && !state.floatingVoiceLabel) {
+            VoiceStatusLabel(
+                recognitionState = state.voiceRecognitionState,
+                recognizedText = state.voiceRecognizedText,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+        }
+
         if (state.isDeploying) {
             val isError = state.deploymentMessage.contains("超时") || state.deploymentMessage.contains("失败")
             Box(
@@ -846,7 +972,7 @@ fun KeyboardView(
             }
         }
 
-        if (page is KeyboardPage.Overlay) {
+        if (page is KeyboardPage.Overlay && !showClipboardSearchPanel) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -875,6 +1001,12 @@ fun KeyboardView(
                             onQuickSend = { viewModel.showOverlay(OverlayRoute.Clipboard(1)); callbacks.onQuickSend?.invoke() },
                             onKeyboardResize = { callbacks.onKeyboardResize?.invoke(); viewModel.closeOverlay() },
                             onEmoji = { viewModel.showOverlay(OverlayRoute.Emoji) },
+                            onFeedback = {
+                                // 点击反馈入口即消耗红点链路，然后打开独立的 Python 自绘页面
+                                UiOverrides.clearBadgeChain()
+                                viewModel.closeOverlay()
+                                FeedbackActivity.start(context)
+                            },
                             onReloadConfig = { callbacks.onReloadConfig?.invoke(); viewModel.closeOverlay() },
                             onSettings = { callbacks.onSettings?.invoke(); viewModel.closeOverlay() },
                             onSchemaList = { viewModel.pushOverlay(OverlayRoute.SchemaList) },
@@ -899,33 +1031,8 @@ fun KeyboardView(
                         onBack = { viewModel.popOverlay() },
                         modifier = Modifier.fillMaxWidth().fillMaxHeight()
                     )
-                    is OverlayRoute.Clipboard -> ClipboardView(
-                        clipboardItems = state.clipboardItems,
-                        quickSendItems = state.quickSendItems,
-                        selectedTab = p.route.tab,
-                        backgroundColor = keyboardBgColor,
-                        keyTextColor = keyTextColor,
-                        keyBgColor = keyBgColor,
-                        viewModel = viewModel,
-                        onSelectItem = { text ->
-                            callbacks.onClipboardSelect?.invoke(text)
-                            viewModel.closeOverlay()
-                        },
-                        onSplitWords = { text, _ -> viewModel.pushOverlay(OverlayRoute.SplitWords(text)) },
-                        onBack = { viewModel.closeOverlay() },
-                        onClipboardTabChange = { viewModel.pushOverlay(OverlayRoute.Clipboard(it)) },
-                        bottomPaddingDp = state.keyboardBottomPaddingDp,
-                        modifier = Modifier.fillMaxWidth().fillMaxHeight(),
-                        onQuickSendAddClick = {
-                            viewModel.closeOverlay()
-                            callbacks.onShowQuickSendForm?.invoke()
-                        },
-                        onQuickSendEditItem = { id, text ->
-                            viewModel.closeOverlay()
-                            callbacks.onQuickSendEditItem?.invoke(id, text)
-                        },
-                        onPullRemote = callbacks.onClipboardPullRemote,
-                        pullRemoteAvailable = state.clipboardSyncEnabled,
+                    is OverlayRoute.Clipboard -> clipboardPanel(
+                        Modifier.fillMaxWidth().fillMaxHeight()
                     )
                     is OverlayRoute.ToolbarCustomize -> ToolbarCustomizeView(
                         toolbarButtons = state.toolbarButtons,
@@ -1000,13 +1107,18 @@ fun KeyboardView(
                             hasPrevPage = candidateState.value.hasPrevPage,
                             bottomPaddingDp = state.keyboardBottomPaddingDp,
                         ),
+                        customPhraseWords = customPhraseWords,
                         callbacks = CandidatePageCallbacks(
-                            onCandidateSelect = { index ->
-                                callbacks.onCandidateSelect(index)
+                            onCandidateSelect = { index, candidate ->
+                                callbacks.onCandidateSelect(index, candidate)
                                 viewModel.closeOverlay()
                             },
-                            onAssociationSelect = { index ->
-                                callbacks.onAssociationSelect?.invoke(index)
+                            onCustomPhraseAction = { word, action ->
+                                callbacks.onCustomPhraseAction?.invoke(word, action)
+                            },
+                            onUiDiagnosticEvent = callbacks.onUiDiagnosticEvent,
+                            onAssociationSelect = { index, candidate ->
+                                callbacks.onAssociationSelect?.invoke(index, candidate)
                                 viewModel.closeOverlay()
                             },
                             onPageDown = callbacks.onPageDown,
@@ -1035,4 +1147,69 @@ fun KeyboardView(
 }
 }
 
+/**
+ * 语音输入过程状态悬浮标签（临时可观测性 UI）：
+ * 半透明覆盖在输入工具栏上方，仅显示文本；不设置任何点击/手势修饰符，
+ * 不参与触摸命中，工具栏按钮点击完全不受影响。
+ * 抬手后 UI 保持 PROCESSING（service 层 finalizing 标志驱动）直到最终结果上屏，
+ * 冷按等模型的数秒内也持续可见，消除"录音→计算→上屏"黑箱。
+ */
+@androidx.compose.runtime.Composable
+private fun VoiceStatusLabel(
+    recognitionState: com.kingzcheung.xime.speech.RecognitionState,
+    recognizedText: String,
+    modifier: Modifier = Modifier
+) {
+    var heldText by remember { mutableStateOf("") }
+    // 本次会话是否已进入过聆听态：区分"按下初始准备"与"抬手后计算中"两种 PROCESSING
+    var seenListening by remember { mutableStateOf(false) }
+    SideEffect {
+        when (recognitionState) {
+            com.kingzcheung.xime.speech.RecognitionState.LISTENING -> {
+                seenListening = true
+                if (recognizedText.isNotEmpty()) heldText = recognizedText
+            }
+            com.kingzcheung.xime.speech.RecognitionState.IDLE -> seenListening = false
+            else -> {}
+        }
+    }
+    LaunchedEffect(recognitionState) {
+        if (recognitionState == com.kingzcheung.xime.speech.RecognitionState.IDLE) {
+            kotlinx.coroutines.delay(800)
+            heldText = ""
+        }
+    }
 
+    val visible = recognitionState == com.kingzcheung.xime.speech.RecognitionState.PROCESSING ||
+        recognitionState == com.kingzcheung.xime.speech.RecognitionState.LISTENING ||
+        (recognitionState == com.kingzcheung.xime.speech.RecognitionState.IDLE && heldText.isNotEmpty())
+    if (!visible) return
+
+    val label = when (recognitionState) {
+        com.kingzcheung.xime.speech.RecognitionState.PROCESSING ->
+            if (seenListening) {
+                if (heldText.isNotEmpty()) "识别中：$heldText" else "识别中…"
+            } else {
+                "正在准备录音…"
+            }
+        com.kingzcheung.xime.speech.RecognitionState.LISTENING ->
+            if (recognizedText.isEmpty()) "正在聆听…" else "录音中：$recognizedText"
+        else -> "识别中：$heldText"
+    }
+
+    androidx.compose.material3.Surface(
+        modifier = modifier
+            .padding(horizontal = 24.dp, vertical = 2.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = Color(0xB3000000)
+    ) {
+        Text(
+            text = label,
+            color = Color.White,
+            fontSize = 12.sp,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+        )
+    }
+}

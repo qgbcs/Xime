@@ -63,7 +63,10 @@ class ModelManagementViewModel(application: Application) : AndroidViewModel(appl
     }
 
     private suspend fun loadModels() {
-        val allModels = ModelManager.getAllModels()
+        // 扩展商店模型列表优先展示：中文 Zipformer int8、手写模型，其余保持索引原顺序
+        val allModels = ModelManager.getAllModels().sortedBy { model ->
+            MODEL_DISPLAY_ORDER.indexOf(model.id).takeIf { it >= 0 } ?: MODEL_DISPLAY_ORDER.size
+        }
         val versions = withContext(Dispatchers.IO) {
             MarketVersionStore.getAllModelVersions(context)
         }
@@ -194,6 +197,11 @@ class ModelManagementViewModel(application: Application) : AndroidViewModel(appl
                 _uiState.update { s -> s.copy(toastMessage = "模型已删除") }
             }
         }
+    }
+
+    private companion object {
+        /** 模型列表优先展示顺序，未列出的模型按索引顺序排在后面。 */
+        val MODEL_DISPLAY_ORDER = listOf("zipformer-zh-int8", "ochwpro")
     }
 
     fun clearToast() {

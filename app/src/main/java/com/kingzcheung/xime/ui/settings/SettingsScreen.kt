@@ -37,7 +37,9 @@ fun SettingsScreen(
                 onNavigateToSpeechToText = { navController.navigate(SettingsRoutes.SpeechToText) },
                 onNavigateToAbout = { navController.navigate(SettingsRoutes.About) },
                 onNavigateToWebDav = { navController.navigate(SettingsRoutes.WebDav) },
-                onNavigateToClipboardSync = { navController.navigate(SettingsRoutes.ClipboardSync) }
+                onNavigateToClipboardSync = { navController.navigate(SettingsRoutes.ClipboardSync) },
+                onNavigateToRpc = { navController.navigate(SettingsRoutes.Rpc) },
+                onNavigateToPermissions = { navController.navigate(SettingsRoutes.Permissions) }
             )
         }
         composable(SettingsRoutes.Schema) {
@@ -195,6 +197,12 @@ fun SettingsScreen(
                 onNavigateToPlugins = { navController.navigate(SettingsRoutes.Plugins) }
             )
         }
+        composable(SettingsRoutes.Rpc) {
+            RpcSettingsContent(onBack = { navController.popBackStack() })
+        }
+        composable(SettingsRoutes.Permissions) {
+            PermissionSettingsContent(onBack = { navController.popBackStack() })
+        }
         composable(SettingsRoutes.About) {
             AboutContent(
                 onBack = { navController.popBackStack() },
@@ -217,7 +225,7 @@ fun SettingsScreen(
                 },
                 onNavigateToLocal = { navController.navigate(SettingsRoutes.SchemaLocal) },
                 onNavigateToModelLocal = { navController.navigate(SettingsRoutes.ModelLocal) },
-                initialTab = 1,
+                initialTab = 0,
             )
         }
         composable(SettingsRoutes.LogViewer) {

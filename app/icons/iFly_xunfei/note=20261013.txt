@@ -1,0 +1,3 @@
+为什么我已经设置了 APP_ICON_PATH="$PROJECT_DIR/app/src/main/res/iFly_xunfei/512.png"  。只是apk文件图标变了，安装过程中图标没有统一，搜索全部代码，确保定义的APP_ICON_PATH  用于app内每一个地方，反复排查  。最后总结 一行中文 commit message 200字以内 不要换行和半角括号，详细描述原因和你这次更改 
+
+构建资源合并验证发现了更直接的阻塞：512.png 放在 src/main/res/iFly_xunfei/ 下，Android 会把目录名当成资源类型并因图片不是 XML 而拒绝构建。我要把图标源文件移到 app/icons/ 这种非资源目录，再让脚本从那里生成标准前景资源，避免安装图标问题之外连 Gradle 资源合并也失败。

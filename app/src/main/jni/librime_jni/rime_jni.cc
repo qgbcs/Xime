@@ -2,11 +2,13 @@
 // 基于 trime 的实现
 
 #include <rime_api.h>
+#include <rime_levers_api.h>
 #include <rime/setup.h>
 #include <rime/dict/reverse_lookup_dictionary.h>
 #include "t9_processor.h"
 #include "t9_patch_utils.h"
 #include "t9_digit_userdict.h"
+#include "rime_candidate_selection.h"
 #include <jni.h>
 #include <android/log.h>
 #include <memory>
@@ -131,12 +133,59 @@ public:
             LOGE("startMaintenance: rime not available");
             return false;
         }
-        LOGI("Starting maintenance (full=%s)...", full ? "true" : "false");
+        // 维护是异步的：投递任务后立即返回，真正的编译在后台线程进行，
+        // 编译过程中 librime 会销毁并重建引擎/词典。此时仍持有活动会话，
+        // 先记录其方案与存在性，供维护结束后 recreateSessionAfterMaintenance
+        // 用同方案重建会话（否则旧 session_id 悬空，processKey 不再产候选）。
+        session_active_before_maintenance_ = (session_id_ != 0);
+        schema_before_maintenance_.clear();
+        if (session_id_) {
+            char schema_buf[256] = {0};
+            if (rime->get_current_schema(session_id_, schema_buf, sizeof(schema_buf))) {
+                schema_before_maintenance_ = schema_buf;
+            }
+        }
+        LOGI("Starting maintenance (full=%s), had_active_session=%d, schema=%s...",
+             full ? "true" : "false",
+             session_active_before_maintenance_ ? 1 : 0,
+             schema_before_maintenance_.c_str());
         Bool result = rime->start_maintenance(full);
         if (!result) {
             LOGE("startMaintenance FAILED: rime->start_maintenance() returned false");
         }
         return result;
+    }
+
+    // 维护（start_maintenance）结束后调用：若维护前存在活动会话，则销毁已被
+    // 维护失效的旧会话，按原方案重建会话，保证 translator 重新加载编译产物。
+    // 必须在 is_maintenance_mode()==false 后调用，否则 create_session 会失败。
+    // 维护前无会话（如冷启动预初始化）时返回 false，交由正常 onStartInput 建会话。
+    bool recreateSessionAfterMaintenance() {
+        if (!rime || !initialized_) return false;
+        if (!session_active_before_maintenance_) return false;
+        if (rime->is_maintenance_mode()) {
+            LOGE("recreateSessionAfterMaintenance: still maintaining, skip");
+            return false;
+        }
+        if (session_id_) {
+            rime->destroy_session(session_id_);
+            session_id_ = 0;
+        }
+        session_id_ = rime->create_session();
+        if (!session_id_) {
+            LOGE("recreateSessionAfterMaintenance: create_session failed");
+            return false;
+        }
+        if (!schema_before_maintenance_.empty()) {
+            Bool sel = rime->select_schema(session_id_, schema_before_maintenance_.c_str());
+            LOGI("post-maintenance session recreated=%lu, restore schema=%s ok=%s",
+                 (unsigned long)session_id_, schema_before_maintenance_.c_str(),
+                 sel ? "true" : "false");
+        } else {
+            LOGI("post-maintenance session recreated=%lu (default schema)",
+                 (unsigned long)session_id_);
+        }
+        return true;
     }
 
     bool createSession() {
@@ -302,7 +351,7 @@ public:
         return rime->set_input(session_id_, input);
     }
 
-    CompositionResult getComposition() {
+    CompositionResult getComposition(bool includeCommit = true) {
         CompositionResult result;
         if (!rime || !session_id_) {
             LOGE("getComposition: rime or session not available");
@@ -334,11 +383,13 @@ public:
             rime->free_context(&context);
         }
 
-        // 3. commit text（统一返回，避免调用方额外查询）
-        RIME_STRUCT(RimeCommit, commit);
-        if (rime->get_commit(session_id_, &commit)) {
-            result.committedText = commit.text ? commit.text : "";
-            rime->free_commit(&commit);
+        // 3. Commit retrieval consumes the pending commit; read it only when requested.
+        if (includeCommit) {
+            RIME_STRUCT(RimeCommit, commit);
+            if (rime->get_commit(session_id_, &commit)) {
+                result.committedText = commit.text ? commit.text : "";
+                rime->free_commit(&commit);
+            }
         }
 
         // 4. status: ascii mode
@@ -397,8 +448,108 @@ public:
         }
     }
 
-    bool selectCandidate(int index) {
+    bool getCandidatePageInfo(int& pageNo, int& pageSize) {
         if (!rime || !session_id_) return false;
+        RIME_STRUCT(RimeContext, context);
+        if (!rime->get_context(session_id_, &context)) return false;
+        pageNo = context.menu.page_no;
+        pageSize = context.menu.page_size;
+        rime->free_context(&context);
+        return true;
+    }
+
+    bool getCandidatePreview(
+        int index,
+        const std::string& expectedText,
+        const std::string* expectedComment,
+        std::string& textBeforeSelection,
+        std::string& selectedText,
+        std::string& textAfterSelection
+    ) {
+        if (!rime || !session_id_ || !rime->get_candidate_preview ||
+            !rime->highlight_candidate) {
+            return false;
+        }
+
+        RIME_STRUCT(RimeContext, context);
+        if (!rime->get_context(session_id_, &context)) return false;
+
+        const int pageNo = context.menu.page_no;
+        const int pageSize = context.menu.page_size;
+        const int highlightedIndex = context.menu.highlighted_candidate_index;
+        std::vector<std::pair<std::string, std::string>> candidates;
+        candidates.reserve(context.menu.num_candidates);
+        for (int i = 0; i < context.menu.num_candidates; ++i) {
+            const auto& candidate = context.menu.candidates[i];
+            candidates.emplace_back(
+                candidate.text ? candidate.text : "",
+                candidate.comment ? candidate.comment : ""
+            );
+        }
+        rime->free_context(&context);
+
+        const int resolvedIndex = xime::resolveCandidateIndex(
+            candidates, index, &expectedText, expectedComment
+        );
+        if (resolvedIndex < 0 || pageNo < 0 || pageSize <= 0) return false;
+
+        const size_t absoluteIndex =
+            static_cast<size_t>(pageNo) * static_cast<size_t>(pageSize) +
+            static_cast<size_t>(resolvedIndex);
+        if (!rime->highlight_candidate(session_id_, absoluteIndex)) return false;
+
+        RIME_STRUCT(RimeCandidatePreview, preview);
+        const bool hasPreview = rime->get_candidate_preview(session_id_, &preview);
+        if (hasPreview) {
+            textBeforeSelection = preview.text_before_selection ?
+                preview.text_before_selection : "";
+            selectedText = preview.selected_text ? preview.selected_text : "";
+            textAfterSelection = preview.text_after_selection ?
+                preview.text_after_selection : "";
+            rime->free_candidate_preview(&preview);
+        }
+
+        if (highlightedIndex >= 0 && highlightedIndex < pageSize) {
+            const size_t previousAbsoluteIndex =
+                static_cast<size_t>(pageNo) * static_cast<size_t>(pageSize) +
+                static_cast<size_t>(highlightedIndex);
+            rime->highlight_candidate(session_id_, previousAbsoluteIndex);
+        }
+        return hasPreview;
+    }
+
+    bool selectCandidate(
+        int index,
+        const std::string* expectedText = nullptr,
+        const std::string* expectedComment = nullptr
+    ) {
+        if (!rime || !session_id_) return false;
+        if (expectedText) {
+            RIME_STRUCT(RimeContext, context);
+            if (!rime->get_context(session_id_, &context)) return false;
+
+            const int pageNo = context.menu.page_no;
+            const int pageSize = context.menu.page_size;
+            std::vector<std::pair<std::string, std::string>> candidates;
+            candidates.reserve(context.menu.num_candidates);
+            for (int i = 0; i < context.menu.num_candidates; ++i) {
+                const auto& candidate = context.menu.candidates[i];
+                candidates.emplace_back(
+                    candidate.text ? candidate.text : "",
+                    candidate.comment ? candidate.comment : ""
+                );
+            }
+            rime->free_context(&context);
+
+            index = xime::resolveCandidateIndex(
+                candidates, index, expectedText, expectedComment
+            );
+            if (index < 0 || pageNo < 0 || pageSize <= 0) return false;
+            const size_t absoluteIndex =
+                static_cast<size_t>(pageNo) * static_cast<size_t>(pageSize) +
+                static_cast<size_t>(index);
+            return rime->select_candidate(session_id_, absoluteIndex);
+        }
         return rime->select_candidate_on_current_page(session_id_, index);
     }
     
@@ -416,7 +567,7 @@ public:
         if (!rime || !session_id_) return false;
         RIME_STRUCT(RimeContext, context);
         if (rime->get_context(session_id_, &context)) {
-            bool result = context.menu.page_no < context.menu.page_no + 1;
+            bool result = !context.menu.is_last_page;
             rime->free_context(&context);
             return result;
         }
@@ -868,12 +1019,45 @@ public:
     const std::string& get_user_data_dir() const { return user_data_dir_; }
     const std::string& get_shared_data_dir() const { return shared_data_dir_; }
 
+    int exportUserDict(const char* dict_name, const char* text_file) {
+        if (!rime || !initialized_) return -1;
+        std::string current_schema;
+        if (session_id_) {
+            char schema_id[256] = {0};
+            if (rime->get_current_schema(session_id_, schema_id, sizeof(schema_id))) {
+                current_schema = schema_id;
+            }
+            rime->destroy_session(session_id_);
+            session_id_ = 0;
+        }
+
+        RimeModule* module = rime->find_module("levers");
+        int result = -1;
+        if (module) {
+            RimeLeversApi* levers = (RimeLeversApi*)module->get_api();
+            if (levers && RIME_API_AVAILABLE(levers, export_user_dict)) {
+                result = levers->export_user_dict(dict_name, text_file);
+            }
+        }
+
+        if (!current_schema.empty()) {
+            session_id_ = rime->create_session();
+            if (session_id_) {
+                rime->select_schema(session_id_, current_schema.c_str());
+            }
+        }
+        return result;
+    }
+
 private:
     RimeApi* rime;
     RimeSessionId session_id_ = 0;
     std::string user_data_dir_;
     std::string shared_data_dir_;
     bool initialized_ = false;
+    // 维护前的会话状态，供 recreateSessionAfterMaintenance 恢复
+    bool session_active_before_maintenance_ = false;
+    std::string schema_before_maintenance_;
 };
 
 extern "C" {
@@ -1127,11 +1311,12 @@ Java_com_kingzcheung_xime_rime_RimeEngine_nativeSetInput(
 JNIEXPORT jobject JNICALL
 Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetComposition(
     JNIEnv* env,
-    jobject thiz
+    jobject thiz,
+    jboolean include_commit
 ) {
     ensureJniCache(env);
 
-    CompositionResult result = Rime::Instance().getComposition();
+    CompositionResult result = Rime::Instance().getComposition(include_commit == JNI_TRUE);
 
     jobjectArray candidateArray = env->NewObjectArray(
         result.candidates.size(), gRimeCandidateClass, nullptr);
@@ -1217,6 +1402,68 @@ Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetCandidatesWithComments(
     return result;
 }
 
+JNIEXPORT jintArray JNICALL
+Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetCandidatePageInfo(
+    JNIEnv* env,
+    jobject thiz
+) {
+    int pageNo = -1;
+    int pageSize = 0;
+    Rime::Instance().getCandidatePageInfo(pageNo, pageSize);
+    jint values[] = {pageNo, pageSize};
+    jintArray result = env->NewIntArray(2);
+    if (result) env->SetIntArrayRegion(result, 0, 2, values);
+    return result;
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetCandidatePreview(
+    JNIEnv* env,
+    jobject thiz,
+    jint index,
+    jstring expected_text,
+    jstring expected_comment
+) {
+    if (!expected_text) return nullptr;
+
+    const char* textValue = env->GetStringUTFChars(expected_text, nullptr);
+    if (!textValue) return nullptr;
+    const std::string expectedText(textValue);
+    env->ReleaseStringUTFChars(expected_text, textValue);
+
+    std::string expectedComment;
+    const std::string* expectedCommentPtr = nullptr;
+    if (expected_comment) {
+        const char* commentValue = env->GetStringUTFChars(expected_comment, nullptr);
+        if (!commentValue) return nullptr;
+        expectedComment = commentValue;
+        env->ReleaseStringUTFChars(expected_comment, commentValue);
+        expectedCommentPtr = &expectedComment;
+    }
+
+    std::string textBeforeSelection;
+    std::string selectedText;
+    std::string textAfterSelection;
+    if (!Rime::Instance().getCandidatePreview(
+            index, expectedText, expectedCommentPtr,
+            textBeforeSelection, selectedText, textAfterSelection)) {
+        return nullptr;
+    }
+
+    jclass stringClass = env->FindClass("java/lang/String");
+    jobjectArray result = env->NewObjectArray(3, stringClass, nullptr);
+    if (!result) return nullptr;
+    const std::string values[] = {
+        textBeforeSelection, selectedText, textAfterSelection
+    };
+    for (jsize i = 0; i < 3; ++i) {
+        jstring value = env->NewStringUTF(values[i].c_str());
+        env->SetObjectArrayElement(result, i, value);
+        env->DeleteLocalRef(value);
+    }
+    return result;
+}
+
 // 获取输入文本
 JNIEXPORT jstring JNICALL
 Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetInput(
@@ -1231,9 +1478,32 @@ JNIEXPORT jboolean JNICALL
 Java_com_kingzcheung_xime_rime_RimeEngine_nativeSelectCandidate(
     JNIEnv* env,
     jobject thiz,
-    jint index
+    jint index,
+    jstring expected_text,
+    jstring expected_comment
 ) {
-    return Rime::Instance().selectCandidate(index) ? JNI_TRUE : JNI_FALSE;
+    std::string expectedText;
+    std::string expectedComment;
+    const std::string* expectedTextPtr = nullptr;
+    const std::string* expectedCommentPtr = nullptr;
+
+    if (expected_text) {
+        const char* value = env->GetStringUTFChars(expected_text, nullptr);
+        if (!value) return JNI_FALSE;
+        expectedText = value;
+        env->ReleaseStringUTFChars(expected_text, value);
+        expectedTextPtr = &expectedText;
+    }
+    if (expected_comment) {
+        const char* value = env->GetStringUTFChars(expected_comment, nullptr);
+        if (!value) return JNI_FALSE;
+        expectedComment = value;
+        env->ReleaseStringUTFChars(expected_comment, value);
+        expectedCommentPtr = &expectedComment;
+    }
+    return Rime::Instance().selectCandidate(
+        index, expectedTextPtr, expectedCommentPtr
+    ) ? JNI_TRUE : JNI_FALSE;
 }
 
 // 翻页 - 下一页
@@ -1704,6 +1974,26 @@ Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetUserConfigString(
     return value.empty() ? nullptr : env->NewStringUTF(value.c_str());
 }
 
+JNIEXPORT jint JNICALL
+Java_com_kingzcheung_xime_rime_RimeEngine_nativeExportUserDict(
+    JNIEnv* env,
+    jobject thiz,
+    jstring dict_name,
+    jstring text_file
+) {
+    const char* dict_ptr = env->GetStringUTFChars(dict_name, nullptr);
+    if (!dict_ptr) return -1;
+    const char* file_ptr = env->GetStringUTFChars(text_file, nullptr);
+    if (!file_ptr) {
+        env->ReleaseStringUTFChars(dict_name, dict_ptr);
+        return -1;
+    }
+    int result = Rime::Instance().exportUserDict(dict_ptr, file_ptr);
+    env->ReleaseStringUTFChars(dict_name, dict_ptr);
+    env->ReleaseStringUTFChars(text_file, file_ptr);
+    return result;
+}
+
 // 读取 user.yaml 用户状态布尔值
 JNIEXPORT jboolean JNICALL
 Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetUserConfigBool(
@@ -1822,6 +2112,17 @@ Java_com_kingzcheung_xime_rime_RimeEngine_nativeUpdateLastBuildTime(
     jobject thiz
 ) {
     Rime::Instance().updateLastBuildTime();
+}
+
+// 维护结束后按原方案重建会话（修复实时增量部署后活动会话 translator 失效、
+// 中文候选变为 0 的回归）。返回是否成功重建了会话。
+JNIEXPORT jboolean JNICALL
+Java_com_kingzcheung_xime_rime_RimeEngine_nativeRecreateSessionAfterMaintenance(
+    JNIEnv* env,
+    jobject thiz
+) {
+    bool result = Rime::Instance().recreateSessionAfterMaintenance();
+    return result ? JNI_TRUE : JNI_FALSE;
 }
 
 // 部署单个方案

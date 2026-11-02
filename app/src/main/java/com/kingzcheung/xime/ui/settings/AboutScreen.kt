@@ -74,7 +74,7 @@ object AppInfo {
     
     val dependencies = listOf(
         LicenseItem(
-            name = "曦码",
+            name = BuildConfig.APP_CHINESE_NAME,
             license = "GPL-3.0",
             url = "https://github.com/ximeiorg/Xime"
         ),
@@ -181,7 +181,7 @@ fun AboutContent(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = "曦码（Xime）",
+                            text = "${BuildConfig.APP_CHINESE_NAME}（Xime）",
                             fontSize = 28.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
@@ -511,7 +511,7 @@ fun PrivacyPolicyContent(
                         modifier = Modifier.padding(16.dp)
                     ) {
                         Text(
-                            text = "曦码隐私策略",
+                            text = "${BuildConfig.APP_CHINESE_NAME}隐私策略",
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -519,22 +519,22 @@ fun PrivacyPolicyContent(
                         
                         PrivacySection(
                             title = "数据收集",
-                            content = "曦码不收集任何个人身份信息。您的输入内容仅用于提供输入法功能，不会被上传到服务器或分享给第三方。"
+                            content = "${BuildConfig.APP_CHINESE_NAME}不收集任何个人身份信息。您的输入内容仅用于提供输入法功能，不会被上传到服务器或分享给第三方。"
                         )
                         
                         PrivacySection(
                             title = "本地存储",
-                            content = "曦码将用户设置、用户词库和剪贴板历史存储在您的设备本地，不会上传到云端。您可以随时清除这些数据。"
+                            content = "${BuildConfig.APP_CHINESE_NAME}将用户设置、用户词库和剪贴板历史存储在您的设备本地，不会上传到云端。您可以随时清除这些数据。"
                         )
                         
                         PrivacySection(
                             title = "网络权限",
-                            content = "曦码需要网络权限用于下载联想模型。下载完成后，模型将在本地运行，您的输入内容不会被上传。"
+                            content = "${BuildConfig.APP_CHINESE_NAME}需要网络权限用于下载联想模型。下载完成后，模型将在本地运行，您的输入内容不会被上传。"
                         )
                         
                         PrivacySection(
                             title = "输入内容",
-                            content = "您的所有输入内容仅保存在本地设备上。曦码使用开源的 Rime 输入引擎，所有处理均在本地完成。"
+                            content = "您的所有输入内容仅保存在本地设备上。${BuildConfig.APP_CHINESE_NAME}使用开源的 Rime 输入引擎，所有处理均在本地完成。"
                         )
                         
                         PrivacySection(
@@ -544,7 +544,7 @@ fun PrivacyPolicyContent(
                         
                         PrivacySection(
                             title = "开源",
-                            content = "曦码是开源软件，源代码公开可审计。您可以在 GitHub 上查看完整源代码。"
+                            content = "${BuildConfig.APP_CHINESE_NAME}是开源软件，源代码公开可审计。您可以在 GitHub 上查看完整源代码。"
                         )
                         
                         Spacer(modifier = Modifier.height(16.dp))

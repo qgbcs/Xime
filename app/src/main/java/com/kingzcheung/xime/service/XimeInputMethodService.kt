@@ -9,6 +9,7 @@ import android.os.Looper
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewTreeObserver
 import android.view.inputmethod.CursorAnchorInfo
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
@@ -45,6 +46,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -141,6 +143,8 @@ object QuickSendFormEditTextHolder {
  */
 data class T9PartialSegment(val text: String, val pinyin: String)
 
+data class PartialCandidateSegment(val text: String, val inputCode: String)
+
 class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateRegistryOwner, ViewModelStoreOwner, ActionExecutor {
 
     companion object {
@@ -162,6 +166,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
 
     private val lifecycleRegistry = LifecycleRegistry(this)
     private val savedStateRegistryController = SavedStateRegistryController.create(this)
+    private var imeWindowFocusListener: ViewTreeObserver.OnWindowFocusChangeListener? = null
 
     override val lifecycle: Lifecycle
         get() = lifecycleRegistry
@@ -232,6 +237,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     internal var lastClearedText: String = ""
     /** 累积的 partial commit 段列表（多段选词场景下逐段追加，文本+拼音同源，供调频/回滚） */
     internal val t9PartialSegments = mutableListOf<T9PartialSegment>()
+    internal val partialCandidateSegments = mutableListOf<PartialCandidateSegment>()
     /** 键盘回调引用，用于在 RIME selectCandidate 前同步通知 T9 控制器 */
     internal var keyboardCallbacks: KeyboardCallbacks? = null
     internal var isChineseMode = true
@@ -240,6 +246,8 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     internal var previousSchemaId: String = ""
     /** 键盘内容 Box 顶部在窗口中的 y 坐标（px），由 onGloballyPositioned 实测更新 */
     private var keyboardContentTopPx: Int = -1
+    // 键盘区（候选栏+按键）实测顶部（px），不含搜索面板；搜索态保持稳定，供 onComputeInsets 上报。
+    internal var stableKeyboardTopPx: Int = -1
     
     internal val calculatorEngine = com.kingzcheung.xime.calculator.CalculatorEngine()
 
@@ -283,6 +291,10 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         }
     )
 
+    // 语音状态系统悬浮窗（键盘窗口之外，屏幕中上部），仅在开关打开且已授权时显示
+    private val floatingVoiceLabel = FloatingVoiceLabel(this)
+    private var hideFloatingLabelJob: Job? = null
+
     /**
      * 结束语音会话的统一出口：提交已识别文本、停止识别与预启动、恢复键盘状态。
      * 幂等：识别已停止/无文本时各步骤自动跳过。
@@ -295,12 +307,15 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         isTrackingVoiceButtons = false
         voiceRecordingStarted = false
         voiceAmplitudeState.floatValue = 0f
+        // 抬手后录音线程仍在 finalize（尾音回放/等模型/等最终结果）：保持"识别中"
+        // 状态与已识别文字，悬浮标签持续可见，直到最终结果上屏后线程回调 IDLE
+        val stillFinalizing = voiceRecognitionHandler.isFinalizing()
         uiState.value = uiState.value.copy(
             isVoiceMode = false,
             voiceSticky = false,
             voiceButtonState = VoiceButtonState(),
-            voiceRecognitionState = RecognitionState.IDLE,
-            voiceRecognizedText = "",
+            voiceRecognitionState = if (stillFinalizing) RecognitionState.PROCESSING else RecognitionState.IDLE,
+            voiceRecognizedText = if (stillFinalizing) uiState.value.voiceRecognizedText else "",
             voiceAmplitude = 0f
         )
     }
@@ -317,6 +332,286 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     internal val schemaController = ImeSchemaController(this)
 
     internal val textCommit = ImeTextCommit(this)
+
+    /**
+     * 把测试动作串行投递到 [keyProcessingDispatcher]（与正常按键/选词同一条 keyJobs
+     * 队列），并同步等待结果。RPC 线程（Chaquopy HTTP）调用 runBlocking 阻塞到动作完成，
+     * 既复用生产代码路径，又保证与实时按键不交错。
+     */
+    private fun <T> runSerialImeTest(produce: suspend () -> T): T {
+        val deferred = kotlinx.coroutines.CompletableDeferred<T>()
+        val job = serviceScope.launch(
+            keyProcessingDispatcher,
+            kotlinx.coroutines.CoroutineStart.LAZY
+        ) {
+            try {
+                deferred.complete(produce())
+            } catch (error: Throwable) {
+                deferred.completeExceptionally(error)
+            }
+        }
+        keyJobs.trySend(job)
+        return kotlinx.coroutines.runBlocking { deferred.await() }
+    }
+
+    /** 组装当前输入/候选完整快照（须在 key-process 线程调用，raw_input 走 JNI）。 */
+    internal fun buildImeSnapshot(): org.json.JSONObject {
+        val cs = candidateState.value
+        val ui = uiState.value
+        val candidatesArray = org.json.JSONArray()
+        cs.candidates.forEach { candidatesArray.put(it) }
+        val commentsArray = org.json.JSONArray()
+        cs.candidateComments.forEach { commentsArray.put(it) }
+        val partialCandidatesArray = org.json.JSONArray()
+        partialCandidateSegments.forEach { partialCandidatesArray.put(it.text) }
+        val rimeCandidatesArray = org.json.JSONArray()
+        rimeEngine.getCandidatesWithComments().forEach { candidate ->
+            rimeCandidatesArray.put(
+                org.json.JSONObject()
+                    .put("text", candidate.text)
+                    .put("comment", candidate.comment)
+            )
+        }
+        val pageInfo = rimeEngine.getCandidatePageInfo()
+        return org.json.JSONObject()
+            .put("schema", ui.currentSchemaId)
+            .put("schema_name", ui.schemaName)
+            .put("ascii", ui.isAsciiMode)
+            .put("keyboard_layout", keyboardViewModel.keyboardState.value.toString())
+            .put("rime_initialized", RimeEngine.isInitialized())
+            .put("composing", cs.isComposing)
+            .put("input", cs.inputText)
+            .put("raw_input", rimeEngine.getInput())
+            .put("preedit", cs.preeditText)
+            .put("candidates", candidatesArray)
+            .put("comments", commentsArray)
+            .put("rime_candidates", rimeCandidatesArray)
+            .put("partial_candidates", partialCandidatesArray)
+            .put("page_no", pageInfo.pageNo)
+            .put("page_size", pageInfo.pageSize)
+            .put("front", cs.customPhraseCount)
+            .put("tail", cs.demotedPhraseCount)
+            .put("has_next", cs.hasNextPage)
+            .put("has_prev", cs.hasPrevPage)
+    }
+
+    /** 只读候选调试快照；只报告当前匹配项，不导出完整用户词表。 */
+    internal fun buildImeDiagnostics(): org.json.JSONObject {
+        val snapshot = buildImeSnapshot()
+        val cs = candidateState.value
+        val ui = uiState.value
+        val inputCode = rimeEngine.getInput().ifEmpty { cs.inputText }
+        val learned = com.kingzcheung.xime.settings.UserPhraseManager.matchingLearnedCandidates(
+            this,
+            ui.currentSchemaId,
+            inputCode,
+        )
+        val learnedByWord = learned.associateBy { it.word }
+        val rimeCandidates = rimeEngine.getCandidatesWithComments().map { it.text }
+        val visibleItems = com.kingzcheung.xime.ui.keyboard.EnglishCandidateDisplayPolicy
+            .prepare(cs.candidates, cs.demotedPhraseCount)
+            .associateBy { it.index }
+        val candidateRows = org.json.JSONArray()
+        cs.candidates.forEachIndexed { index, word ->
+            val isFrontLearned = index < cs.customPhraseCount
+            val isTailLearned = cs.demotedPhraseCount > 0 &&
+                index >= cs.candidates.size - cs.demotedPhraseCount
+            val learnedEntry = learnedByWord[word]
+            val visible = visibleItems[index]
+            val source = when {
+                isFrontLearned -> "learned_front"
+                isTailLearned -> "learned_tail"
+                word in rimeCandidates -> "rime"
+                else -> "other"
+            }
+            candidateRows.put(
+                org.json.JSONObject()
+                    .put("index", index)
+                    .put("text", word)
+                    .put("source", source)
+                    .put("frequency_score", learnedEntry?.score ?: org.json.JSONObject.NULL)
+                    .put("learned_input_code", learnedEntry?.inputCode.orEmpty())
+                    .put("shown_on_first_screen", visible != null)
+                    .put("display_text", visible?.displayText.orEmpty())
+                    .put(
+                        "hidden_reason",
+                        when {
+                            visible != null -> ""
+                            index >= 20 -> "first_screen_candidate_limit"
+                            com.kingzcheung.xime.ui.keyboard.EnglishCandidateDisplayPolicy.isEnglishWord(word) ->
+                                "english_candidate_limit"
+                            else -> "not_rendered"
+                        },
+                    ),
+            )
+        }
+        val matchedRows = org.json.JSONArray()
+        learned.forEach { entry ->
+            matchedRows.put(
+                org.json.JSONObject()
+                    .put("input_code", entry.inputCode)
+                    .put("word", entry.word)
+                    .put("frequency_score", entry.score),
+            )
+        }
+        val associations = org.json.JSONArray()
+        cs.associationCandidates.forEach(associations::put)
+        val visibleEnglishCount = visibleItems.values.count {
+            com.kingzcheung.xime.ui.keyboard.EnglishCandidateDisplayPolicy.isEnglishWord(it.candidate)
+        }
+        return snapshot
+            .put("diagnostic_input_code", inputCode)
+            .put("frequency_model", "shared_app_learned_candidates_rime_order_preserved")
+            .put("candidate_diagnostics", candidateRows)
+            .put("matched_learned_candidates", matchedRows)
+            .put("association_candidates", associations)
+            .put("pending_english_text", cs.pendingEnglishText)
+            .put("visible_first_screen_candidate_count", visibleItems.size)
+            .put("visible_first_screen_english_count", visibleEnglishCount)
+            .put("max_english_candidates_first_screen", 2)
+            .put("combined_english_display_limit_when_two", 10)
+    }
+
+    /** RpcUiController 用的输入/候选直达测试桥实现。 */
+    internal val imeTestBridge = object : com.kingzcheung.xime.util.RpcUiController.ImeTestBridge {
+        override fun type(code: String): String = runSerialImeTest {
+            partialCandidateSegments.clear()
+            val ok = rimeEngine.setInput(code)
+            sessionController.applyComposition(rimeEngine.getComposition())
+            buildImeSnapshot().put("set_input_ok", ok).toString()
+        }
+
+        override fun pressKey(letter: String): String = runSerialImeTest {
+            val result = rimeEngine.processKeyAndGetResult(letter[0].code, 0)
+            sessionController.updateUIWithResult(result)
+            buildImeSnapshot().put("processed", result.processed).toString()
+        }
+
+        override fun pick(index: Int, expectedCandidate: String?): String = runSerialImeTest {
+            val before = buildImeSnapshot()
+            val candidates = before.optJSONArray("candidates")
+            if (index !in 0 until (candidates?.length() ?: 0)) {
+                return@runSerialImeTest org.json.JSONObject()
+                    .put("error", "candidate_index_out_of_range")
+                    .put("before", before)
+                    .toString()
+            }
+            val selectedCandidate =
+                expectedCandidate ?: candidates!!.optString(index)
+            val outcome = keyRouter.selectCandidateAsync(index, selectedCandidate)
+            val after = buildImeSnapshot()
+            org.json.JSONObject()
+                .put("before", before)
+                .put("selected_candidate", selectedCandidate)
+                .put("selection_accepted", outcome.accepted)
+                .put("rime_commit_text", outcome.rimeCommitText)
+                .put("committed_text", outcome.committedText ?: "")
+                .put("fallback_used", outcome.fallbackUsed)
+                .put("partial_selection", outcome.partialSelection)
+                .put(
+                    "selection_matches",
+                    outcome.partialSelection || outcome.committedText == selectedCandidate
+                )
+                .put("after", after)
+                .toString()
+        }
+
+        override fun pageDown(): String = runSerialImeTest {
+            val moved = rimeEngine.pageDown()
+            sessionController.applyComposition(rimeEngine.getComposition())
+            buildImeSnapshot().put("page_down_ok", moved).toString()
+        }
+
+        override fun pageUp(): String = runSerialImeTest {
+            val moved = rimeEngine.pageUp()
+            sessionController.applyComposition(rimeEngine.getComposition())
+            buildImeSnapshot().put("page_up_ok", moved).toString()
+        }
+
+        override fun reset(): String = runSerialImeTest {
+            rimeEngine.clearComposition()
+            withContext(Dispatchers.Main) {
+                partialCandidateSegments.clear()
+                candidateState.value = CandidateState()
+                endComposingInputBox()
+            }
+            buildImeSnapshot().toString()
+        }
+
+        override fun snapshot(): String = runSerialImeTest {
+            buildImeSnapshot().toString()
+        }
+
+        override fun diagnostics(): String = runSerialImeTest {
+            buildImeDiagnostics().toString()
+        }
+
+        override fun uiSnapshot(): String = runSerialImeTest {
+            withContext(Dispatchers.Main.immediate) {
+                buildImeUiSnapshot().toString()
+            }
+        }
+    }
+
+    internal fun buildImeUiSnapshot(): org.json.JSONObject {
+        val cs = candidateState.value
+        val editor = currentInputEditorInfo
+        val imeWindow = window.window
+        val decor = imeWindow?.decorView
+        val windowAttributes = imeWindow?.attributes
+        val windowFlags = windowAttributes?.flags ?: 0
+        val candidateSummary = org.json.JSONArray()
+        cs.candidates.take(8).forEach(candidateSummary::put)
+        return org.json.JSONObject()
+            .put("ime_active", true)
+            .put("input_view_shown", isInputViewShown)
+            .put("window_decor_shown", decor?.isShown ?: false)
+            .put("window_visibility", decor?.visibility ?: View.GONE)
+            .put("window_focus", org.json.JSONObject()
+                .put("has_window_focus", decor?.hasWindowFocus() ?: false)
+                .put("decor_has_focus", decor?.hasFocus() ?: false)
+                .put("decor_is_focused", decor?.isFocused ?: false)
+                .put("current_focus_view", imeWindow?.currentFocus?.javaClass?.name ?: ""))
+            .put("ime_window", org.json.JSONObject()
+                .put("attached", decor?.isAttachedToWindow ?: false)
+                .put("type", windowAttributes?.type ?: 0)
+                .put("flags", windowFlags)
+                .put("flags_hex", "0x${Integer.toHexString(windowFlags)}")
+                .put(
+                    "not_focusable",
+                    windowFlags and android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE != 0
+                )
+                .put(
+                    "alt_focusable_ime",
+                    windowFlags and android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM != 0
+                )
+                .put("soft_input_mode", windowAttributes?.softInputMode ?: 0))
+            .put("has_input_connection", currentInputConnection != null)
+            .put("editor", org.json.JSONObject()
+                .put("attached", editor != null)
+                .put("package", editor?.packageName ?: "")
+                .put("input_type", editor?.inputType ?: 0)
+                .put("ime_options", editor?.imeOptions ?: 0)
+                .put("action_id", editor?.actionId ?: 0))
+            .put("input", org.json.JSONObject()
+                .put("schema", uiState.value.currentSchemaId)
+                .put("ascii", uiState.value.isAsciiMode)
+                .put("composing", cs.isComposing)
+                .put("input_text", cs.inputText)
+                .put("preedit", cs.preeditText)
+                .put("pending_english_text", cs.pendingEnglishText)
+                .put("candidate_count", cs.candidates.size)
+                .put("candidates", candidateSummary)
+                .put("page_has_next", cs.hasNextPage)
+                .put("page_has_prev", cs.hasPrevPage))
+    }
+
+    internal fun recordImeUiTrace(event: String, detail: String = "") {
+        com.kingzcheung.xime.util.RpcUiController.recordImeUiEvent(
+            event,
+            buildImeUiSnapshot().put("detail", detail)
+        )
+    }
     
     private val inlineSuggestionManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         InlineSuggestionManager(this)
@@ -430,14 +725,21 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
 
     override fun onCreate() {
         super.onCreate()
+        // 挂载输入/候选直达测试桥，供 Chaquopy RPC 调试（卸载/销毁时摘除）。
+        com.kingzcheung.xime.util.RpcUiController.attachIme(imeTestBridge)
         // 允许 IME 窗口绘制到摄像头挖孔/刘海区域（横屏时背景覆盖全屏）
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
             window.window?.attributes?.layoutInDisplayCutoutMode =
                 android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
         savedStateRegistryController.performRestore(null)
-        window.window?.decorView?.setViewTreeLifecycleOwner(this)
-        window.window?.decorView?.setViewTreeSavedStateRegistryOwner(this)
+        window.window?.decorView?.let { decor ->
+            decor.setViewTreeLifecycleOwner(this)
+            decor.setViewTreeSavedStateRegistryOwner(this)
+            imeWindowFocusListener = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->
+                recordImeUiTrace("onWindowFocusChanged", "hasWindowFocus=$hasFocus")
+            }.also(decor.viewTreeObserver::addOnWindowFocusChangeListener)
+        }
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
         
@@ -449,12 +751,20 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         
         loadDarkModePreference()
         registerSharedPrefsListener()
+        setupFloatingVoiceLabel()
+        val savedSchema = SettingsPreferences.getCurrentSchema(this)
+        uiState.value = uiState.value.copy(
+            currentSchemaId = savedSchema,
+            schemaName = SchemaManager.getSchemaDisplayName(this, savedSchema) ?: savedSchema
+        )
         
         initRimeEngine()
         
         serviceScope.launch(Dispatchers.IO) {
             try {
-                initClipboardManager()
+                withContext(Dispatchers.Main) {
+                    initClipboardManager()
+                }
                 initAssociationEngine()
                 initSpeechRecognition()
 
@@ -470,6 +780,79 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     private fun initSpeechRecognition() {
         voiceRecognitionHandler.initialize()
     }
+
+    /**
+     * 监听识别状态：开关打开且已授予悬浮窗权限时，用系统悬浮窗（FloatingVoiceLabel）
+     * 在键盘窗口之外展示"正在聆听/录音中：临时文本/识别中"；否则完全不显示，
+     * 由键盘内小胶囊 VoiceStatusLabel 兜底。悬浮窗文案逻辑与小胶囊保持一致。
+     */
+    private fun setupFloatingVoiceLabel() {
+        serviceScope.launch(Dispatchers.Main.immediate) {
+            var seenListening = false
+            var heldText = ""
+            snapshotFlow {
+                uiState.value.voiceRecognitionState to uiState.value.voiceRecognizedText
+            }.collect { (state, text) ->
+                val floatingOn = SettingsPreferences.isSttFloatingLabel(this@XimeInputMethodService) &&
+                    android.provider.Settings.canDrawOverlays(this@XimeInputMethodService)
+                if (uiState.value.floatingVoiceLabel != floatingOn) {
+                    uiState.value = uiState.value.copy(floatingVoiceLabel = floatingOn)
+                }
+                if (!floatingOn) {
+                    hideFloatingLabelJob?.cancel()
+                    floatingVoiceLabel.hide()
+                    return@collect
+                }
+                when (state) {
+                    RecognitionState.LISTENING -> {
+                        seenListening = true
+                        if (text.isNotEmpty()) heldText = text
+                        hideFloatingLabelJob?.cancel()
+                        floatingVoiceLabel.show(
+                            if (text.isEmpty()) "正在聆听…" else "录音中：$text",
+                            isListening = true
+                        )
+                    }
+                    RecognitionState.PROCESSING -> {
+                        hideFloatingLabelJob?.cancel()
+                        floatingVoiceLabel.show(
+                            if (seenListening) {
+                                if (heldText.isNotEmpty()) "识别中：$heldText" else "识别中…"
+                            } else {
+                                "正在准备录音…"
+                            },
+                            isListening = false
+                        )
+                    }
+                    RecognitionState.ERROR -> {
+                        hideFloatingLabelJob?.cancel()
+                        floatingVoiceLabel.show(
+                            if (text.isNotEmpty()) "识别失败：$text" else "识别失败，请重试",
+                            isListening = false
+                        )
+                        seenListening = false
+                        heldText = ""
+                        hideFloatingLabelJob = launch {
+                            delay(1600)
+                            floatingVoiceLabel.hide()
+                        }
+                    }
+                    RecognitionState.IDLE -> {
+                        seenListening = false
+                        if (floatingVoiceLabel.isShowing) {
+                            hideFloatingLabelJob = launch {
+                                delay(800)
+                                floatingVoiceLabel.hide()
+                                heldText = ""
+                            }
+                        } else {
+                            heldText = ""
+                        }
+                    }
+                }
+            }
+        }
+    }
     
     private fun initAssociationEngine() {
         predictionManager.initialize()
@@ -478,6 +861,21 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     
     private fun getPredictionFromPlugin(contextText: String) {
         predictionManager.getPrediction(contextText)
+    }
+
+    internal fun requestEnglishAssociations(prefix: String) {
+        serviceScope.launch {
+            val candidates = predictionManager.getEnglishAssociations(
+                prefix,
+                PredictionManager.MAX_ASSOCIATION_COUNT
+            )
+            withContext(Dispatchers.Main) {
+                val current = candidateState.value
+                if (current.pendingEnglishText == prefix) {
+                    candidateState.value = current.copy(associationCandidates = candidates)
+                }
+            }
+        }
     }
     
     private fun initRimeEngine() {
@@ -737,6 +1135,19 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                 uiState.value = uiState.value.copy(
                     swipeCancelEpoch = uiState.value.swipeCancelEpoch + 1
                 )
+            },
+            onToggleMute = {
+                // 语音页上滑热区松手：翻转"录音时静音其他应用"并持久记住（下次录音生效）
+                val enabled = !SettingsPreferences.isSttMuteOthers(this)
+                SettingsPreferences.setSttMuteOthers(this, enabled)
+                uiState.value = uiState.value.copy(sttMuteOthers = enabled)
+                feedbackManager.performVibration()
+                android.widget.Toast.makeText(
+                    this,
+                    if (enabled) "已开启：下次语音输入时静音其他应用"
+                    else "已关闭：录音时不再静音其他应用",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
             }
         )
         
@@ -822,11 +1233,21 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                 val hasNavBar = navBarDp > 0.dp
 
                 val quickSendFormExtra = if (state.showQuickSendForm) 200 else 0
+                // 剪贴板搜索态：窗口撑满整屏（键盘+底部导航区以外的空间全部给搜索结果），
+                // 自研键盘完整保留在底部；最小 200dp 兜底横屏等矮屏场景。
+                val clipboardSearchExtra = if (state.clipboardSearchActive) {
+                    // IME 窗口 edge-to-edge 会延伸到状态栏底下，面板内容必须让出状态栏高度，
+                    // 否则顶部 tab/搜索行会被状态栏盖住（floating 模式 effectiveScreenH 已扣过）。
+                    val topInset = if (state.isFloatingMode) 0 else statusBarHeightDp
+                    (effectiveScreenH - floatingCardContentHeight -
+                        state.keyboardBottomPaddingDp - activeBottomDp - topInset).coerceAtLeast(200)
+                } else 0
+                val panelExtra = quickSendFormExtra + clipboardSearchExtra
 
                 XimeTheme(darkTheme = isDarkTheme, themeId = state.themeId) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         // Sync FrameLayout height with Compose content height
-                        val contentHeight = if (state.showKeyboardResize) state.resizePreviewHeightDp else floatingCardContentHeight + quickSendFormExtra
+                        val contentHeight = if (state.showKeyboardResize) state.resizePreviewHeightDp else floatingCardContentHeight + panelExtra
                         val totalDp = if (state.isCompact || state.isFloatingMode) effectiveScreenH
                             else contentHeight + state.keyboardBottomPaddingDp + activeBottomDp
                         SideEffect {
@@ -834,14 +1255,20 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                             // 键盘内容在 Compose 内贴底，由 onComputeInsets 报告键盘内容顶部。
                             if (state.isCompact || state.isFloatingMode) {
                                 keyboardContainer.updateHeight(totalDp)
+                                // 容器高度即内容高度，热区阈值直接按容器高度划分
+                                keyboardContainer.setKeyboardContentHeightPx(0)
                             } else {
                                 // 从悬浮/紧凑模式切回时恢复容器为 MATCH_PARENT，
                                 // 否则容器高度残留悬浮时的固定值导致布局异常。
                                 keyboardContainer.resetHeight()
+                                // 同步键盘内容高度（px），供语音页上滑热区按键盘几何分区
+                                keyboardContainer.setKeyboardContentHeightPx(
+                                    (totalDp * resources.displayMetrics.density).toInt()
+                                )
                             }
                             currentEffectiveKeyboardHeight = if (state.isFloatingMode) keyboardHeight + floatingDragBarHeight + 50 + state.keyboardBottomPaddingDp
                                 else if (state.isCompact) HARDWARE_CANDIDATE_BAR_HEIGHT
-                                else effectiveKeyboardHeight + quickSendFormExtra
+                                else effectiveKeyboardHeight + panelExtra
                         }
                         val kbColors = KeysConfigHelper.getKeyboardColors()
                         val longToColor: (Long) -> androidx.compose.ui.graphics.Color = { if (it == 0L)  { androidx.compose.ui.graphics.Color(0xE61E1E1E) } else if (it > 0xFFFFFF) { androidx.compose.ui.graphics.Color(it) } else { androidx.compose.ui.graphics.Color(0xFF000000 or it) } }
@@ -879,7 +1306,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(if (state.showKeyboardResize) (state.resizePreviewHeightDp + state.keyboardBottomPaddingDp + activeBottomDp).dp else (floatingCardContentHeight + state.keyboardBottomPaddingDp + quickSendFormExtra + activeBottomDp).dp)
+                                    .height(if (state.showKeyboardResize) (state.resizePreviewHeightDp + state.keyboardBottomPaddingDp + activeBottomDp).dp else (floatingCardContentHeight + state.keyboardBottomPaddingDp + panelExtra + activeBottomDp).dp)
                                     .align(androidx.compose.ui.Alignment.BottomCenter)
                                     .keyboardBackground(rootTheme.keyboardBackground, isDark, keyboardBgColor)
                             )
@@ -888,7 +1315,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                             modifier = Modifier
 
                                 .fillMaxWidth()
-                                .height(if (state.showKeyboardResize) (state.resizePreviewHeightDp + state.keyboardBottomPaddingDp).dp else (floatingCardContentHeight + state.keyboardBottomPaddingDp + quickSendFormExtra).dp)
+                                .height(if (state.showKeyboardResize) (state.resizePreviewHeightDp + state.keyboardBottomPaddingDp).dp else (floatingCardContentHeight + state.keyboardBottomPaddingDp + panelExtra).dp)
                                 .align(androidx.compose.ui.Alignment.BottomCenter)
                                 .then(if (state.isFloatingMode) Modifier else Modifier.offset(y = (-activeBottomDp).dp))
                                 .onGloballyPositioned {
@@ -934,6 +1361,9 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                                     voiceBottomActive = state.voiceButtonState.bottomActive,
                                     voiceLeftActive = state.voiceButtonState.leftActive,
                                     voiceRightActive = state.voiceButtonState.rightActive,
+                                    voiceMuteActive = state.voiceButtonState.muteActive,
+                                    sttMuteOthers = state.sttMuteOthers,
+                                    floatingVoiceLabel = state.floatingVoiceLabel,
                                     voicePluginName = state.voicePluginName,
                                     voiceRecognitionState = state.voiceRecognitionState,
                                     voiceRecognizedText = state.voiceRecognizedText,
@@ -955,6 +1385,9 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                                     quickSendEditingItemId = state.quickSendEditingItemId,
                                     quickSendEditingItemText = state.quickSendEditingItemText,
                                     clipboardSyncEnabled = state.clipboardSyncEnabled,
+                                    clipboardSearchActive = state.clipboardSearchActive,
+                                    clipboardSearchQuery = state.clipboardSearchQuery,
+                                    clipboardSearchExtraDp = clipboardSearchExtra,
                                 )
                             }
                             val callbacks = rememberImeKeyboardCallbacks(this@XimeInputMethodService, floatingMinY, state, effectiveScreenH)
@@ -1130,6 +1563,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                 keyRouter.postRimeJob {
                     rimeEngine.clearComposition()
                     withContext(Dispatchers.Main) {
+                        partialCandidateSegments.clear()
                         mainHandler.post { updateUI() }
                     }
                 }
@@ -1163,6 +1597,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         // state）会触发 restartInput → 此处重建 T9，若残留累积会被 buildT9DisplayState 拼进
         // preedit 回灌输入框（2026-08-07 日志实证：清除后 testText 从 '' 回灌为 '几乎'）。
         t9PartialSegments.clear()
+        partialCandidateSegments.clear()
         debugLog("onStartInput: cleared lastCommittedText")
 
         // 跨进程同步文件日志开关（开关在主进程设置页切换）
@@ -1322,6 +1757,8 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        recordImeUiTrace("onStartInputView", "restarting=$restarting")
+        com.kingzcheung.xime.task.SystemEventMonitor.notifyKeyboard(true, "onStartInputView")
         info?.let { updateEnterKeyText(it) }
         hasHardwareKeyboard = resources.configuration.keyboard != android.content.res.Configuration.KEYBOARD_NOKEYS
         applyCompactMode()
@@ -1495,8 +1932,15 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         clearInputState()
         recentClipboardItemsState.value = emptyList()
     }
+
+    override fun onFinishInputView(finishingInput: Boolean) {
+        recordImeUiTrace("onFinishInputView", "finishingInput=$finishingInput")
+        com.kingzcheung.xime.task.SystemEventMonitor.notifyKeyboard(false, "onFinishInputView")
+        super.onFinishInputView(finishingInput)
+    }
     
     override fun onWindowHidden() {
+        recordImeUiTrace("onWindowHidden")
         super.onWindowHidden()
         clearInputState()
         recentClipboardItemsState.value = emptyList()
@@ -1504,6 +1948,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
 
     override fun onWindowShown() {
         super.onWindowShown()
+        recordImeUiTrace("onWindowShown")
         clipboardSyncBridge?.pullOnce()
     }
     
@@ -1511,6 +1956,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         calculatorEngine.clear()
         rimeEngine.clearComposition()
         t9PartialSegments.clear()
+        partialCandidateSegments.clear()
         // 输入法隐藏/结束输入：静默停止语音会话，丢弃未识别文本，避免迟到结果写入新输入框
         if (uiState.value.isVoiceMode || voiceRecordingStarted) {
             voiceRecognitionHandler.abandonSession()
@@ -1563,7 +2009,14 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     }
 
     override fun onDestroy() {
+        imeWindowFocusListener?.let { listener ->
+            window.window?.decorView?.viewTreeObserver
+                ?.takeIf { it.isAlive }
+                ?.removeOnWindowFocusChangeListener(listener)
+        }
+        imeWindowFocusListener = null
         super.onDestroy()
+        com.kingzcheung.xime.util.RpcUiController.detachIme(imeTestBridge)
         sharedPrefsListener?.let {
             SettingsPreferences.getPrefsPublic(this).unregisterOnSharedPreferenceChangeListener(it)
         }
@@ -1577,6 +2030,9 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         rimeEngine.destroy()
         AssociationManager.release()
         voiceRecognitionHandler.release()
+        // 兜底移除系统悬浮窗，避免 IME 销毁后窗口泄漏
+        hideFloatingLabelJob?.cancel()
+        floatingVoiceLabel.hide()
         com.kingzcheung.xime.handwriting.HandwritingEngine.release()
         ExtensionManager.release()
         com.kingzcheung.xime.association.NativeOnnxEngine.releaseSharedEnv()
@@ -1586,7 +2042,8 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
     }
     
-    internal fun hideKeyboard() {
+    internal fun hideKeyboard(source: String = "unknown") {
+        recordImeUiTrace("hideKeyboard", source)
         clearInputState()
         requestHideSelf(0)
     }
@@ -1691,12 +2148,24 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
             }
         } else {
             // 非浮动模式：窗口全屏，键盘内容贴底。
-            // contentTopInsets 直接使用 Compose 实测的键盘内容顶部位置（px），
-            // 避免 window 全屏后 super 误判键盘占满全屏导致布局下沉。
-            if (keyboardContentTopPx > 0) {
-                outInsets.contentTopInsets = keyboardContentTopPx
-                outInsets.visibleTopInsets = keyboardContentTopPx
-                outInsets.touchableInsets = Insets.TOUCHABLE_INSETS_VISIBLE
+            // contentTopInsets 使用“键盘区”实测顶部（不含搜索面板）：搜索面板在键盘上方
+            // 展开时该值保持不变，宿主窗口不会被压缩/重排（修复 termux 全屏下闪屏）。
+            val top = if (stableKeyboardTopPx > 0) stableKeyboardTopPx else keyboardContentTopPx
+            if (top > 0) {
+                outInsets.contentTopInsets = top
+                outInsets.visibleTopInsets = top
+                if (state.clipboardSearchActive) {
+                    // 搜索面板覆盖在键盘上方：内容顶部仍按键盘顶部上报以免重排宿主，
+                    // 但需让搜索面板区域也可触摸，否则该区域触摸会穿透到宿主。
+                    outInsets.touchableInsets = Insets.TOUCHABLE_INSETS_REGION
+                    outInsets.touchableRegion.set(
+                        0, 0,
+                        resources.displayMetrics.widthPixels,
+                        resources.displayMetrics.heightPixels
+                    )
+                } else {
+                    outInsets.touchableInsets = Insets.TOUCHABLE_INSETS_VISIBLE
+                }
             } else {
                 super.onComputeInsets(outInsets)
             }
@@ -1704,6 +2173,13 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     }
 
     override fun commitText(text: String) {
+        // 剪贴板历史搜索态：RIME 上屏（拼音候选/空格首选/标点/英文键）一律重定向到搜索框，
+        // 绝不写入宿主输入框；同时跳过联想学习，避免搜索词污染用户语言模型。
+        if (uiState.value.clipboardSearchActive) {
+            val s = uiState.value
+            uiState.value = s.copy(clipboardSearchQuery = s.clipboardSearchQuery + text)
+            return
+        }
         if (uiState.value.quickSendFormFocused) {
             mainHandler.post {
                 QuickSendFormEditTextHolder.editText?.let { et ->

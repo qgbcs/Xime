@@ -15,6 +15,11 @@ object SettingsPreferences {
     private const val KEY_SETUP_COMPLETED = "setup_completed"
     private const val KEY_DARK_MODE = "dark_mode"
     private const val KEY_VERBOSE_LOGGING = "verbose_logging"
+    private const val KEY_RPC_LOG_TO_DISK = "rpc_log_to_disk"
+    private const val KEY_RPC_LOG_AUTO_WRAP = "rpc_log_auto_wrap"
+    private const val KEY_RPC_LOG_HEIGHT_DP = "rpc_log_height_dp"
+    private const val KEY_LAUNCHER_ICON_HIDDEN = "launcher_icon_hidden"
+    private const val KEY_SETTING_ITEM_VISIBLE_PREFIX = "setting_item_visible_"
     
     private const val KEY_SOUND_ENABLED = "sound_enabled"
     private const val KEY_SOUND_VOLUME = "sound_volume"
@@ -30,6 +35,8 @@ object SettingsPreferences {
     const val KEY_STT_ONLINE_PLUGIN_ID = "stt_online_plugin_id"
     const val KEY_STT_USE_LOCAL = "stt_use_local"
     const val KEY_STT_DEBUG_RECORD = "stt_debug_record"
+    const val KEY_STT_MUTE_OTHERS = "stt_mute_others"
+    const val KEY_STT_FLOATING_LABEL = "stt_floating_label"
     
     /** 默认主题 ID，可从 xime.yaml 的 style.color_scheme 初始化。 */
     @JvmStatic
@@ -87,7 +94,7 @@ object SettingsPreferences {
     private const val KEY_CANDIDATE_TEXT_SIZE = "candidate_text_size"
     const val INPUT_TEXT_INPUT_BOX = "input_box"
     const val INPUT_TEXT_CANDIDATE_BAR = "candidate_bar"
-    const val DEFAULT_PAGE_SIZE = 20 // 手机候选栏每页候选词数；schema 里的 page_size 来自 PC 版（5），太短，默认用 20
+    const val DEFAULT_PAGE_SIZE = 30 // 手机候选栏每页候选词数；schema 里的 page_size 来自 PC 版（5），太短
 
     fun isCompactModeEnabled(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_COMPACT_MODE, true)
@@ -147,7 +154,7 @@ object SettingsPreferences {
         }
         val legacy = prefs.getString(KEY_CURRENT_SCHEMA, null)
         if (!legacy.isNullOrBlank()) return legacy
-        return "wubi86"
+        return "pinyin_simp"
     }
 
     fun setCurrentSchema(context: Context, schemaId: String) {
@@ -200,6 +207,39 @@ object SettingsPreferences {
         getPrefs(context).edit().putBoolean(KEY_VERBOSE_LOGGING, enabled).apply()
     }
 
+    fun isRpcLogToDiskEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_RPC_LOG_TO_DISK, false)
+    }
+
+    fun setRpcLogToDiskEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_RPC_LOG_TO_DISK, enabled).apply()
+    }
+
+    fun isRpcLogAutoWrapEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_RPC_LOG_AUTO_WRAP, false)
+    }
+
+    fun setRpcLogAutoWrapEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_RPC_LOG_AUTO_WRAP, enabled).apply()
+    }
+
+    fun getRpcLogHeightDp(context: Context): Float {
+        return getPrefs(context).getFloat(KEY_RPC_LOG_HEIGHT_DP, 1f)
+    }
+
+    fun setRpcLogHeightDp(context: Context, heightDp: Float) {
+        require(heightDp.isFinite() && heightDp >= 0f) { "RPC log height must be a finite non-negative value" }
+        getPrefs(context).edit().putFloat(KEY_RPC_LOG_HEIGHT_DP, heightDp.coerceAtMost(1000f)).apply()
+    }
+
+    fun isLauncherIconHidden(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_LAUNCHER_ICON_HIDDEN, false)
+    }
+
+    fun setLauncherIconHidden(context: Context, hidden: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_LAUNCHER_ICON_HIDDEN, hidden).apply()
+    }
+
     fun isSetupCompleted(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_SETUP_COMPLETED, false)
     }
@@ -218,7 +258,7 @@ object SettingsPreferences {
     }
     
     fun isSoundEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_SOUND_ENABLED, true)
+        return getPrefs(context).getBoolean(KEY_SOUND_ENABLED, false)
     }
     
     fun setSoundEnabled(context: Context, enabled: Boolean) {
@@ -357,7 +397,7 @@ object SettingsPreferences {
     }
     
     fun isSttEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_STT_ENABLED, false)
+        return getPrefs(context).getBoolean(KEY_STT_ENABLED, true)
     }
     
     fun setSttEnabled(context: Context, enabled: Boolean) {
@@ -379,6 +419,24 @@ object SettingsPreferences {
 
     fun setSttUseLocal(context: Context, useLocal: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_STT_USE_LOCAL, useLocal).apply()
+    }
+
+    /** 语音录音时是否请求音频焦点，静音/暂停其他应用（如抖音、音乐）的播放。 */
+    fun isSttMuteOthers(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_STT_MUTE_OTHERS, false)
+    }
+
+    fun setSttMuteOthers(context: Context, mute: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_STT_MUTE_OTHERS, mute).apply()
+    }
+
+    /** 是否在语音录音/识别期间通过系统悬浮窗（键盘窗口之外）显示状态。 */
+    fun isSttFloatingLabel(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_STT_FLOATING_LABEL, false)
+    }
+
+    fun setSttFloatingLabel(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_STT_FLOATING_LABEL, enabled).apply()
     }
 
     /** 是否把语音识别期间的录音写入文件（调试用）。 */
@@ -602,6 +660,37 @@ object SettingsPreferences {
 
     const val KEY_CLIPBOARD_SYNC_ENABLED = "clipboard_sync_enabled"
     const val KEY_CLIPBOARD_SYNC_PLUGIN_ID = "clipboard_sync_plugin_id"
+    const val KEY_BACKGROUND_CAPTURE_ENABLED = "background_capture_enabled"
+    const val KEY_BACKGROUND_CAPTURE_WAKE_LOCK = "background_capture_wake_lock"
+
+    fun isBackgroundCaptureEnabled(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_BACKGROUND_CAPTURE_ENABLED, false)
+
+    fun setBackgroundCaptureEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_BACKGROUND_CAPTURE_ENABLED, enabled).apply()
+    }
+
+    fun isBackgroundCaptureWakeLockEnabled(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_BACKGROUND_CAPTURE_WAKE_LOCK, false)
+
+    fun setBackgroundCaptureWakeLockEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_BACKGROUND_CAPTURE_WAKE_LOCK, enabled).apply()
+    }
+
+    fun isSettingItemVisible(context: Context, itemId: String): Boolean {
+        require(itemId.matches(Regex("[a-z][a-z0-9_]*"))) { "Invalid setting item ID: $itemId" }
+        return getPrefs(context).getBoolean(
+            "$KEY_SETTING_ITEM_VISIBLE_PREFIX$itemId",
+            itemId !in SettingItems.hiddenByDefault
+        )
+    }
+
+    fun setSettingItemVisible(context: Context, itemId: String, visible: Boolean) {
+        require(itemId.matches(Regex("[a-z][a-z0-9_]*"))) { "Invalid setting item ID: $itemId" }
+        getPrefs(context).edit()
+            .putBoolean("$KEY_SETTING_ITEM_VISIBLE_PREFIX$itemId", visible)
+            .apply()
+    }
 
     fun isClipboardSyncEnabled(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_CLIPBOARD_SYNC_ENABLED, false)

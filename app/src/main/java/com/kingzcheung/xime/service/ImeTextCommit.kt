@@ -119,6 +119,7 @@ internal class ImeTextCommit(private val service: XimeInputMethodService) {
         if (service.candidateState.value.isComposing) {
             service.keyRouter.postRimeJob {
                 service.rimeEngine.clearComposition()
+                service.partialCandidateSegments.clear()
                 withContext(Dispatchers.Main) {
                     service.updateUI()
                 }

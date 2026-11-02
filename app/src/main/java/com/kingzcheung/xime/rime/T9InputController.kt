@@ -1,5 +1,6 @@
 package com.kingzcheung.xime.rime
 
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -11,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import com.kingzcheung.xime.util.InputHistoryRecorder
 
 /**
  * 九键拼音输入控制器（薄包装）。
@@ -37,6 +39,7 @@ import kotlinx.coroutines.runBlocking
  *   避免 pending 覆盖导致消费计算错乱——阻塞的是该后台线程，而非主线程。
  */
 class T9InputController(
+    private val context: Context,
     private val rimeEngine: RimeEngine = RimeEngine.getInstance(),
     private val onCompositionRefresh: ((RimeComposition) -> Unit)? = null,
     private val onRightCommitUndone: ((Int) -> Unit)? = null,
@@ -283,6 +286,7 @@ class T9InputController(
     }
 
     fun onDigitPressed(digit: String) {
+        InputHistoryRecorder.record(context, digit, false)
         val code = digit[0].code
         enqueue {
             rimeEngine.processKey(code, 0)

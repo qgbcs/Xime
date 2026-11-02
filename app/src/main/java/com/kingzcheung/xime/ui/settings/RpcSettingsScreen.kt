@@ -1,0 +1,194 @@
+package com.kingzcheung.xime.ui.settings
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.twotone.Build
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
+import com.kingzcheung.xime.settings.RpcSettings
+import com.kingzcheung.xime.settings.RpcSettingsStore
+import com.kingzcheung.xime.settings.SettingsPreferences
+import java.io.File
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RpcSettingsContent(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val initialConfigPath = remember {
+        runCatching { RpcSettingsStore.configFile(context.filesDir).absolutePath }
+            .getOrElse { "Python RPC 尚未启动，暂时无法读取配置路径" }
+    }
+    var configPath by remember { mutableStateOf(initialConfigPath) }
+    val initial = remember { RpcSettingsStore.load(context.filesDir) }
+    var httpEnabled by remember { mutableStateOf(initial.httpEnabled) }
+    var httpPort by remember { mutableStateOf(initial.httpPort.toString()) }
+    var httpHost by remember { mutableStateOf(initial.httpHost) }
+    var httpKey by remember { mutableStateOf(initial.httpKey) }
+    var mqttEnabled by remember { mutableStateOf(initial.mqttEnabled) }
+    var requestTopic by remember { mutableStateOf(initial.mqttRequestTopic) }
+    var responseTopic by remember { mutableStateOf(initial.mqttResponseTopic) }
+    var pubKey by remember { mutableStateOf(initial.mqttPubKey.orEmpty()) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var rpcLogToDisk by remember { mutableStateOf(SettingsPreferences.isRpcLogToDiskEnabled(context)) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("RPC 设置") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .imePadding()
+                .padding(padding)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("HTTP RPC", style = MaterialTheme.typography.titleMedium)
+            RpcSwitchRow("启用 HTTP RPC", httpEnabled) { httpEnabled = it }
+            RpcField("HTTP 监听地址", httpHost, { httpHost = it }, "例如 0.0.0.0")
+            RpcField(
+                "HTTP 端口",
+                httpPort,
+                { httpPort = it.filter(Char::isDigit) },
+                "1024 - 65535",
+                KeyboardType.Number
+            )
+            RpcField("HTTP 路径前缀", httpKey, { httpKey = it }, "留空表示不使用")
+
+            Text("MQTT RPC", style = MaterialTheme.typography.titleMedium)
+            RpcSwitchRow("启用 MQTT RPC", mqttEnabled) { mqttEnabled = it }
+            RpcField("请求 Topic", requestTopic, { requestTopic = it }, "默认监听 sys/device/request")
+            RpcField("默认回复 Topic", responseTopic, { responseTopic = it }, "")
+            RpcField(
+                "MQTT 公钥",
+                pubKey,
+                { pubKey = it },
+                "输入框清空代表不使用公钥验签"
+            )
+            RpcField(
+                "RPC 配置文件路径",
+                configPath,
+                { configPath = it },
+                "请输入绝对路径；新文件不存在时会复制当前配置"
+            )
+
+            SettingsToggleItem(
+                title = "RPC 日志写磁盘",
+                subtitle = "默认关闭，日志保存在内存中并显示在主设置页窗口",
+                checked = rpcLogToDisk,
+                showArrow = false,
+                onCheckedChange = { enabled ->
+                    rpcLogToDisk = enabled
+                    SettingsPreferences.setRpcLogToDiskEnabled(context, enabled)
+                    if (enabled) {
+                        context.filesDir.resolve("rpc.log").parentFile?.mkdirs()
+                    }
+                }
+            )
+
+            OutlinedButton(
+                onClick = {
+                    val port = httpPort.toIntOrNull()
+                    message = if (port == null || port !in 1..65535) {
+                        "HTTP 端口无效"
+                    } else if (
+                        configPath.isBlank() || !File(configPath.trim()).isAbsolute
+                    ) {
+                        "RPC 配置路径必须是非空绝对路径"
+                    } else {
+                        val saved = RpcSettingsStore.save(
+                            RpcSettings(
+                                httpEnabled = httpEnabled,
+                                httpPort = port,
+                                httpHost = httpHost.trim().ifEmpty { "0.0.0.0" },
+                                httpKey = httpKey,
+                                mqttEnabled = mqttEnabled,
+                                mqttRequestTopic = requestTopic,
+                                mqttResponseTopic = responseTopic,
+                                mqttPubKey = pubKey
+                            ),
+                            context.filesDir,
+                            configPath.trim()
+                        )
+                        if (saved) {
+                            configPath = configPath.trim()
+                            "已保存，请点击设置页底部的重启应用使配置生效"
+                        } else {
+                            "保存失败，请检查配置路径是否可写，并查看运行日志"
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.TwoTone.Build, contentDescription = null)
+                Text("保存 RPC 配置")
+            }
+            message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+        }
+    }
+}
+
+@Composable
+private fun RpcSwitchRow(title: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    androidx.compose.foundation.layout.Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(title, modifier = Modifier.padding(top = 12.dp))
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+private fun RpcField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    supportingText: String,
+    keyboardType: KeyboardType = KeyboardType.Text
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        supportingText = { Text(supportingText) },
+        modifier = Modifier.fillMaxWidth(),
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+        minLines = if (label == "MQTT 公钥") 3 else 1
+    )
+}

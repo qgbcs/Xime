@@ -9,6 +9,17 @@ data class RimeCandidate(
     val comment: String
 )
 
+data class RimeCandidatePreview(
+    val textBeforeSelection: String,
+    val selectedText: String,
+    val textAfterSelection: String,
+)
+
+data class RimeCandidatePageInfo(
+    val pageNo: Int,
+    val pageSize: Int,
+)
+
 /**
  * 批量查询当前 composition 状态。
  *
@@ -314,6 +325,34 @@ class RimeEngine {
         }
     }
 
+    fun getCandidatePageInfo(): RimeCandidatePageInfo {
+        return tryLocked(RimeCandidatePageInfo(-1, 0)) {
+            if (!nativeHasSession()) return@tryLocked RimeCandidatePageInfo(-1, 0)
+            val pageInfo = nativeGetCandidatePageInfo() ?: return@tryLocked RimeCandidatePageInfo(-1, 0)
+            RimeCandidatePageInfo(
+                pageNo = pageInfo.getOrElse(0) { -1 },
+                pageSize = pageInfo.getOrElse(1) { 0 },
+            )
+        }
+    }
+
+    fun getCandidatePreview(
+        index: Int,
+        expectedText: String,
+        expectedComment: String? = null,
+    ): RimeCandidatePreview? {
+        return tryLocked(null) {
+            if (!nativeHasSession()) return@tryLocked null
+            val preview = nativeGetCandidatePreview(index, expectedText, expectedComment)
+                ?: return@tryLocked null
+            RimeCandidatePreview(
+                textBeforeSelection = preview.getOrElse(0) { "" },
+                selectedText = preview.getOrElse(1) { "" },
+                textAfterSelection = preview.getOrElse(2) { "" },
+            )
+        }
+    }
+
     fun getInput(): String {
         return tryLocked("") {
             nativeGetInput() ?: ""
@@ -328,14 +367,24 @@ class RimeEngine {
      */
     fun getComposition(): RimeComposition {
         return tryLocked(RimeComposition("", "", "", emptyArray(), false, false, false)) {
-            nativeGetComposition()
+            nativeGetComposition(true)
         }
     }
 
-    fun selectCandidate(index: Int): Boolean {
+    fun getCompositionWithoutCommit(): RimeComposition {
+        return tryLocked(RimeComposition("", "", "", emptyArray(), false, false, false)) {
+            nativeGetComposition(false)
+        }
+    }
+
+    fun selectCandidate(
+        index: Int,
+        expectedText: String? = null,
+        expectedComment: String? = null
+    ): Boolean {
         return tryLocked(false) {
             if (!nativeHasSession()) return@tryLocked false
-            nativeSelectCandidate(index)
+            nativeSelectCandidate(index, expectedText, expectedComment)
         }
     }
 
@@ -487,7 +536,47 @@ class RimeEngine {
             }
             // 维护完成后更新 last_build_time，避免下次启动增量检测误判需重编译
             nativeUpdateLastBuildTime()
+            // 关键：维护会销毁并重建引擎词典，此前活动会话的 translator 已失效
+            // （表现为部署后 processKey 不再产出中文候选，只剩编码字母）。
+            // 按维护前记录的方案重建会话，恢复组词能力。无活动会话时 native 返回 false。
+            val recreated = nativeRecreateSessionAfterMaintenance()
+            Log.i(TAG, "deployIncremental done, sessionRecreated=$recreated")
             return true
+        }
+    }
+
+    /**
+     * 重新加载 stabledb 形态的纯文本用户词（custom_phrase.txt）。
+     *
+     * custom_phrase translator 配置为 db_class=stabledb：词条以纯文本直读，build 目录
+     * 不产生编译产物，因此 start_maintenance(false) 会因"没有编译任务"正常返回 false。
+     * 这类变更无需部署，只需销毁并重建当前会话，让新 translator 重新打开
+     * custom_phrase.txt，新学 / 删除 / 沉底的词即刻生效。
+     *
+     * 不能复用 [deployIncremental]：后者在 start_maintenance 返回 false 时直接返回
+     * false，而 RimeConfigHelper.ensureDeployment 依赖该语义回退到全量部署。
+     */
+    fun reloadStableUserDict(): Boolean {
+        if (!isInitialized) return false
+        locked {
+            // startMaintenance 会在调用底层前先记录活动会话与其方案（即使底层返回
+            // false 也已记录），供随后 recreateSessionAfterMaintenance 恢复同方案。
+            val started = nativeStartMaintenance(false)
+            if (started) {
+                var waited = 0L
+                while (nativeIsMaintaining() && waited < 180_000L) {
+                    Thread.sleep(100)
+                    waited += 100
+                }
+                if (nativeIsMaintaining()) {
+                    Log.w(TAG, "reloadStableUserDict: maintenance timed out")
+                    return false
+                }
+                nativeUpdateLastBuildTime()
+            }
+            val recreated = nativeRecreateSessionAfterMaintenance()
+            Log.i(TAG, "reloadStableUserDict done, maintenanceStarted=$started, sessionRecreated=$recreated")
+            return recreated
         }
     }
 
@@ -518,6 +607,12 @@ class RimeEngine {
     /** 读取方案自带 translator.packs 中声明的个人词库名。 */
     fun getSchemaPacks(schemaId: String): List<String> =
         getSchemaList(schemaId, "translator/packs")
+
+    /** 将指定 Rime 用户词典导出为可读的 TSV 文本，返回导出的条目数。 */
+    fun exportUserDict(dictName: String, textFile: String): Int {
+        if (!isInitialized || dictName.isBlank() || textFile.isBlank()) return -1
+        return locked { nativeExportUserDict(dictName, textFile) }
+    }
 
     /** 读取方案 translator.dictionary 主词典名。 */
     fun getSchemaDictionary(schemaId: String): String? =
@@ -629,9 +724,19 @@ class RimeEngine {
     private external fun nativeGetProcessResult(processed: Boolean): RimeProcessResult
     private external fun nativeGetCandidates(): Array<String>?
     private external fun nativeGetCandidatesWithComments(): Array<Array<String>>?
+    private external fun nativeGetCandidatePageInfo(): IntArray?
+    private external fun nativeGetCandidatePreview(
+        index: Int,
+        expectedText: String,
+        expectedComment: String?
+    ): Array<String>?
     private external fun nativeGetInput(): String?
-    private external fun nativeGetComposition(): RimeComposition
-    private external fun nativeSelectCandidate(index: Int): Boolean
+    private external fun nativeGetComposition(includeCommit: Boolean): RimeComposition
+    private external fun nativeSelectCandidate(
+        index: Int,
+        expectedText: String?,
+        expectedComment: String?
+    ): Boolean
     private external fun nativePageDown(): Boolean
     private external fun nativePageUp(): Boolean
     private external fun nativeHasNextPage(): Boolean
@@ -676,11 +781,13 @@ class RimeEngine {
     private external fun nativeGetSchemaList(schemaId: String, key: String): Array<String>?
     private external fun nativeGetSchemaString(schemaId: String, key: String): String?
     private external fun nativeGetUserConfigString(key: String): String?
+    private external fun nativeExportUserDict(dictName: String, textFile: String): Int
     private external fun nativeGetUserConfigBool(key: String): Boolean
     private external fun nativeSetUserConfigString(key: String, value: String): Boolean
     private external fun nativeSetUserConfigBool(key: String, value: Boolean): Boolean
     private external fun nativeIsModuleRegistered(moduleName: String): Boolean
     private external fun nativeUpdateLastBuildTime()
+    private external fun nativeRecreateSessionAfterMaintenance(): Boolean
     private external fun nativeSetPageSize(schemaId: String, pageSize: Int)
     private external fun nativeDestroy()
     private external fun nativeT9SelectCandidate(pinyin: String, text: String?, textLength: Int): Boolean

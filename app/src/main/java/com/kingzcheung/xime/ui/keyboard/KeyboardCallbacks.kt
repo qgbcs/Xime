@@ -8,9 +8,12 @@ data class KeyboardCallbacks(
     val onKeyPress: (String, Boolean) -> Unit,
     val onKeyPressDown: ((String) -> Unit)? = null,
     val onKeyRelease: ((String) -> Unit)? = null,
-    val onCandidateSelect: (Int) -> Unit,
-    val onAssociationSelect: ((Int) -> Unit)? = null,
+    val onCandidateSelect: (Int, String) -> Unit,
+    val onAssociationSelect: ((Int, String) -> Unit)? = null,
     val onClearAssociation: (() -> Unit)? = null,
+    // 长按用户自定义候选词的管理动作：word=词条，action="delete"|"moveSecondPage"
+    val onCustomPhraseAction: ((String, String) -> Unit)? = null,
+    val onUiDiagnosticEvent: ((String, String) -> Unit)? = null,
     val onToggleDarkMode: (() -> Unit)? = null,
     val onClipboard: (() -> Unit)? = null,
     val onClipboardSelect: ((String) -> Unit)? = null,
@@ -81,6 +84,10 @@ data class KeyboardCallbacks(
      * 由剪贴板面板导航头的「拉取」按钮触发。
      */
     val onClipboardPullRemote: (() -> Unit)? = null,
+    /** 剪贴板历史搜索开关：开启后窗口加高并在面板下方显示自研键盘 */
+    val onClipboardSearchToggle: ((Boolean) -> Unit)? = null,
+    /** 剪贴板历史搜索框文本变化（含自研键盘按键重定向写入） */
+    val onClipboardSearchQueryChange: ((String) -> Unit)? = null,
     val onHideQuickSendForm: (() -> Unit)? = null,
     val onQuickSendEditItem: ((Long, String) -> Unit)? = null,
     val onQuickSendFormFocusChange: ((Boolean) -> Unit)? = null,
@@ -89,4 +96,10 @@ data class KeyboardCallbacks(
      * 服务层负责上屏首位候选词或待确认英文，再由键盘层切换布局。
      */
     val onCommitCandidateBeforeModeChange: (() -> Unit)? = null,
+    /**
+     * 上报键盘区（候选栏+按键）顶部在 IME 窗口中的 y（px）。
+     * 搜索面板在键盘上方展开时该绝对位置保持不变，供 onComputeInsets 上报稳定的
+     * contentTopInsets，避免系统压缩/重排宿主窗口（termux 全屏下闪屏根因）。
+     */
+    val onKeyboardTopPositioned: ((Int) -> Unit)? = null,
 )

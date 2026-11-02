@@ -1,0 +1,32 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="362.35dp"
+    android:height="362.35dp"
+    android:viewportWidth="400"
+    android:viewportHeight="400">
+
+    <!-- 外部圆形气泡框 (带左下角小尾巴) -->
+    <path
+        android:fillColor="#277CFF"
+        android:pathData="M200,40 C111.63,40 40,111.63 40,200 C40,240.5 55.08,277.48 80,305.5 L60,360 L114.5,340 C140.52,352.92 169.5,360 200,360 C288.37,360 360,288.37 360,200 C360,111.63 288.37,40 200,40 Z M200,320 C143.71,320 100.82,281.34 85,229 C81.32,219.78 80,210.05 80,200 C80,133.73 133.73,80 200,80 C266.27,80 320,133.73 320,200 C320,266.27 266.27,320 200,320 Z"/>
+
+    <!-- 字母 i (包含上面的圆点和下面的竖杠，底部带切角) -->
+    <path
+        android:fillColor="#277CFF"
+        android:pathData="M110,175 A12,12 0 1,1 134,175 A12,12 0 1,1 110,175 Z M112,195 L132,195 L132,235 L112,245 Z" />
+
+    <!-- 字母 F (带有右下倾斜切角) -->
+    <path
+        android:fillColor="#277CFF"
+        android:pathData="M142,165 L190,165 L180,185 L162,185 L162,205 L185,205 L175,225 L162,225 L162,235 L142,245 Z" />
+
+    <!-- 字母 L (带有右下倾斜切角) -->
+    <path
+        android:fillColor="#277CFF"
+        android:pathData="M198,165 L218,165 L218,225 L245,225 L235,245 L198,245 Z" />
+
+    <!-- 字母 Y (左右不对称切角) -->
+    <path
+        android:fillColor="#277CFF"
+        android:pathData="M248,165 L268,165 L278,195 L288,165 L310,165 L288,215 L288,245 L268,245 L268,215 Z" />
+
+</vector>

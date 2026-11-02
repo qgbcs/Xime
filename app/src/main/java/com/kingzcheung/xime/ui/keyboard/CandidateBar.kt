@@ -1,15 +1,16 @@
 package com.kingzcheung.xime.ui.keyboard
 
+import com.kingzcheung.xime.BuildConfig
 import com.kingzcheung.xime.service.PredictionManager
 import android.annotation.SuppressLint
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -36,7 +37,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -53,6 +59,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.PopupProperties
 import com.kingzcheung.xime.R
 import com.kingzcheung.xime.keyboard.KeyboardPage
 import com.kingzcheung.xime.keyboard.OverlayRoute
@@ -60,6 +67,8 @@ import com.kingzcheung.xime.keyboard.PanelType
 import com.kingzcheung.xime.keyboard.ToolbarAction
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kingzcheung.xime.speech.RecognitionState
+import com.kingzcheung.xime.ui.rpc.UiBadgeHost
+import com.kingzcheung.xime.util.UiOverrides
 
 @Immutable
 data class CandidateBarVisuals(
@@ -72,14 +81,17 @@ data class CandidateBarVisuals(
 )
 
 data class CandidateBarCallbacks(
-    val onCandidateSelect: (Int) -> Unit,
+    val onCandidateSelect: (Int, String) -> Unit,
     val onLogoClick: (() -> Unit)? = null,
     val onBack: (() -> Unit)? = null,
     val onHideKeyboard: (() -> Unit)? = null,
     val onShowMoreCandidates: (() -> Unit)? = null,
     val onClearAssociation: (() -> Unit)? = null,
     val onInputTextClick: (() -> Unit)? = null,
-    val onAssociationSelect: ((Int) -> Unit)? = null
+    val onAssociationSelect: ((Int, String) -> Unit)? = null,
+    // 长按用户自定义候选词：word=词条文本，action="delete"|"moveSecondPage"
+    val onCustomPhraseAction: ((word: String, action: String) -> Unit)? = null,
+    val onUiDiagnosticEvent: ((String, String) -> Unit)? = null
 )
 
 @Composable
@@ -97,6 +109,8 @@ fun CandidateBar(
     voiceSpectrum: FloatArray = FloatArray(16),
     voiceRecognitionState: RecognitionState = RecognitionState.IDLE,
     voicePluginName: String = "",
+    // 当前方案用户自定义词条；命中的候选长按可删除或降频到第二屏
+    customPhraseWords: Set<String> = emptySet(),
 ) {
     val configuration = LocalConfiguration.current
     val isLandscape = !isFloatingMode && configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
@@ -117,6 +131,8 @@ fun CandidateBar(
     val candidateTextSize = SettingsPreferences.getCandidateTextSize(context)
 
     val density = LocalDensity.current
+    // 长按自定义候选词弹出操作菜单：null=菜单关闭，否则为被长按的词条文本
+    var longPressedWord by remember { mutableStateOf<String?>(null) }
     val textMeasurer = rememberTextMeasurer()
     val itemPaddingPx = with(density) { 8.dp.toPx() }
     val spacingPx = with(density) { 4.dp.toPx() }
@@ -131,6 +147,7 @@ fun CandidateBar(
     }
 
     val displayCandidates: List<String>
+    val candidateDisplayItems: List<CandidateDisplayItem>
     val displayAssociation: List<String>
     val displayComments: List<String>
     val hasAnyMore: Boolean
@@ -140,16 +157,21 @@ fun CandidateBar(
     when (val s = state) {
         is CandidateBarState.Idle -> {
             displayCandidates = emptyList()
+            candidateDisplayItems = emptyList()
             displayAssociation = emptyList()
             displayComments = emptyList()
             hasAnyMore = false
             showLeftIcon = true
         }
         is CandidateBarState.ChineseCandidates -> {
-            val taken = s.candidates.take(20)
+            candidateDisplayItems = EnglishCandidateDisplayPolicy.prepare(
+                s.candidates,
+                demotedCandidateCount = s.demotedCandidateCount,
+            )
+            val taken = candidateDisplayItems.map { it.candidate }
             displayCandidates = taken
             displayComments = s.comments
-            hasAnyMore = s.hasMore
+            hasAnyMore = s.hasMore || candidateDisplayItems.size < s.candidates.size
             showLeftIcon = false
             displayAssociation = remember(s.associationCandidates, taken, s.inputText, textMeasurer) {
                 if (taken.isEmpty()) {
@@ -163,8 +185,8 @@ fun CandidateBar(
                     }
                     val leftSidePx = with(density) { rowPaddingPx + 32.dp.toPx() }
                     val lazyRowWidthPx = screenWidthPx - leftSidePx - rightSidePx
-                    val regularWidthPx = taken.sumOf { c ->
-                        measureText(c).toDouble() + itemPaddingPx
+                    val regularWidthPx = candidateDisplayItems.sumOf { item ->
+                        measureText(item.displayText).toDouble() + itemPaddingPx
                     }.toFloat()
                     val dividerWidthPx = with(density) { 9.dp.toPx() }
                     val availablePx = lazyRowWidthPx - regularWidthPx - dividerWidthPx
@@ -185,6 +207,7 @@ fun CandidateBar(
         }
         is CandidateBarState.AssociationOnly -> {
             displayCandidates = emptyList()
+            candidateDisplayItems = emptyList()
             displayAssociation = s.candidates.take(PredictionManager.MAX_ASSOCIATION_COUNT)
             hasAnyMore = s.hasMore
             showLeftIcon = false
@@ -192,6 +215,9 @@ fun CandidateBar(
         }
         is CandidateBarState.EnglishCandidates -> {
             displayCandidates = s.candidates.take(20)
+            candidateDisplayItems = displayCandidates.mapIndexed { index, candidate ->
+                CandidateDisplayItem(index, candidate, candidate)
+            }
             displayComments = s.comments
             displayAssociation = emptyList()
             hasAnyMore = false
@@ -199,6 +225,9 @@ fun CandidateBar(
         }
         is CandidateBarState.ClipboardDisplay -> {
             displayCandidates = s.candidates.take(20)
+            candidateDisplayItems = displayCandidates.mapIndexed { index, candidate ->
+                CandidateDisplayItem(index, candidate, candidate)
+            }
             displayComments = emptyList()
             displayAssociation = emptyList()
             hasAnyMore = false
@@ -206,6 +235,9 @@ fun CandidateBar(
         }
         is CandidateBarState.Calculator -> {
             displayCandidates = s.candidates.take(20)
+            candidateDisplayItems = displayCandidates.mapIndexed { index, candidate ->
+                CandidateDisplayItem(index, candidate, candidate)
+            }
             displayComments = s.comments
             displayAssociation = emptyList()
             hasAnyMore = false
@@ -218,7 +250,7 @@ fun CandidateBar(
     }
 
     val candidateListState = rememberLazyListState()
-    LaunchedEffect(displayCandidates) {
+    LaunchedEffect(candidateDisplayItems) {
         candidateListState.scrollToItem(0)
     }
 
@@ -334,23 +366,31 @@ fun CandidateBar(
                                 )
                             }
                         } else {
-                            Box(
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(iconButtonContainer)
-                                    .clickable { callbacks.onLogoClick?.invoke() },
-                                contentAlignment = Alignment.Center
+                            // RPC 槽位：主图标色调由 ime.candidate.logo#tint 下发，角标由 #badge 下发
+                            val logoTint = UiOverrides.get(UiOverrides.TARGET_CANDIDATE_LOGO, "tint")
+                                ?.let { runCatching { Color(android.graphics.Color.parseColor(it)) }.getOrNull() }
+                                ?: Color.Unspecified
+                            UiBadgeHost(
+                                target = UiOverrides.TARGET_CANDIDATE_LOGO,
+                                modifier = Modifier.size(28.dp)
                             ) {
-                                Icon(
-                                    painter = painterResource(id = if (visuals.isDarkTheme) R.drawable.logo_dark else R.drawable.logo),
-                                    contentDescription = "曦码 Logo",
-                                    tint = Color.Unspecified,
-                                    modifier = Modifier.size(20.dp)
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .clickable { callbacks.onLogoClick?.invoke() },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        painter = painterResource(R.drawable.ic_launcher_foreground),
+                                        contentDescription = "${BuildConfig.APP_CHINESE_NAME} Logo",
+                                        tint = logoTint,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(2.dp))
                     }
                     is CandidateBarState.ClipboardDisplay -> {
                         Row(
@@ -395,24 +435,84 @@ fun CandidateBar(
                 state = candidateListState,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                itemsIndexed(displayCandidates, key = { index, _ -> index }) { index, candidate ->
-                    CandidateItem(
-                        text = candidate,
-                        index = index,
-                        onClick = { callbacks.onCandidateSelect(index) },
-                        textColor = visuals.textColor,
-                        comment = if (showComments) {
-                            when (val s = state) {
-                                is CandidateBarState.ChineseCandidates -> s.comments.getOrElse(index) { "" }
-                                is CandidateBarState.EnglishCandidates -> s.comments.getOrElse(index) { "" }
-                                else -> ""
+                itemsIndexed(candidateDisplayItems, key = { _, item -> item.index }) { _, item ->
+                    val candidate = item.candidate
+                    val isCustom = callbacks.onCustomPhraseAction != null &&
+                        candidate in customPhraseWords
+                    Box {
+                        CandidateItem(
+                            text = item.displayText,
+                            index = item.index,
+                            onClick = { callbacks.onCandidateSelect(item.index, candidate) },
+                            textColor = visuals.textColor,
+                            comment = if (showComments) {
+                                when (val s = state) {
+                                    is CandidateBarState.ChineseCandidates -> s.comments.getOrElse(item.index) { "" }
+                                    is CandidateBarState.EnglishCandidates -> s.comments.getOrElse(item.index) { "" }
+                                    else -> ""
+                                }
+                            } else "",
+                            isSelected = item.index == 0,
+                            accentColor = visuals.accentColor,
+                            selectedTextColor = visuals.selectedTextColor,
+                            fontSize = candidateTextSize.sp,
+                            onLongClick = if (isCustom) {
+                                {
+                                    callbacks.onUiDiagnosticEvent?.invoke(
+                                        "candidate_long_press",
+                                        "source=candidate_bar;candidate=$candidate"
+                                    )
+                                    longPressedWord = candidate
+                                }
+                            } else null
+                        )
+                        if (isCustom) {
+                            DropdownMenu(
+                                expanded = longPressedWord == candidate,
+                                properties = PopupProperties(focusable = false),
+                                onDismissRequest = {
+                                    callbacks.onUiDiagnosticEvent?.invoke(
+                                        "candidate_menu_dismissed",
+                                        "source=candidate_bar;candidate=$candidate;popup_focusable=false"
+                                    )
+                                    longPressedWord = null
+                                }
+                            ) {
+                                LaunchedEffect(longPressedWord == candidate) {
+                                    if (longPressedWord == candidate) {
+                                        callbacks.onUiDiagnosticEvent?.invoke(
+                                            "candidate_menu_shown",
+                                            "source=candidate_bar;candidate=$candidate;popup_focusable=false"
+                                        )
+                                    }
+                                }
+                                DropdownMenuItem(
+                                    text = { Text("移到第二屏") },
+                                    onClick = {
+                                        val w = candidate
+                                        callbacks.onUiDiagnosticEvent?.invoke(
+                                            "candidate_menu_selected",
+                                            "source=candidate_bar;candidate=$w;action=moveSecondPage"
+                                        )
+                                        longPressedWord = null
+                                        callbacks.onCustomPhraseAction?.invoke(w, "moveSecondPage")
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("删除该词") },
+                                    onClick = {
+                                        val w = candidate
+                                        callbacks.onUiDiagnosticEvent?.invoke(
+                                            "candidate_menu_selected",
+                                            "source=candidate_bar;candidate=$w;action=delete"
+                                        )
+                                        longPressedWord = null
+                                        callbacks.onCustomPhraseAction?.invoke(w, "delete")
+                                    }
+                                )
                             }
-                        } else "",
-                        isSelected = index == 0,
-                        accentColor = visuals.accentColor,
-                        selectedTextColor = visuals.selectedTextColor,
-                        fontSize = candidateTextSize.sp
-                    )
+                        }
+                    }
                 }
 
                 if (displayAssociation.isNotEmpty()) {
@@ -431,9 +531,9 @@ fun CandidateBar(
                         CandidateItem(
                             text = candidate,
                             index = -1,
-                            onClick = { callbacks.onAssociationSelect?.invoke(index) },
+                            onClick = { callbacks.onAssociationSelect?.invoke(index, candidate) },
                             textColor = visuals.textColor,
-                            comment = displayComments.getOrElse(index) { "" },
+                            comment = assocState?.comments?.getOrElse(index) { "" } ?: "",
                             isSelected = assocState?.highlightIndex == index,
                             accentColor = visuals.accentColor,
                             selectedTextColor = visuals.selectedTextColor,
@@ -447,21 +547,26 @@ fun CandidateBar(
 
             when {
                 state is CandidateBarState.Idle -> {
-                    Row(
-                        modifier = Modifier
-                            .weight(1f, fill = true)
-                            .horizontalScroll(rememberScrollState()),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.End,
+                    // 工具栏按钮按可用宽度等分：窄屏（如 360dp）也保证配置的图标全部放得下，
+                    // 不再用固定的 42dp 单按钮宽度把最后一个图标挤出屏幕。
+                    BoxWithConstraints(
+                        modifier = Modifier.weight(1f, fill = true)
                     ) {
-                        if (toolbarActions.isNotEmpty()) {
+                        val actionCount = toolbarActions.size
+                        val slot = if (actionCount > 0) maxWidth / actionCount else 32.dp
+                        val iconSize = (slot * 0.68f).coerceIn(14.dp, 22.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.End,
+                        ) {
                             toolbarActions.forEach { action ->
                                 val interactionSource = remember { MutableInteractionSource() }
                                 val isPressed by interactionSource.collectIsPressedAsState()
                                 Box(
                                     modifier = Modifier
-                                        .padding(horizontal = 5.dp)
-                                        .size(32.dp)
+                                        .weight(1f, fill = true)
+                                        .fillMaxHeight()
                                         .clickable(
                                             interactionSource = interactionSource,
                                             indication = null,
@@ -473,7 +578,7 @@ fun CandidateBar(
                                         imageVector = action.button.icon,
                                         contentDescription = action.button.label,
                                         tint = if (isPressed) iconButtonTint.copy(alpha = 0.6f) else iconButtonTint,
-                                        modifier = Modifier.size(22.dp)
+                                        modifier = Modifier.size(iconSize)
                                     )
                                 }
                             }
@@ -595,6 +700,7 @@ fun CandidateBar(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CandidateItem(
     text: String,
@@ -606,7 +712,8 @@ fun CandidateItem(
     accentColor: Color = Color(0xFF1A73E8),
     selectedTextColor: Color = Color(0xFF1A73E8),
     @SuppressLint("ModifierParameter") modifier: Modifier = Modifier,
-    fontSize: androidx.compose.ui.unit.TextUnit = 19.sp
+    fontSize: androidx.compose.ui.unit.TextUnit = 19.sp,
+    onLongClick: (() -> Unit)? = null
 ) {
     Row(
         modifier = modifier
@@ -615,7 +722,7 @@ fun CandidateItem(
                 if (isSelected) accentColor.copy(alpha = 0.2f)
                 else Color.Transparent
             )
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 4.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

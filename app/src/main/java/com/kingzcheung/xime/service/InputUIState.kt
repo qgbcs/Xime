@@ -24,6 +24,10 @@ data class InputUIState(
     val isVoiceMode: Boolean = false,
     val voiceSticky: Boolean = false,
     val voiceButtonState: VoiceButtonState = VoiceButtonState(),
+    // 录音时静音其他应用（持久开关），语音页上滑热区据此显示与切换
+    val sttMuteOthers: Boolean = false,
+    // 系统悬浮状态窗是否生效（开关开且已授予悬浮窗权限）；为 true 时键盘内小胶囊让位
+    val floatingVoiceLabel: Boolean = false,
     val voicePluginName: String = "",
     val voiceRecognitionState: RecognitionState = RecognitionState.IDLE,
     val voiceRecognizedText: String = "",
@@ -49,4 +53,8 @@ data class InputUIState(
     val quickSendEditingItemId: Long? = null,
     val quickSendEditingItemText: String = "",
     val clipboardSyncEnabled: Boolean = false,
+    // 剪贴板历史搜索态：开启后 IME 窗口撑满全屏，剪贴板结果占满键盘上方空间，
+    // 自研键盘保留在底部；按键仍走 RIME 引擎（中文可组词），提交文本重定向写入搜索框。
+    val clipboardSearchActive: Boolean = false,
+    val clipboardSearchQuery: String = "",
 )

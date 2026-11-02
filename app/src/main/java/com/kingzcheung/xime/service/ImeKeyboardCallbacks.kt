@@ -33,46 +33,80 @@ internal fun rememberImeKeyboardCallbacks(
     return remember(floatingMinY) {
         KeyboardCallbacks(
             onKeyPress = { key, isShifted ->
-                service.keyRouter.handleKeyPress(key, isShifted)
+                // 剪贴板历史搜索态：按键仍走 RIME 引擎（候选栏正常显示拼音候选，
+                // 中文可组词），引擎上屏经 service.commitText 重定向写入搜索框。
+                val s = service.uiState.value
+                if (s.clipboardSearchActive) {
+                    val cs = service.candidateState.value
+                    val composing = cs.isComposing ||
+                        cs.inputText.isNotEmpty() ||
+                        cs.preeditText.isNotEmpty() ||
+                        cs.pendingEnglishText.isNotEmpty()
+                    when {
+                        // 退格：有 RIME 编码先删编码，无编码才删搜索框字符，绝不回删宿主
+                        key == "delete" -> {
+                            if (composing) {
+                                service.keyRouter.handleKeyPress("delete", false)
+                            } else if (s.clipboardSearchQuery.isNotEmpty()) {
+                                service.uiState.value =
+                                    s.copy(clipboardSearchQuery = s.clipboardSearchQuery.dropLast(1))
+                            }
+                        }
+                        // 回车：编码中把原始编码提交进搜索框；空闲时忽略，不触发宿主动作键
+                        key == "enter" -> {
+                            if (composing) service.keyRouter.handleKeyPress("enter", false)
+                        }
+                        // 上滑清空：清搜索框 + RIME 编码；下滑撤回：搜索态禁用
+                        // （普通路径在空闲态会删除宿主输入框内容，必须拦截）
+                        key == "clear_all" -> {
+                            if (s.clipboardSearchQuery.isNotEmpty()) {
+                                service.uiState.value = s.copy(clipboardSearchQuery = "")
+                            }
+                            if (composing) service.keyRouter.handleKeyPress("clear_composition", false)
+                        }
+                        key == "undo_clear" -> {
+                            // no-op
+                        }
+                        // 英文模式字母：直接追加到搜索框（RIME 的 pendingEnglish 路径会
+                        // setComposingText 到宿主输入框，搜索态必须避开）
+                        key.length == 1 && key[0].isLetter() && s.isAsciiMode -> {
+                            val ch = if (isShifted) key.uppercase() else key.lowercase()
+                            service.uiState.value =
+                                s.copy(clipboardSearchQuery = s.clipboardSearchQuery + ch)
+                        }
+                        // 其余按键（中文模式字母、标点、空格、中英切换、清编码等）照常进 RIME，
+                        // 上屏文本由 commitText 重定向，空格空闲态也会经 commitText(" ") 入搜索框
+                        else -> service.keyRouter.handleKeyPress(key, isShifted)
+                    }
+                } else {
+                    service.keyRouter.handleKeyPress(key, isShifted)
+                }
             },
             onKeyPressDown = { key ->
+                service.recordImeUiTrace("key_touch_down", key)
                 service.feedbackManager.performKeyPressDownEffect(key, view)
             },
             onKeyRelease = { key ->
+                service.recordImeUiTrace("key_touch_up", key)
                 service.feedbackManager.hapticFeedback(view, keyUp = true)
             },
-            onCandidateSelect = { index ->
-                service.keyRouter.selectCandidate(index)
+            onCandidateSelect = { index, candidate ->
+                service.keyRouter.selectCandidate(index, candidate)
             },
-            onAssociationSelect = { index ->
+            onAssociationSelect = { _, candidate ->
                 service.feedbackManager.performKeyPressEffect(view = view)
                 val cs = service.candidateState.value
-                val adjustedCandidates = if (cs.pendingEnglishText.isNotEmpty()) {
-                    listOf(cs.pendingEnglishText) + cs.associationCandidates
-                } else {
-                    cs.associationCandidates
-                }
-                if (index >= 0 && index < adjustedCandidates.size) {
-                    val text = adjustedCandidates[index]
-                    val pendingEnglish = cs.pendingEnglishText
+                val pendingEnglish = cs.pendingEnglishText
+                if (pendingEnglish.isEmpty() ||
+                    candidate.startsWith(pendingEnglish, ignoreCase = true)
+                ) {
+                    service.commitText(candidate)
                     if (pendingEnglish.isNotEmpty()) {
-                        if (index == 0 && text == pendingEnglish) {
-                            service.commitText(text)
-                            service.candidateState.value = service.candidateState.value.copy(
-                                pendingEnglishText = "",
-                                associationCandidates = emptyList()
-                            )
-                        } else {
-                            // 键入时已用 setComposingText 建立 composing region，
-                            // commitText 自然替换 composing 文本，终端也兼容。
-                            service.commitText(text)
-                            service.candidateState.value = service.candidateState.value.copy(
-                                pendingEnglishText = "",
-                                associationCandidates = emptyList()
-                            )
-                        }
+                        service.candidateState.value = service.candidateState.value.copy(
+                            pendingEnglishText = "",
+                            associationCandidates = emptyList()
+                        )
                     } else {
-                        service.commitText(text)
                         service.updateUI()
                     }
                 }
@@ -80,10 +114,60 @@ internal fun rememberImeKeyboardCallbacks(
             onClearAssociation = {
                 service.candidateState.value = service.candidateState.value.copy(associationCandidates = emptyList())
             },
+            onCustomPhraseAction = { word, action ->
+                val mgr = com.kingzcheung.xime.settings.UserPhraseManager
+                val schemaId = service.uiState.value.currentSchemaId
+                // 自动学习词走内存直管（即时、不重建会话）；手动 custom_phrase 走原有重建链路。
+                val isAuto = mgr.isAutoWord(service, schemaId, word)
+                when (action) {
+                    "delete" ->
+                        if (isAuto) {
+                            mgr.deleteAutoWord(service, schemaId, word)
+                            // 立即按当前编码重合并候选：被删词当场消失。
+                            service.updateUI()
+                        } else {
+                            mgr.deleteWord(service, schemaId, word)
+                        }
+                    "moveSecondPage" ->
+                        if (isAuto) {
+                            mgr.moveAutoWordToSecondPage(service, schemaId, word)
+                            // 立即重合并：该词当场降低到当前 Rime 候选之后。
+                            service.updateUI()
+                        } else {
+                            mgr.moveToEnd(service, schemaId, word)
+                        }
+                }
+            },
             onToggleDarkMode = { service.toggleDarkMode() },
             onClipboard = {},
             onClipboardSelect = { text -> service.textCommit.selectClipboardItem(text) },
             onClipboardPullRemote = { service.clipboardSyncBridge?.pullOnce() },
+            onClipboardSearchToggle = { active ->
+                service.uiState.value = service.uiState.value.copy(
+                    clipboardSearchActive = active,
+                    // 关闭搜索时清空查询，下次进入重新开始
+                    clipboardSearchQuery = if (active) service.uiState.value.clipboardSearchQuery else ""
+                )
+                // 进入/退出搜索都清空 RIME 组合与候选：
+                // 进入时丢弃宿主里未提交的编码，退出时防止搜索期拼音泄漏到宿主
+                service.keyRouter.postRimeJob {
+                    service.rimeEngine.clearComposition()
+                    service.calculatorEngine.clear()
+                    withContext(Dispatchers.Main) {
+                        service.partialCandidateSegments.clear()
+                        if (SettingsPreferences.getInputTextLocation(service) ==
+                            SettingsPreferences.INPUT_TEXT_INPUT_BOX
+                        ) {
+                            service.endComposingInputBox()
+                        }
+                        service.candidateState.value = CandidateState()
+                    }
+                }
+            },
+            onClipboardSearchQueryChange = { query ->
+                service.uiState.value = service.uiState.value.copy(clipboardSearchQuery = query)
+            },
+            onKeyboardTopPositioned = { top -> service.stableKeyboardTopPx = top },
             onCommitText = { text -> service.textCommit.commitClipboardText(text) },
             onDeleteText = { count -> service.textCommit.deleteClipboardChars(count) },
             onQuickSend = {},
@@ -100,7 +184,8 @@ internal fun rememberImeKeyboardCallbacks(
             onSettings = { service.schemaController.openSettings() },
             onSwitchSchema = { schemaId -> service.schemaController.switchSchema(schemaId) },
             onToggleSchemaSwitch = { sw -> service.sessionController.toggleSchemaSwitch(sw) },
-            onHideKeyboard = { service.hideKeyboard() },
+            onHideKeyboard = { service.hideKeyboard("candidate_bar") },
+            onUiDiagnosticEvent = { event, detail -> service.recordImeUiTrace(event, detail) },
             onSwitchKeyboard = {
                 val imm = service.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
                 @Suppress("DEPRECATION")
@@ -127,6 +212,7 @@ internal fun rememberImeKeyboardCallbacks(
                         isVoiceMode = true,
                         voiceSticky = false,
                         voiceButtonState = VoiceButtonState(bottomActive = true),
+                        sttMuteOthers = SettingsPreferences.isSttMuteOthers(service),
                         voiceRecognizedText = ""
                     )
                     service.keyboardViewModel.enterVoice()
@@ -244,6 +330,7 @@ internal fun rememberImeKeyboardCallbacks(
                         }
                         pinyin == T9InputController.CLEAR_ALL -> {
                             service.t9PartialSegments.clear()
+                            service.partialCandidateSegments.clear()
                             service.rimeEngine.setInput("")
                             service.rimeEngine.clearComposition()
                         }

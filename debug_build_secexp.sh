@@ -1,0 +1,271 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$PROJECT_DIR"
+WORKSPACE_DIR="$(dirname "$PROJECT_DIR")"
+
+if (($#)); then
+    echo "错误: 本脚本不使用命令行参数，请修改文件开头的“构建参数”配置区。" >&2
+    exit 2
+fi
+
+if grep -Eq '^[[:space:]]*version[[:space:]]*=[[:space:]]*"3\.13"[[:space:]]*$' \
+    "$PROJECT_DIR/app/build.gradle.kts"; then
+    "$PROJECT_DIR/scripts/install-python313.sh"
+fi
+
+# ============================================================
+# 构建参数：需要调整时只修改本段。
+# APP_ICON_PATH 默认使用项目原始矢量图标；可改为 PNG、WebP 或矢量 XML 文件。
+# ============================================================
+unset APPLICATION_ID VERSION_CODE VERSION_NAME APP_NAME BUILD_ABIS
+VERSION_CODE="${VERSION_CODE:-20261020}"
+
+APP_CHINESE_NAME="${APP_CHINESE_NAME:-随手}"
+APP_NAME="${APP_CHINESE_NAME}输入法"
+APP_ICON_PATH="$PROJECT_DIR/app/icons/iFly_xunfei/1760.png"
+
+#APP_NAME="${VERSION_CODE: -4}输入法"
+#APP_ICON_PATH="${APP_ICON_PATH:-$PROJECT_DIR/app/src/main/res/drawable/ic_launcher_foreground.xml}"
+
+PROJECT_NAME="${PROJECT_DIR##*/}"
+
+SECEXP="${SECEXP:-1}"
+APPLICATION_ID="${APPLICATION_ID:-com.qgb.${PROJECT_NAME}}"
+VERSION_NAME="${VERSION_NAME:-${VERSION_CODE}有问题请联系作者  }"
+
+APK_BASENAME="${APPLICATION_ID}"
+BUILD_ABIS="${BUILD_ABIS:-arm64-v8a}"
+OUT_DIR="${OUT_DIR:-$PROJECT_DIR/out}"
+
+GRADLE_USER_HOME="$WORKSPACE_DIR/.gradle"
+ANDROID_USER_HOME="$WORKSPACE_DIR/.android"
+# ============================================================
+
+if [[ ! -f "$APP_ICON_PATH" || ! -r "$APP_ICON_PATH" || ! -s "$APP_ICON_PATH" ]]; then
+    echo "错误: 图标文件不存在、不可读或为空：$APP_ICON_PATH" >&2
+    exit 1
+fi
+
+APP_ICON_PATH="$(realpath -- "$APP_ICON_PATH")"
+printf '%s 应用图标文件：%s\n' $VERSION_CODE "$APP_ICON_PATH"
+
+# ============================================================
+# 新增环境隔离：强制让 Gradle 和 Android 工具依赖外层工作区目录
+# 显式 mkdir -p 预先创建目录，防止 AGP 的 AndroidDirectoryCreator 崩溃。
+# ============================================================
+export GRADLE_USER_HOME ANDROID_USER_HOME
+
+mkdir -p "$GRADLE_USER_HOME" "$ANDROID_USER_HOME"
+# ============================================================
+
+# 任何一次变更都必须显式传入；禁止把 SECEXP 或构建环境写进版本名/包名。
+export APP_NAME APP_CHINESE_NAME APK_BASENAME APPLICATION_ID VERSION_CODE VERSION_NAME BUILD_ABIS SECEXP
+
+mkdir -p "$OUT_DIR"
+
+# 1)定位 Android SDK（兼容 build.sh 的默认路径）
+ANDROID_HOME_DEFAULT=""
+for candidate in \
+    "${ANDROID_HOME:-}" \
+    "${ANDROID_SDK_ROOT:-}" \
+    "$PROJECT_DIR/../.cache/briefcase/tools/android_sdk" \
+    "$PROJECT_DIR/../.buildozer/android/platform/android-sdk" \
+    "$PROJECT_DIR/../sdk"; do
+    if [[ -n "$candidate" && -f "$candidate/platforms/android-36/android.jar" ]]; then
+        ANDROID_HOME_DEFAULT="$(cd "$candidate" && pwd)"
+        break
+    fi
+done
+
+if [[ -z "$ANDROID_HOME_DEFAULT" ]]; then
+    platform_jar="$(find / -type f -path '*/platforms/android-36/android.jar' -print -quit 2>/dev/null || true)"
+    if [[ -n "$platform_jar" ]]; then
+        ANDROID_HOME_DEFAULT="$(cd "$(dirname "$(dirname "$(dirname "$platform_jar")")")" && pwd)"
+    fi
+fi
+
+if [[ -z "$ANDROID_HOME_DEFAULT" ]]; then
+    echo "错误: 未找到 Android SDK，请先设置 ANDROID_HOME 或确保存在 android-36 平台。" >&2
+    exit 1
+fi
+export ANDROID_HOME="$ANDROID_HOME_DEFAULT"
+export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME_DEFAULT}"
+
+
+# ============================================================
+# 子模块同步：只认 .gitmodules 里的 path/url，rsync 权威覆盖
+# ============================================================
+relpath=.gradle/wrapper/dists/gradle-9.5.0-bin/estug5qhtw5xqrldjyqnn9yr5
+# 由于设置了 GRADLE_USER_HOME 为外层目录，在 WORKSPACE_DIR 确保对应的目录结构存在
+mkdir -p "$WORKSPACE_DIR/$relpath"
+
+SUBMODULE_SECTION="[submodule \"app/src/main/python/multi_mqtt\"]"
+SUBMODULE_PATH_VALUE=""
+SUBMODULE_URL_VALUE=""
+current_section=""
+
+if [[ -f "$PWD/.gitmodules" ]]; then
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^\[submodule\ \".*\"\]$ ]]; then
+            current_section="$line"
+        fi
+        if [[ "$current_section" == "$SUBMODULE_SECTION" ]]; then
+            if [[ "$line" =~ ^[[:space:]]*path[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+                SUBMODULE_PATH_VALUE="${line##*=}"
+                SUBMODULE_PATH_VALUE="${SUBMODULE_PATH_VALUE//[[:space:]]/}"
+            elif [[ "$line" =~ ^[[:space:]]*url[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+                SUBMODULE_URL_VALUE="${line##*=}"
+                SUBMODULE_URL_VALUE="${SUBMODULE_URL_VALUE//[[:space:]]/}"
+            fi
+        fi
+    done < "$PWD/.gitmodules"
+fi
+
+if [[ -z "$SUBMODULE_PATH_VALUE" || -z "$SUBMODULE_URL_VALUE" ]]; then
+    echo "错误: 无法从 .gitmodules 解析 app/src/main/python/multi_mqtt 的 path/url，构建中止。" >&2
+    exit 1
+fi
+
+target_dir="$PWD/$SUBMODULE_PATH_VALUE"
+source_dir="$SUBMODULE_URL_VALUE"
+# 相对路径统一转成绝对路径（相对脚本所在目录）
+if [[ "$source_dir" != /* ]]; then
+    source_dir="$PWD/$source_dir"
+fi
+# 规范化路径（去掉 ../ 之类）
+if [[ -d "$source_dir" ]]; then
+    source_dir="$(cd "$source_dir" && pwd)"
+fi
+
+if [[ -d "$source_dir" ]]; then
+    echo "同步目录: $source_dir -> $target_dir"
+    mkdir -p "$target_dir"
+    # 清掉目标里可能残留的 .git（旧的 submodule 痕迹），否则它还是个 git 仓库
+    rm -rf "$target_dir/.git"
+    rsync --delete-excluded \
+          --include='/*.py' --exclude='*' \
+          -a "$source_dir/" "$target_dir/" \
+        || echo "警告: rsync 返回非零，忽略并继续构建。" >&2
+    # 强制清理：同步后只保留根级 .py，删除子目录和其他文件
+    find "$target_dir" -mindepth 1 -maxdepth 1 ! -name "*.py" -exec rm -rf -- {} +
+else
+    echo "警告: 同步源目录不存在: $source_dir，跳过 rsync。" >&2
+fi
+
+ensure_native_dependency() {
+    local repository="$1"
+    local destination="$2"
+    local marker="$destination/CMakeLists.txt"
+    if [[ -f "$marker" ]]; then
+        return
+    fi
+
+    local temporary_directory
+    temporary_directory="$(mktemp -d)"
+    trap 'rm -rf "$temporary_directory"' RETURN
+    echo "缺少 native 依赖，正在下载: $repository"
+    git clone --depth 1 --recurse-submodules "$repository" "$temporary_directory/source"
+    mkdir -p "$destination"
+    cp -a "$temporary_directory/source/." "$destination/"
+    trap - RETURN
+    rm -rf "$temporary_directory"
+}
+
+ensure_native_dependency "https://github.com/rime/librime.git" "app/src/main/jni/librime" || true
+ensure_native_dependency "https://github.com/google/snappy.git" "app/src/main/jni/snappy" || true
+
+[ ! -f "$PWD/app/src/main/python/aliyun_git.py" ] && wget -q -O "$PWD/app/src/main/python/aliyun_git.py" https://github.com/QGB/git.bat/raw/refs/heads/master/aliyun_git.py || true
+# ============================================================
+
+
+# 2) 清理旧产物，确保输出是这个 secexp 对应的新包
+find "$OUT_DIR" -maxdepth 1 -type f -name "${APK_BASENAME}-*.apk" -delete 2>/dev/null || true
+
+# 3) 先清理并编译 debug APK，确保同一输入输出一致。
+rm -rf "$PROJECT_DIR/app/build/outputs/apk/debug" "$PROJECT_DIR/out/debug-secexp"
+#mkdir -p "$PROJECT_DIR/out/debug-secexp"
+./gradlew --no-daemon assembleDebug \
+  --quiet \
+  -PappName="$APP_NAME" \
+  -PappChineseName="$APP_CHINESE_NAME" \
+  -PapplicationId="$APPLICATION_ID" \
+  -PversionCode="$VERSION_CODE" \
+  -PversionName="$VERSION_NAME" \
+  -PbuildAbis="$BUILD_ABIS" \
+  -PappIconPath="$APP_ICON_PATH"
+
+# 4) 找到编译出的 APK
+APK_PATH="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" -maxdepth 1 -type f -name "${APK_BASENAME}-${VERSION_CODE}-*.apk" -print -quit)"
+if [[ -z "$APK_PATH" ]]; then
+    APK_PATH="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" -maxdepth 1 -type f -name '*.apk' -print -quit)"
+fi
+if [[ -z "$APK_PATH" ]]; then
+    echo "错误: 未找到 debug APK，编译失败或输出命名和预期不一致。" >&2
+    exit 1
+fi
+
+# 5) 先把 ZIP 元数据归一化，消除时间戳和文件顺序造成的差异，再签名
+REPACKED_APK="$PROJECT_DIR/app/build/outputs/apk/debug/repacked-${VERSION_CODE}-${BUILD_ABIS}.apk"
+python3 - "$APK_PATH" "$REPACKED_APK" <<'PY'
+import sys
+import zipfile
+from pathlib import Path
+
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+
+with zipfile.ZipFile(src, 'r') as zin:
+    members = sorted(zin.infolist(), key=lambda i: i.filename)
+    with zipfile.ZipFile(dst, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zout:
+        for info in members:
+            data = zin.read(info.filename)
+            new_info = zipfile.ZipInfo(info.filename)
+            new_info.compress_type = info.compress_type
+            new_info.date_time = (1980, 1, 1, 0, 0, 0)
+            new_info.extra = b''
+            new_info.comment = b''
+            new_info.create_system = 3
+            new_info.external_attr = info.external_attr
+            new_info.internal_attr = info.internal_attr
+            zout.writestr(new_info, data)
+PY
+rm -f "$APK_PATH"
+APK_PATH="$REPACKED_APK"
+
+# 5b) zipalign：上面的 Python 重打包只保留压缩方式、不保证对齐，
+#     Android 11+（targetSdk>=30）要求 resources.arsc 等 STORED 条目 4 字节对齐，
+#     否则安装会失败（如 -124 Failed parse during installPackageLI）。
+#     zipalign 会改字节，必须在 apk_sign.py 签名之前执行；输入输出固定，仍可复现。
+ZIPALIGN_BIN="$(find "$ANDROID_HOME_DEFAULT/build-tools" -maxdepth 2 -type f -name zipalign -print 2>/dev/null | sort -V | tail -n 1)"
+if [[ -z "$ZIPALIGN_BIN" || ! -x "$ZIPALIGN_BIN" ]]; then
+    echo "错误: 未找到可执行的 zipalign，SDK 路径: $ANDROID_HOME_DEFAULT" >&2
+    exit 1
+fi
+ALIGNED_APK="$PROJECT_DIR/app/build/outputs/apk/debug/aligned-${VERSION_CODE}-${BUILD_ABIS}.apk"
+"$ZIPALIGN_BIN" -f -p 4 "$APK_PATH" "$ALIGNED_APK"
+rm -f "$APK_PATH"
+APK_PATH="$ALIGNED_APK"
+"$ZIPALIGN_BIN" -c -p 4 "$APK_PATH"
+
+# 6) 使用 apk_sign.py 通过 secexp 确定性生成签名密钥并签名
+python3 "$PROJECT_DIR/apk_sign.py" "$APK_PATH" \
+  --mode secexp \
+  --secexp "$SECEXP" \
+  --sdk "$ANDROID_HOME_DEFAULT"
+
+SIGNED_APK="${APK_PATH%.apk}-signed.apk"
+if [[ ! -f "$SIGNED_APK" ]]; then
+    echo "错误: 签名后 APK 未生成：$SIGNED_APK" >&2
+    exit 1
+fi
+
+# 7) 再复制一份到导出目录，方便直接取用，并保留到全局缓存目录用于真实文件对比
+OUT_APK="$OUT_DIR/${APK_BASENAME}-${VERSION_CODE}-${BUILD_ABIS}.apk"
+cp -f "$SIGNED_APK" "$OUT_APK"
+rm -f "$SIGNED_APK" "$APK_PATH"
+
+echo
+echo "SECEXP=$SECEXP"
+echo "APK=$OUT_APK"
