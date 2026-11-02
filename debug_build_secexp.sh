@@ -20,7 +20,7 @@ fi
 # APP_ICON_PATH 默认使用项目原始矢量图标；可改为 PNG、WebP 或矢量 XML 文件。
 # ============================================================
 unset APPLICATION_ID VERSION_CODE VERSION_NAME APP_NAME BUILD_ABIS
-VERSION_CODE="${VERSION_CODE:-20261020}"
+VERSION_CODE="${VERSION_CODE:-20261102}"
 
 APP_CHINESE_NAME="${APP_CHINESE_NAME:-随手}"
 APP_NAME="${APP_CHINESE_NAME}输入法"

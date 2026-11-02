@@ -79,6 +79,11 @@ internal data class SchemaEntry(
 object SchemaManager {
     private const val TAG = "SchemaManager"
     private const val CUSTOM_YAML = "default.custom.yaml"
+    private const val DEFAULT_YAML = "default.yaml"
+    /** 内置预设所在 assets 目录（与 [RimeSharedFiles] 保持一致）。 */
+    private const val ASSETS_RIME_DIR = "rime"
+    /** 方案包 default.yaml 的读取上限（防止异常归档把整文件读进内存）。 */
+    private const val MAX_PACKAGED_DEFAULT_YAML = 1_048_576L
 
     /** 出厂默认启用方案：简体拼音（列表首个即默认输入方案）、手写、拼音九键。 */
     val DEFAULT_ENABLED_SCHEMAS = listOf("pinyin_simp", "handwriting", "t9_pinyin")
@@ -684,12 +689,8 @@ object SchemaManager {
         return result.joinToString("\n")
     }
 
-    fun getEnabledSchemas(context: Context): List<String> {
-        val customFile = getCustomYamlFile(context)
-        if (!customFile.exists()) {
-            setEnabledSchemas(context, DEFAULT_ENABLED_SCHEMAS)
-            return DEFAULT_ENABLED_SCHEMAS
-        }
+    /** 内置方案（保持默认启用顺序）。 */
+    internal val BUILTIN_SCHEMAS = listOf("wubi86", "wubi86_pinyin", "pinyin_simp", "t9_pinyin")
 
     /**
      * 启用方案列表（真相在 prefs，由 [com.kingzcheung.xime.scheme.SchemeStore] 维护）。
@@ -700,30 +701,13 @@ object SchemaManager {
     fun getEnabledSchemas(context: Context): List<String> =
         com.kingzcheung.xime.scheme.SchemeStore.state(context).enabled
 
-        return DEFAULT_ENABLED_SCHEMAS
-    }
-
     /**
-     * 升级迁移：旧版出厂默认方案集（手写在前、或五笔组合）替换为当前出厂默认。
-     * 仅当启用列表仍与某个历史出厂值完全一致时才改写——此时可认为用户从未自定义过方案集，
-     * 列表一旦被用户改动过就保持不变。
-     *
-     * 只替换 default.custom.yaml 里的 schema_list 块，保留文件内其余 patch
-     * （键位、标点、菜单等设置），避免迁移把用户的其它自定义一起清掉。
+     * 写入启用方案列表：状态走 SchemeStore，`default.yaml` 的 `schema_list`
+     * 是派生物，随写入重新镜像。
      */
-    fun migrateLegacyDefaultSchemas(context: Context) {
-        val customFile = getCustomYamlFile(context)
-        // 没有 custom 文件说明是全新部署，getEnabledSchemas 会直接写入当前出厂默认
-        if (!customFile.exists()) return
-        val enabled = getEnabledSchemas(context)
-        if (enabled !in LEGACY_DEFAULT_ENABLED_SCHEMAS) return
-        try {
-            customFile.writeText(replaceSchemaListBlock(customFile.readText(), DEFAULT_ENABLED_SCHEMAS))
-            applyEnabledSchemasToDefaultYaml(context, DEFAULT_ENABLED_SCHEMAS)
-            Log.i(TAG, "Migrate legacy default schemas $enabled -> $DEFAULT_ENABLED_SCHEMAS")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to migrate legacy default schemas", e)
-        }
+    fun setEnabledSchemas(context: Context, schemaIds: List<String>) {
+        val effective = com.kingzcheung.xime.scheme.SchemeStore.writeEnabled(context, schemaIds)
+        applyEnabledSchemasToDefaultYaml(context, effective)
     }
 
     /**
@@ -752,6 +736,29 @@ object SchemaManager {
             SettingsPreferences.setDefaultCustomMigrated(context, true)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to migrate default.custom.yaml schema_list", e)
+        }
+    }
+
+    /**
+     * 升级迁移：旧版出厂默认方案集（手写在前、或五笔组合）替换为当前出厂默认。
+     * 仅当启用列表仍与某个历史出厂值完全一致时才改写——此时可认为用户从未自定义过方案集，
+     * 列表一旦被用户改动过就保持不变。
+     *
+     * 只替换 default.custom.yaml 里的 schema_list 块，保留文件内其余 patch
+     * （键位、标点、菜单等设置），避免迁移把用户的其它自定义一起清掉。
+     */
+    fun migrateLegacyDefaultSchemas(context: Context) {
+        val customFile = getCustomYamlFile(context)
+        // 没有 custom 文件说明是全新部署，getEnabledSchemas 会直接写入当前出厂默认
+        if (!customFile.exists()) return
+        val enabled = getEnabledSchemas(context)
+        if (enabled !in LEGACY_DEFAULT_ENABLED_SCHEMAS) return
+        try {
+            customFile.writeText(replaceSchemaListBlock(customFile.readText(), DEFAULT_ENABLED_SCHEMAS))
+            applyEnabledSchemasToDefaultYaml(context, DEFAULT_ENABLED_SCHEMAS)
+            Log.i(TAG, "Migrate legacy default schemas $enabled -> $DEFAULT_ENABLED_SCHEMAS")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to migrate legacy default schemas", e)
         }
     }
 

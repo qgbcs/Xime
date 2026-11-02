@@ -1,17 +1,11 @@
 package com.kingzcheung.xime.ui.keyboard
 
-
-import com.kingzcheung.xime.R
-
-import com.kingzcheung.xime.i18n.tr
-
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -20,9 +14,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -40,7 +31,6 @@ import androidx.compose.material.icons.twotone.Quickreply
 import androidx.compose.material.icons.twotone.Rotate90DegreesCcw
 import androidx.compose.material.icons.twotone.Settings
 import androidx.compose.material.icons.twotone.SettingsOverscan
-import androidx.compose.material.icons.twotone.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -78,9 +68,7 @@ data class MenuBarState(
     val keyBgColor: Color = Color.White,
     val keyTextColor: Color = Color(0xFF202124),
     val isFloatingMode: Boolean = false,
-    /** 承载区受限（独立 IME 面板）时「键盘调节」「浮动键盘」不可用，入口隐藏。 */
-    val canResizeKeyboard: Boolean = true,
-    val canFloatKeyboard: Boolean = true,
+    val schemaSwitches: List<SchemaSwitchUiState> = emptyList(),
 )
 
 data class MenuBarCallbacks(
@@ -93,10 +81,10 @@ data class MenuBarCallbacks(
     val onReloadConfig: () -> Unit,
     val onSettings: () -> Unit,
     val onSchemaList: () -> Unit,
-    val onSchemaSwitches: () -> Unit = {},
     val onToggleDarkMode: () -> Unit,
     val onFloatingModeToggle: (() -> Unit)? = null,
     val onToolbarCustomize: () -> Unit = {},
+    val onToggleSchemaSwitch: ((SchemaSwitchUiState) -> Unit)? = null,
 )
 
 @Composable
@@ -110,10 +98,8 @@ fun MenuBar(
     val textColor = state.keyTextColor
     // 功能 item 背景：与键盘按键背景一致（keyBgColor，浅色纯白、深色跟随 keyboard.colors）
     val itemBgColor = state.keyBgColor
-    // 圆形图标按钮底色（关闭 / 设置）：深色下沿用按键的半透明白材质，和下方菜单项同色；
-    // 亮色下用 surface 与 primary 的混合色调（带种子色但不过于强烈）
-    val iconButtonContainer = if (state.isDarkTheme) state.keyBgColor
-    else androidx.compose.ui.graphics.lerp(
+    // 图标按钮容器色：surface 与 primary 的混合色调（带种子色但不过于强烈）
+    val iconButtonContainer = androidx.compose.ui.graphics.lerp(
         MaterialTheme.colorScheme.surface,
         MaterialTheme.colorScheme.primary,
         0.35f
@@ -133,17 +119,16 @@ fun MenuBar(
     val deployIcon = rememberVectorPainter(Icons.TwoTone.Rotate90DegreesCcw)
     val customizeIcon = rememberVectorPainter(Icons.TwoTone.Padding)
     val schemaIcon = rememberVectorPainter(Icons.TwoTone.Keyboard)
-    val switchesIcon = rememberVectorPainter(Icons.TwoTone.Tune)
     val settingsIcon = rememberVectorPainter(Icons.TwoTone.Settings)
 
     val darkModeLabel = when (state.darkMode) {
-        0 -> tr(R.string.s_shensemoshi)
-        1 -> tr(R.string.s_qiansemoshi)
-        else -> tr(R.string.s_gensuixitong)
+        0 -> "深色模式"
+        1 -> "浅色模式"
+        else -> "跟随系统"
     }
 
     val floatingIcon = rememberVectorPainter(Icons.TwoTone.PictureInPicture)
-    val floatingLabel = if (state.isFloatingMode) tr(R.string.s_tuichuxuanfu) else tr(R.string.s_xuanfumoshi)
+    val floatingLabel = if (state.isFloatingMode) "退出悬浮" else "悬浮模式"
     val floatingAction = callbacks.onFloatingModeToggle ?: {}
 
     // RPC 槽位：菜单反馈入口的文字/图标/显隐由 ime.menu.feedback 动态下发
@@ -183,9 +168,8 @@ fun MenuBar(
             // 悬浮模式下键盘内容为缩放的浮动卡片，高度不可调节，隐藏该入口
             if (!state.isFloatingMode) MenuItem(keyboardResizeIcon, "键盘调节", callbacks.onKeyboardResize) else null,
             MenuItem(darkModeIcon, darkModeLabel, callbacks.onToggleDarkMode),
-            // 承载区受限时浮动键盘无处安放，隐藏入口
-            if (state.canFloatKeyboard) MenuItem(floatingIcon, floatingLabel, floatingAction) else null,
-            MenuItem(deployIcon, tr(R.string.s_bushufangan), callbacks.onReloadConfig),
+            MenuItem(floatingIcon, floatingLabel, floatingAction),
+            MenuItem(deployIcon, "部署方案", callbacks.onReloadConfig),
         ).filterNotNull()
     }
     Column(
@@ -194,20 +178,17 @@ fun MenuBar(
             .background(state.backgroundColor),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // 顶栏的尺寸与内边距跟候选栏一致：菜单开合时关闭按钮正好落在 logo 的位置。
-        // 横屏不再叠加 50dp 缩进——挖孔/导航栏的物理避让由服务层内容容器的边衬区统一处理，
-        // 叠加会让按钮比 logo 右移 42dp，开合菜单时整块图标左右跳。
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(IconButtonRowHeight)
-                .padding(horizontal = 8.dp),
+                .height(50.dp)
+                .padding(horizontal = if (isLandscape) 50.dp else 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(IconButtonSize)
+                    .size(28.dp)
                     .clip(CircleShape)
                     .background(iconButtonContainer)
                     .clickable { callbacks.onDismiss() },
@@ -215,47 +196,44 @@ fun MenuBar(
             ) {
                 Icon(
                     imageVector = Icons.Default.KeyboardArrowUp,
-                    contentDescription = tr(R.string.s_guanbicaidan),
+                    contentDescription = "关闭菜单",
                     tint = textColor,
-                    modifier = Modifier.size(IconButtonGlyphSize)
+                    modifier = Modifier.size(24.dp)
                 )
             }
             Box(
                 modifier = Modifier
-                    .size(IconButtonSize)
+                    .size(28.dp)
                     .clip(CircleShape)
-                    .background(iconButtonContainer)
+                    .background(MaterialTheme.colorScheme.surfaceContainerLow)
                     .clickable { callbacks.onSettings() },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     painter = settingsIcon,
-                    contentDescription = tr(R.string.s_shezhi),
+                    contentDescription = "设置",
                     tint = textColor,
-                    modifier = Modifier.size(IconButtonGlyphSize)
+                    modifier = Modifier.size(24.dp)
                 )
             }
         }
         // 内容区（菜单项）
         if (isLandscape) {
-            // 横屏：方案开关多的配置（如万象）可能有 20+ 项，固定单行会把每格压到只剩一个字，
-            // 这里按可用宽度自适应列数并换行；项数超出可用高度时可滚动。
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 64.dp),
+            // 横屏：一行 8 列
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f)
-                    .padding(horizontal = 8.dp),
+                    .padding(horizontal = 50.dp)
+                    .weight(1f),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
-                contentPadding = PaddingValues(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                items(menuItems) { item ->
+                menuItems.forEach { item ->
                     MenuItemButton(
                         item = item,
                         bgColor = itemBgColor,
                         textColor = textColor,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.weight(1f),
                         isLandscape = true
                     )
                 }

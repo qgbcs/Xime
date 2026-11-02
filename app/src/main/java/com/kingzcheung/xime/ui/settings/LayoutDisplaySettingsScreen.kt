@@ -1,9 +1,5 @@
 package com.kingzcheung.xime.ui.settings
 
-import com.kingzcheung.xime.R
-
-import com.kingzcheung.xime.i18n.tr
-
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -52,12 +48,12 @@ fun LayoutDisplaySettingsContent(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
             TopAppBar(
-                title = { Text(tr(R.string.s_bujuyuxianshi)) },
+                title = { Text("布局与显示") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = tr(R.string.s_fanhui)
+                            contentDescription = "返回"
                         )
                     }
                 },
@@ -76,97 +72,7 @@ fun LayoutDisplaySettingsContent(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
-                SettingsSection(title = tr(R.string.s_jianpanbuju), content = {
-                    var hardwareKeyboardDetectionEnabled by remember {
-                        mutableStateOf(SettingsPreferences.isHardwareKeyboardDetectionEnabled(context))
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(text = tr(R.string.s_shitijianpanjiance), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-                            Text(text = tr(R.string.s_guanbihoubujianceshitijianpan_6aaf1), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Switch(
-                            checked = hardwareKeyboardDetectionEnabled,
-                            onCheckedChange = { enabled ->
-                                hardwareKeyboardDetectionEnabled = enabled
-                                SettingsPreferences.setHardwareKeyboardDetectionEnabled(context, enabled)
-                            }
-                        )
-                    }
-
-                    var landscapeSplitKeyboardEnabled by remember {
-                        mutableStateOf(SettingsPreferences.isLandscapeSplitKeyboardEnabled(context))
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = tr(R.string.s_hengpingshiyongfentijianpan),
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                text = tr(R.string.s_guanbihou_hengpingjiangxianshi_e98c9),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = landscapeSplitKeyboardEnabled,
-                            onCheckedChange = { enabled ->
-                                landscapeSplitKeyboardEnabled = enabled
-                                SettingsPreferences.setLandscapeSplitKeyboardEnabled(context, enabled)
-                            }
-                        )
-                    }
-
-                    HorizontalDivider(
-                        modifier = Modifier.padding(start = 16.dp),
-                        thickness = 0.5.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                    )
-
-                    var keyboardFlushBottom by remember {
-                        mutableStateOf(SettingsPreferences.isKeyboardFlushBottom(context))
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = tr(R.string.s_jianpantiedixianshi),
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                text = tr(R.string.s_yincangdibudaohanglanhuoshoush_daf00),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = keyboardFlushBottom,
-                            onCheckedChange = { enabled ->
-                                keyboardFlushBottom = enabled
-                                SettingsPreferences.setKeyboardFlushBottom(context, enabled)
-                            }
-                        )
-                    }
-                })
-            }
-
-            item {
-                SettingsSection(title = tr(R.string.s_houxuanci), content = {
+                SettingsSection(title = "候选词", content = {
                     val candidateTextSizePref = SettingsPreferences.getCandidateTextSize(context)
                     var candidateTextSize by remember(candidateTextSizePref) {
                         mutableStateOf(candidateTextSizePref.toFloat())
@@ -176,7 +82,7 @@ fun LayoutDisplaySettingsContent(
                         modifier = Modifier.padding(16.dp)
                     ) {
                         Text(
-                            text = tr(R.string.s_houxuanzidaxiao),
+                            text = "候选字大小",
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Medium
                         )
@@ -208,13 +114,13 @@ fun LayoutDisplaySettingsContent(
                     }
 
                     Text(
-                        text = tr(R.string.s_bianmazhushi),
+                        text = "编码注释",
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.Medium,
                         modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp)
                     )
                     Text(
-                        text = tr(R.string.s_zaihouxuancipangxianshiduiying_de529),
+                        text = "在候选词旁显示对应的编码（如五笔字根）",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(start = 16.dp, bottom = 12.dp)
@@ -228,7 +134,7 @@ fun LayoutDisplaySettingsContent(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         CommentDisplayCard(
-                            title = tr(R.string.s_xianshi),
+                            title = "显示",
                             isSelected = showComments,
                             showComment = true,
                             onClick = {
@@ -238,7 +144,7 @@ fun LayoutDisplaySettingsContent(
                             modifier = Modifier.weight(1f)
                         )
                         CommentDisplayCard(
-                            title = tr(R.string.s_yincang),
+                            title = "隐藏",
                             isSelected = !showComments,
                             showComment = false,
                             onClick = {
@@ -262,13 +168,13 @@ fun LayoutDisplaySettingsContent(
                     }
 
                     Text(
-                        text = tr(R.string.s_bianmaxianshi),
+                        text = "编码显示",
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.Medium,
                         modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp)
                     )
                     Text(
-                        text = tr(R.string.s_xuanzeshurubianmadexianshiweizhi),
+                        text = "选择输入编码的显示位置",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(start = 16.dp, bottom = 12.dp)
@@ -282,7 +188,7 @@ fun LayoutDisplaySettingsContent(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         CodeDisplayCard(
-                            title = tr(R.string.s_xianshizaishurukuang),
+                            title = "显示在输入框",
                             isSelected = inputTextLocation == SettingsPreferences.INPUT_TEXT_INPUT_BOX,
                             showCodeInInputBox = true,
                             onClick = {
@@ -292,7 +198,7 @@ fun LayoutDisplaySettingsContent(
                             modifier = Modifier.weight(1f)
                         )
                         CodeDisplayCard(
-                            title = tr(R.string.s_xianshizaihouxuanlan),
+                            title = "显示在候选栏",
                             isSelected = inputTextLocation == SettingsPreferences.INPUT_TEXT_CANDIDATE_BAR,
                             showCodeInInputBox = false,
                             onClick = {
@@ -329,13 +235,13 @@ fun LayoutDisplaySettingsContent(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = tr(R.string.s_meiyehouxuancishu),
+                                text = "每页候选词数",
                                 style = MaterialTheme.typography.bodyLarge,
                                 fontWeight = FontWeight.Medium
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = tr(R.string.s_ge, pageSizeSlider.toInt()),
+                                text = "${pageSizeSlider.toInt()} 个",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.primary
                             )
@@ -348,12 +254,12 @@ fun LayoutDisplaySettingsContent(
                                 val intValue = pageSizeSlider.toInt()
                                 SettingsPreferences.setPageSize(context, intValue)
                             },
-                            valueRange = 5f..50f,
-                            steps = 44
+                            valueRange = 20f..50f,
+                            steps = 29
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = tr(R.string.s_xiugaihouxudaofanganshezhizhon_603c8),
+                            text = "修改后需到方案设置中点击部署才能生效",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                         )
@@ -362,9 +268,9 @@ fun LayoutDisplaySettingsContent(
             }
 
             item {
-                SettingsSection(title = tr(R.string.s_shurukuangshipei), content = {
-                    var autoNumberKeyboard by remember {
-                        mutableStateOf(SettingsPreferences.isAutoNumberKeyboardEnabled(context))
+                SettingsSection(title = "按键手势", content = {
+                    var swipeUpEnabled by remember {
+                        mutableStateOf(SettingsPreferences.isSwipeUpHintsEnabled(context))
                     }
                     Row(
                         modifier = Modifier
@@ -374,21 +280,89 @@ fun LayoutDisplaySettingsContent(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = tr(R.string.s_shuzikuangzidongshuzijianpan),
+                                text = "上滑提示",
                                 style = MaterialTheme.typography.bodyLarge,
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                text = tr(R.string.s_jinruhaoma_yanzhengmadengshuzi_1aed9),
+                                text = "在按键上显示上滑符号提示",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         Switch(
-                            checked = autoNumberKeyboard,
+                            checked = swipeUpEnabled,
                             onCheckedChange = { newValue ->
-                                autoNumberKeyboard = newValue
-                                SettingsPreferences.setAutoNumberKeyboardEnabled(context, newValue)
+                                swipeUpEnabled = newValue
+                                SettingsPreferences.setSwipeUpHintsEnabled(context, newValue)
+                            }
+                        )
+                    }
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 16.dp),
+                        thickness = 0.5.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    var swipeDownEnabled by remember {
+                        mutableStateOf(SettingsPreferences.isSwipeDownHintsEnabled(context))
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "下滑提示",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = "在按键上显示下滑提示内容",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = swipeDownEnabled,
+                            onCheckedChange = { newValue ->
+                                swipeDownEnabled = newValue
+                                SettingsPreferences.setSwipeDownHintsEnabled(context, newValue)
+                            }
+                        )
+                    }
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 16.dp),
+                        thickness = 0.5.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    var showPressBubble by remember {
+                        mutableStateOf(SettingsPreferences.shouldShowPressBubble(context))
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "点按弹出气泡",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = "在按键上显示当前按键字符气泡（关闭可减少快速打字卡顿）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = showPressBubble,
+                            onCheckedChange = { newValue ->
+                                showPressBubble = newValue
+                                SettingsPreferences.setShowPressBubble(context, newValue)
                             }
                         )
                     }

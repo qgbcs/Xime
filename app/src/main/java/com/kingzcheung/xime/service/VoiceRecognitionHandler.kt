@@ -1,9 +1,5 @@
 package com.kingzcheung.xime.service
 
-import com.kingzcheung.xime.R
-
-import com.kingzcheung.xime.i18n.tr
-
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -24,13 +20,7 @@ class VoiceRecognitionHandler(
     private val getInputConnection: () -> InputConnection?,
     private val onVoiceComplete: () -> Unit = {},
     private val onAmplitudeChanged: (Float) -> Unit = {},
-    private val onSpectrumChanged: (FloatArray) -> Unit = {},
-    /** 语音向输入框写入 composing 文本时回调（标记 composing 区域存在，供 endComposingInputBox 判断）。 */
-    private val onComposingWritten: () -> Unit = {},
-    /** manager 工厂，供测试注入 mock。 */
-    private val managerFactory: (Context) -> SpeechRecognitionManager = { SpeechRecognitionManager(it) },
-    /** 超时调度器，供测试注入并手动推进。 */
-    private val mainHandler: Handler = Handler(Looper.getMainLooper())
+    private val onSpectrumChanged: (FloatArray) -> Unit = {}
 ) {
     companion object {
         private const val TAG = "VoiceRecognition"
@@ -49,7 +39,7 @@ class VoiceRecognitionHandler(
     fun initialize() {
         FileLogger.i(TAG, "Initializing speech recognition system")
 
-        speechRecognitionManager = managerFactory(context)
+        speechRecognitionManager = SpeechRecognitionManager(context)
 
         speechRecognitionManager.setCallbacks(
             onResult = { text ->
@@ -78,10 +68,7 @@ class VoiceRecognitionHandler(
         FileLogger.i(TAG, "STT provider: $providerName")
 
         // 若"使用本地模型"开关已开启，启动时即加载模型并常驻，
-        // 保证语音时绝不现场加载模型（避免丢开头音频）。
-        // 注意：keep-alive 预热也走这里（AsrSupport.warmup 注册常驻后端），
-        // 不要再走 manager.preload——那会经 AsrSupport.create 造一个临时后端，
-        // 与本 warmup 并发时双重绑定 :asr、双重加载模型（日志曾见两次 initialize）
+        // 保证语音时绝不现场加载模型（避免丢开头音频）
         if (SettingsPreferences.isSttUseLocal(context) &&
             AsrBackendFactory.getLocalName(context) != null
         ) {
@@ -91,6 +78,7 @@ class VoiceRecognitionHandler(
         }
     }
 
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private val delayedPreStartRunnable = Runnable {
         if (::speechRecognitionManager.isInitialized) {
             speechRecognitionManager.startPreStart()
@@ -154,8 +142,8 @@ class VoiceRecognitionHandler(
     private fun resolveProviderName(): String {
         // 用户开启"本地识别"且当前构建支持离线语音时，优先显示本地引擎名
         if (SettingsPreferences.isSttUseLocal(context)) {
-            // 本地引擎显示当前生效模型名；未下载任何模型时用通用名（不默认指定某个模型）
-            return AsrBackendFactory.getLocalName(context) ?: tr(R.string.s_bendilixianshibie)
+            val localName = AsrBackendFactory.getLocalName(context)
+            if (localName != null) return localName
         }
         val enabledPlugins = ExtensionManager.getEnabledAsrPlugins(context)
         if (enabledPlugins.isNotEmpty()) {
@@ -163,23 +151,14 @@ class VoiceRecognitionHandler(
             val selected = enabledPlugins.firstOrNull { it.first == selectedId }
                 ?: enabledPlugins.firstOrNull()
             if (selected != null) {
-                return ExtensionManager.getAllInstalledPlugins()
-                    .firstOrNull { it.id == selected.first }?.name ?: selected.first
+                val info = ExtensionManager.getAllInstalledPlugins().firstOrNull { it.id == selected.first }
+                return info?.name ?: selected.second.javaClass.simpleName
             }
         }
-        return tr(R.string.s_weipeizhi)
+        return "未配置"
     }
 
     private var lastPartialText = ""
-    // 本会话实际写入输入框的文本（无外部消费时等于 lastPartialText）。最终结果的增量对齐、
-    // "删除已上屏部分"的长度都按它算，保证删除量对得上输入框里真实存在的内容。
-    private var lastWrittenText = ""
-    // 已被外部消费的引擎累计文本前缀（应用在输入法不知情时取走了上屏内容，如微信发送后清空输入框）
-    private var consumedEnginePrefix = ""
-    // 是否核对成功过"写入的文本确实回显在输入框里"。应用不回传文本时不得误判为"被清空"，否则丢字。
-    private var writtenTextVerified = false
-    // 本会话是否已做过"回显核对"探测（每次写入都探测会多出同步 IPC，只需首次）
-    private var inputBoxEchoProbed = false
     private var lastAmplitudeUpdate = 0L
     private var smoothedAmplitude = 0f
     private var smoothedSpectrum = FloatArray(16)
@@ -230,8 +209,6 @@ class VoiceRecognitionHandler(
     /** 输入法隐藏/切换输入框时调用：丢弃当前会话的未识别文本，忽略迟到的最终结果 */
     fun abandonSession() {
         sessionAbandoned = true
-        finishing = false
-        mainHandler.removeCallbacks(finishTimeoutRunnable)
         lastPartialText = ""
         resetReleaseState()
     }
@@ -257,13 +234,6 @@ class VoiceRecognitionHandler(
 
     private fun handleSpeechResult(text: String) {
         Log.d(TAG, "Speech result (final): $text")
-
-        val wasFinishing = finishing
-        if (finishing) {
-            // 收尾中收到最终结果：取消超时兜底，正常提交完整结果
-            finishing = false
-            mainHandler.removeCallbacks(finishTimeoutRunnable)
-        }
 
         if (sessionAbandoned) {
             sessionAbandoned = false
@@ -293,28 +263,13 @@ class VoiceRecognitionHandler(
             return
         }
 
-        val cleanText = normalizeAsrText(text)
+        val cleanText = text.replace(" ", "")
         val ic = getInputConnection()
         if (ic != null && cleanText.isNotEmpty() && !cleanText.startsWith("错误:")) {
-            // 收尾期间应用可能已把我们上屏的内容取走（发送/清空输入框）：先对账，再按可见增量提交
-            reconcileWithInputBox(ic)
-            val visibleText = visibleEngineText(cleanText)
-            if (visibleText.isNotEmpty()) {
-                commitFinal(ic, addPunctuation(visibleText), lastWrittenText)
-            } else {
-                Log.d(TAG, "handleSpeechResult: 内容已被外部消费，跳过提交")
-            }
+            val punctuatedText = addPunctuation(cleanText)
+            commitFinal(ic, punctuatedText, lastPartialText)
         }
         lastPartialText = ""
-        resetInputBoxBookkeeping()
-
-        if (!wasFinishing) {
-            // 用户尚未松手就收到 final：流式在线插件按句回调属正常行为，该句已上屏，
-            // 会话继续，等松手才结束。绝不能触发 onVoiceComplete——它会把
-            // isVoiceMode/voiceRecordingStarted 清零，松手时容器的停止条件
-            // （isVoiceMode || isRecording）全部失效，录音线程会一直在后台运行。
-            return
-        }
         onVoiceComplete()
     }
 
@@ -367,122 +322,15 @@ class VoiceRecognitionHandler(
         }
         Log.d(TAG, "commitFinal: final='$finalText', partial='$partial'")
     }
-
-    /** 会话切换/提交结束时清理与输入框的记账。 */
-    private fun resetInputBoxBookkeeping() {
-        lastWrittenText = ""
-        consumedEnginePrefix = ""
-        writtenTextVerified = false
-        inputBoxEchoProbed = false
-    }
-
-    /**
-     * 首次写入后核对一次"应用是否真的回显我们的 composing 文本"，决定本会话是否允许
-     * "被外部消费"判定：应用不回传文本（[getTextBeforeCursor] 拿不到我们写的内容）时，
-     * 若还按"没读到 = 被清空"处理，会把后续识别内容全部丢弃。
-     */
-    private fun verifyInputBoxEcho(ic: InputConnection, written: String) {
-        if (inputBoxEchoProbed || written.isEmpty()) return
-        inputBoxEchoProbed = true
-        val onScreen = runCatching {
-            ic.getTextBeforeCursor(written.length, 0)?.toString()
-        }.getOrNull() ?: return
-        if (onScreen == written) {
-            writtenTextVerified = true
-        } else {
-            Log.d(TAG, "输入框未回显语音 composing 文本，本会话不做外部消费判定")
-        }
-    }
-
-    /**
-     * 写入/提交前与输入框对账。
-     *
-     * 应用可以在输入法完全不知情的情况下取走已经上屏的语音文本（最典型：微信点发送后清空
-     * 输入框）。而引擎的部分结果/最终结果是**整段累计**的，此时若继续整段写入，就会把已经
-     * 发出去的内容连同新内容一起灌回输入框——真机现象即"点发送后继续说话，已发送文本又回到
-     * 输入框"（2026-09-29 日志：单个会话内 partial 从"一个人"变为"一个人，两个人"，
-     * 整段 setComposingText 写进已被清空的框）。
-     *
-     * 判定：光标前的文本比我们上次写入的更短，即"我们写的内容被外部移除"→ 把本会话已识别的
-     * 引擎文本整段记为 [consumedEnginePrefix]，后续只写增量。仅在曾经核对成功过
-     * （[writtenTextVerified]，证明该应用确实回显我们的文本）时才判定，避免应用不回传文本时误判丢字。
-     */
-    private fun reconcileWithInputBox(ic: InputConnection) {
-        if (lastWrittenText.isEmpty()) return
-        val onScreen = runCatching {
-            ic.getTextBeforeCursor(lastWrittenText.length, 0)?.toString()
-        }.getOrNull() ?: return
-        if (onScreen == lastWrittenText) {
-            writtenTextVerified = true
-            return
-        }
-        if (!writtenTextVerified) return
-        // 只有"输入框内容变短"（被清空/删除）才判定为被外部消费；变长或等长（用户编辑、
-        // 应用替换成等长文本）时保守不动，避免误判丢字。
-        if (onScreen.length >= lastWrittenText.length) return
-        consumedEnginePrefix = lastPartialText
-        // "撤销语音输入"按会话开始时的框长度计算删除量，外部清空后基线要跟着落到当前框内容
-        textLengthBeforeVoiceInput = onScreen.length
-        lastWrittenText = ""
-        Log.d(TAG, "输入框已被外部清空/取走内容，本会话已识别文本记为已消费: '$consumedEnginePrefix'")
-    }
-
-    /**
-     * 引擎结果按"已消费前缀"裁剪出真正该写进输入框的可见文本。
-     * 同时去掉开头标点：被消费的那句已经带着标点发出去了，新句子不该以"，"开头。
-     */
-    private fun visibleEngineText(engineText: String): String {
-        if (consumedEnginePrefix.isEmpty()) return engineText
-        val visible = if (engineText.startsWith(consumedEnginePrefix)) {
-            engineText.substring(consumedEnginePrefix.length)
-        } else {
-            // 引擎改写了已消费部分，无法可靠切分：整段写入以免丢内容（记日志便于真机排查）
-            Log.d(TAG, "引擎结果不再以已消费前缀开头，按整段写入: '$engineText'")
-            engineText
-        }
-        return visible.trimStart('，', '。', '、', ',', '.', '！', '？', '；', '：', ' ', '\n')
-    }
     
-    /**
-     * 规整 ASR 文本：中日韩字符之间不使用空格；英文保留单词间空格，
-     * 并补齐标点后缺失的空格；连续空白折叠为一个。
-     */
-    internal fun normalizeAsrText(text: String): String {
-        if (text.isEmpty()) return ""
-        var result = MULTI_SPACE_REGEX.replace(text, " ").trim()
-        if (result.isEmpty()) return ""
-        result = CJK_SPACE_REGEX.replace(result, "")
-        result = CJK_PUNCT_SPACE_REGEX.replace(result, "")
-        result = SPACE_BEFORE_PUNCT_REGEX.replace(result, "\$1")
-        result = ASCII_PUNCT_FOLLOWED_LATIN_REGEX.replace(result, "\$1 ")
-        result = PERIOD_FOLLOWED_UPPER_REGEX.replace(result, ". ")
-        return result
-    }
-
     private fun addPunctuation(text: String): String {
-        val cleanText = normalizeAsrText(text)
+        val cleanText = text.trim().replace(" ", "")
         if (cleanText.isEmpty()) return text
 
-        val last = cleanText.last()
-        if (CJK_CHAR_REGEX.containsMatchIn(cleanText)) {
-            // 中文/日文：沿用中文句读；末尾已有标点则不再追加，避免"。。"
-            if (last in "。！？；：，、,.!?;:") return cleanText
-            return "$cleanText${heuristicPunctuation(cleanText)}"
-        }
+        // 若文本末尾已带句末标点（如 funasr/volc 等自带标点的后端），不再追加，避免"。。"
+        if (cleanText.last() in "。！？；：，、；：,.!?;:，") return cleanText
 
-        // 英文：模型若给出中文句末标点则转成半角；已有标点不重复追加
-        if (last in "。！？，；：") {
-            return cleanText.dropLast(1) + when (last) {
-                '。' -> "."
-                '！' -> "!"
-                '？' -> "?"
-                '，' -> ","
-                '；' -> ";"
-                else -> ":"
-            }
-        }
-        if (last in ",.!?;:") return cleanText
-        return cleanText + heuristicLatinPunctuation(cleanText)
+        return "$cleanText${heuristicPunctuation(cleanText)}"
     }
 
     private fun heuristicPunctuation(text: String): String {
@@ -493,14 +341,6 @@ class VoiceRecognitionHandler(
         }
     }
 
-    private fun heuristicLatinPunctuation(text: String): String {
-        val firstWord = text.trimStart()
-            .substringBefore(' ')
-            .trim('"', '\'', '(', '[')
-            .lowercase()
-        return if (firstWord in LATIN_QUESTION_STARTERS) "?" else "."
-    }
-
     private fun handlePartialResult(text: String) {
         // 等待 final 期间继续让尾音 partial 刷新 composing：最终 final 多以 partial 为
         // 前缀，只需补提交增量（Termux 等终端 composing 已落盘时同样正确）；
@@ -509,17 +349,14 @@ class VoiceRecognitionHandler(
         if (text == lastPartialText) return
         lastPartialText = text
         Log.d(TAG, "Speech result (partial): $text")
-
-        // 中文去掉字符间空格，英文保留词间空格；已被外部消费的前缀（如已发送内容）不再回写
-        val cleanText = visibleEngineText(normalized)
+        
+        // 过滤掉空格，避免显示空白
+        val cleanText = text.replace(" ", "")
         if (cleanText.isEmpty()) return
         
+        val ic = getInputConnection()
         if (ic != null) {
-            onComposingWritten()
             ic.setComposingText(cleanText, 1)
-            lastWrittenText = cleanText
-            // 首次写入后回读一次，确认该应用确实回显 composing 文本（之后才允许做"被外部消费"判定）
-            verifyInputBoxEcho(ic, cleanText)
         }
         onStateChanged(getState().copy(voiceRecognizedText = cleanText))
     }
@@ -534,17 +371,12 @@ class VoiceRecognitionHandler(
             // AsrStop 线程保证 IDLE 在 final 回调之后：收尾完成，复位抬手等待态
             releaseFinalizing = false
         }
-        // 收尾等待最终结果期间，引擎 stop 产生的 IDLE 不覆盖"正在识别..."显示
-        if (finishing && state == RecognitionState.IDLE) return
         onStateChanged(getState().copy(voiceRecognitionState = state))
     }
 
     private fun handleSpeechError(error: String, userVisible: Boolean) {
         Log.e(TAG, "Speech error: $error")
         FileLogger.e(TAG, "Speech error: $error")
-        val wasFinishing = finishing
-        finishing = false
-        mainHandler.removeCallbacks(finishTimeoutRunnable)
         lastPartialText = ""
         resetReleaseState()
         if (userVisible && error.isNotBlank()) {

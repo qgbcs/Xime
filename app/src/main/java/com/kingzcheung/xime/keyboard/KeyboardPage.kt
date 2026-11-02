@@ -35,6 +35,7 @@ sealed interface OverlayRoute {
     data class SplitWords(val text: String) : OverlayRoute
     data object Symbol : OverlayRoute
     data object Emoji : OverlayRoute
+    data object CandidatePage : OverlayRoute
     data object Edit : OverlayRoute
     data object ToolPanel : OverlayRoute
 }

@@ -21,11 +21,9 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -41,10 +39,6 @@ import androidx.compose.ui.unit.dp
 import com.kingzcheung.xime.model.ModelManager
 import com.kingzcheung.xime.speech.AsrBackendFactory
 import com.kingzcheung.xime.speech.AsrModelManager
-import com.kingzcheung.xime.util.ExternalStoragePermissionHelper
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -64,23 +58,7 @@ internal fun OfflineModelCard(
     val scope = rememberCoroutineScope()
     val modelManager = remember { AsrModelManager(context) }
 
-    var selectedModelId by remember {
-        mutableStateOf(modelManager.getSelectedModelId())
-    }
-    var storageGranted by remember {
-        mutableStateOf(ExternalStoragePermissionHelper.isGranted(context))
-    }
-    val lifecycleOwner = LocalLifecycleOwner.current
-
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                storageGranted = ExternalStoragePermissionHelper.isGranted(context)
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
+    var showModelPicker by remember { mutableStateOf(false) }
 
     // 模型清单来自「模型中心」远程索引；进入本页时确保索引已加载，
     // 并订阅 StateFlow，索引返回后自动重组刷新可选项
@@ -115,20 +93,6 @@ internal fun OfflineModelCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            if (!storageGranted) {
-                Text(
-                    text = "模型保存在 /sdcard/Alarms，需要开启“所有文件访问权限”。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error
-                )
-                OutlinedButton(
-                    onClick = { ExternalStoragePermissionHelper.request(context) },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("开启存储权限")
-                }
-            }
-
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically

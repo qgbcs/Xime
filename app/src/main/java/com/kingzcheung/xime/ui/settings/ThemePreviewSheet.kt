@@ -103,7 +103,7 @@ fun ThemePreviewSheet(
                         .height(48.dp),
                     shape = RoundedCornerShape(24.dp),
                 ) {
-                    Text(tr(R.string.s_quxiao), fontSize = 16.sp)
+                    Text("取消", fontSize = 16.sp)
                 }
                 Button(
                     onClick = onApply,
@@ -112,7 +112,7 @@ fun ThemePreviewSheet(
                         .height(48.dp),
                     shape = RoundedCornerShape(24.dp),
                 ) {
-                    Text(tr(R.string.s_yingyong), fontSize = 16.sp)
+                    Text("应用", fontSize = 16.sp)
                 }
             }
         }
@@ -122,8 +122,8 @@ fun ThemePreviewSheet(
 private data class PreviewPage(val label: String, val isDark: Boolean)
 
 private val PREVIEW_PAGES = listOf(
-    PreviewPage(tr(R.string.s_qianse), false),
-    PreviewPage(tr(R.string.s_shense), true),
+    PreviewPage("浅色", false),
+    PreviewPage("深色", true),
 )
 
 @Composable
@@ -210,10 +210,6 @@ private fun ThemeKeyboardPreview(
         else longToColor(kbColors.candidateTextColor)
     val selectedTextColor = KeyboardThemes.getCandidateSelectedTextColorOverride(theme.id, isDark)
         ?: if (isDark) theme.candidateSelectedTextColorDark else theme.candidateSelectedTextColorLight
-    // 与实机键盘同一条取色逻辑（亮度自适应），保证预览所见即所得
-    val specialTextColor = KeyboardThemes.getSpecialKeyTextColorForBackground(
-        specialKeyColor, textColor
-    )
     val context = LocalContext.current
     val candidateTextSize = SettingsPreferences.getCandidateTextSize(context)
 
@@ -284,7 +280,7 @@ private fun ThemeKeyboardPreview(
                         PreviewKey(
                             label = "",
                             icon = rememberVectorPainter(Icons.TwoTone.KeyboardControlKey),
-                            color = specialKeyColor, textColor = specialTextColor, weight = 1.4f,
+                            color = specialKeyColor, textColor = textColor, weight = 1.4f,
                             extraModifier = Modifier.padding(0.5.dp, 2.dp)
                         )
 
@@ -308,7 +304,7 @@ private fun ThemeKeyboardPreview(
                         PreviewKey(
                             label = "",
                             icon = rememberVectorPainter(Icons.AutoMirrored.Filled.Backspace),
-                            color = specialKeyColor, textColor = specialTextColor, weight = 1.4f,
+                            color = specialKeyColor, textColor = textColor, weight = 1.4f,
                             extraModifier = Modifier.padding(0.5.dp, 2.dp)
                         )
                     }
@@ -320,11 +316,11 @@ private fun ThemeKeyboardPreview(
                             .weight(1f),
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        PreviewKey("?123", specialKeyColor, specialTextColor, 1.2f,extraModifier = Modifier.padding(0.5.dp, 2.dp))
+                        PreviewKey("?123", specialKeyColor, textColor, 1.2f,extraModifier = Modifier.padding(0.5.dp, 2.dp))
                         PreviewKey("，", keyColor, textColor, 0.8f,extraModifier = Modifier.padding(0.5.dp, 2.dp))
-                        PreviewKey(tr(R.string.s_kongge), keyColor, textColor, 3f, fontSize = 9.sp,extraModifier = Modifier.padding(0.5.dp, 2.dp))
-                        PreviewKey(tr(R.string.s_zhong_en), specialKeyColor, specialTextColor, 0.8f, fontSize = 8.sp,extraModifier = Modifier.padding(0.5.dp, 2.dp))
-                        PreviewKey(tr(R.string.s_queding), specialKeyColor, specialTextColor, 1.2f,extraModifier = Modifier.padding(0.5.dp, 2.dp))
+                        PreviewKey("空格", keyColor, textColor, 3f, fontSize = 9.sp,extraModifier = Modifier.padding(0.5.dp, 2.dp))
+                        PreviewKey("中/En", specialKeyColor, textColor, 0.8f, fontSize = 8.sp,extraModifier = Modifier.padding(0.5.dp, 2.dp))
+                        PreviewKey("确定", specialKeyColor, textColor, 1.2f,extraModifier = Modifier.padding(0.5.dp, 2.dp))
                     }
                 }
             }
@@ -360,7 +356,7 @@ private fun CandidateBarPreview(
             )
             Spacer(modifier = Modifier.width(4.dp))
             PreviewCandidate(
-                text = tr(R.string.s_shurufa),
+                text = "输入法",
                 isSelected = false,
                 accent = accent,
                 textColor = textColor,

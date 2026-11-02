@@ -16,5 +16,7 @@ interface AsrBackend {
     fun stop()
     fun cancel()
     fun release()
+    /** 当前识别状态（由后端自行维护，默认空闲）。 */
+    fun getState(): RecognitionState = RecognitionState.IDLE
     fun isAvailable(): Boolean
 }

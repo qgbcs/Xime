@@ -12,6 +12,7 @@ import com.kingzcheung.xime.scheme.SchemeInstaller
 import com.kingzcheung.xime.scheme.SchemeStore
 import com.kingzcheung.xime.settings.RimeDependencyResolver
 import com.kingzcheung.xime.settings.RimeSharedFiles
+import com.kingzcheung.xime.settings.SettingsPreferences
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -53,6 +54,8 @@ object RimeConfigHelper {
         }
         
         copyAssetsToRimeDir(context, rimeDir)
+        // 状态对齐（迁移一次 + 过滤失效项），再把启用列表镜像进 default.yaml。
+        SchemeStore.ensure(context)
         // 旧版出厂默认方案集升级为当前默认：简体拼音 / 手写 / 拼音九键
         SchemaManager.migrateLegacyDefaultSchemas(context)
         // F1: assets 会用内置 default.yaml 覆盖，这里把启用方案重新写回 schema_list
@@ -101,11 +104,14 @@ object RimeConfigHelper {
                 val (userDataDir, sharedDataDir) = initializeRimeData(context)
                 engine.initialize(userDataDir, sharedDataDir)
             }
-            if (deployed) {
-                storeDeploymentHash(context)
-                SettingsPreferences.setDeploymentDone(context, true)
-                // 部署后用户配置/词库已变化，镜像到外置
-                com.kingzcheung.xime.storage.RimeBackup.mirrorOut(context)
+            // 部署中断留下的半成品产物 mtime 比源文件新，维护会当作“已是最新”跳过，
+            // 必须先删掉才会重编。
+            val brokenRemoved = removeBrokenBuildArtifacts(File(context.filesDir, "rime"))
+            val missing = missingCompiledSchemas(context)
+            // 冷启动自检每进程一次；有缺失产物/补回基础文件/删过半成品时必须重跑
+            if (!fullCheck && startupCheckDone && missing.isEmpty() &&
+                !brokenRemoved && restored == 0
+            ) {
                 return true
             }
             val needFull = fullCheck || restored > 0 || brokenRemoved || missing.isNotEmpty()
@@ -114,7 +120,7 @@ object RimeConfigHelper {
                 "Deploying: fullCheck=$needFull, missing=${missing.size}, " +
                     "restored=$restored, brokenRemoved=$brokenRemoved",
             )
-            var deployed = engine.deploy(needFull)
+            var deployed = if (needFull) engine.deploy() else engine.deployIncremental()
             if (!deployed) {
                 FileLogger.e(TAG, "deploy returned false")
                 return false
@@ -128,7 +134,7 @@ object RimeConfigHelper {
                     "Still missing after incremental maintenance, forcing full check: " +
                         stillMissing.joinToString(),
                 )
-                deployed = engine.deploy(true)
+                deployed = engine.deploy()
                 stillMissing = missingCompiledSchemas(context)
             }
             if (stillMissing.isNotEmpty()) {
@@ -137,6 +143,10 @@ object RimeConfigHelper {
                     "Deployment finished but schemas are not compiled: ${stillMissing.joinToString()}",
                 )
                 return false
+            }
+            // 部署后用户配置/词库已变化，镜像到外置
+            if (deployed) {
+                com.kingzcheung.xime.storage.RimeBackup.mirrorOut(context)
             }
             startupCheckDone = true
             return deployed
@@ -150,6 +160,66 @@ object RimeConfigHelper {
      * 整份配置会解析失败，表现为部署后方案没有编译产物（打字无候选）。
      * 幂等：无 BOM 不写盘；只扫根目录配置，跳过 `*.dict.yaml` 与超大文件。
      */
+    fun storeDeploymentHash(context: Context) {
+        val hash = computeDeploymentHash(context)
+        if (hash.isNotEmpty()) {
+            SettingsPreferences.setDeploymentHash(context, hash)
+        }
+    }
+
+    private fun fileUpdateDigest(digest: java.security.MessageDigest, file: File) {
+        if (!file.exists()) return
+        java.io.FileInputStream(file).use { input ->
+            java.security.DigestInputStream(input, digest).use { dis ->
+                val buffer = ByteArray(8192)
+                while (dis.read(buffer) != -1) { }
+            }
+        }
+    }
+
+    private fun computeDeploymentHash(context: Context): String {
+        val rimeDir = File(context.filesDir, "rime")
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+
+        val enabledSchemas = SchemaManager.getEnabledSchemas(context)
+        for (schemaId in enabledSchemas.sorted()) {
+            val schemaFile = File(rimeDir, "$schemaId.schema.yaml")
+            if (schemaFile.exists()) {
+                digest.update(schemaId.toByteArray())
+                fileUpdateDigest(digest, schemaFile)
+            }
+            val customFile = File(rimeDir, "$schemaId.custom.yaml")
+            if (customFile.exists()) {
+                fileUpdateDigest(digest, customFile)
+            }
+            // merged dict 由 app 生成、librime 实际编译，计入 hash 以便其变更（如转发器展开修复）触发重编译
+            val mergedDictFile = File(rimeDir, "${schemaId}_merged.dict.yaml")
+            if (mergedDictFile.exists()) {
+                digest.update("${schemaId}_merged".toByteArray())
+                fileUpdateDigest(digest, mergedDictFile)
+            }
+        }
+
+        // 所有词典文件（内置词典与个人词库）纳入 hash：
+        // 否则词典新增/变更（如 pinyin_simp.dict.yaml）不会改变 hash，
+        // build 目录不重建、不重新部署，导致 table.bin 缺失（运行时反复报错）。
+        rimeDir.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".dict.yaml") }
+            ?.sortedBy { it.name }
+            ?.forEach { dictFile ->
+                digest.update(dictFile.name.toByteArray())
+                fileUpdateDigest(digest, dictFile)
+            }
+
+        val defaultYaml = File(rimeDir, "default.yaml")
+        if (defaultYaml.exists()) {
+            digest.update("default".toByteArray())
+            fileUpdateDigest(digest, defaultYaml)
+        }
+
+        return digest.digest().joinToString("") { String.format("%02x", it) }
+    }
+
     internal fun stripBomFromUserYaml(rimeDir: File): Int {
         if (!rimeDir.isDirectory) return 0
         var fixed = 0
@@ -216,6 +286,8 @@ object RimeConfigHelper {
         }
         
         copyAssetsToRimeDir(context, rimeDir)
+        // 同步初始化路径同样先对齐状态，再镜像 schema_list
+        SchemeStore.ensure(context)
         // 旧版出厂默认方案集升级为当前默认：简体拼音 / 手写 / 拼音九键
         SchemaManager.migrateLegacyDefaultSchemas(context)
         // F1: 同步初始化路径也写回 default.yaml 的 schema_list
@@ -223,8 +295,7 @@ object RimeConfigHelper {
         runBlocking { PersonalDictManager.ensureSchemaPacks(context) }
         // 用户数据外置镜像对齐（外置为准）
         com.kingzcheung.xime.storage.RimeBackup.reconcile(context, rimeDir)
-        // build 重建统一由 ensureDeployment() 增量优先决策，此处不删 build
-        
+        // build 是否重建统一由 ensureDeployment() 决定（缺失/半成品时强制 fullCheck）
         return Pair(rimeDir.absolutePath, rimeDir.absolutePath)
     }
 

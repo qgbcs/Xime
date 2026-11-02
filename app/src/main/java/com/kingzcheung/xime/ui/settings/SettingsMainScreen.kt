@@ -33,12 +33,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.twotone.LibraryBooks
 import androidx.compose.material.icons.twotone.AutoAwesome
-import androidx.compose.material.icons.twotone.AutoFixHigh
-import androidx.compose.material.icons.twotone.Backup
 import androidx.compose.material.icons.twotone.Ballot
 
 import androidx.compose.material.icons.twotone.Build
-import androidx.compose.material.icons.twotone.ContentPaste
+import androidx.compose.material.icons.twotone.CloudSync
 import androidx.compose.material.icons.twotone.Description
 import androidx.compose.material.icons.twotone.Extension
 import androidx.compose.material.icons.twotone.GraphicEq
@@ -51,6 +49,7 @@ import androidx.compose.material.icons.twotone.Refresh
 import androidx.compose.material.icons.twotone.Security
 import androidx.compose.material.icons.twotone.Storefront
 import androidx.compose.material.icons.twotone.Straighten
+import androidx.compose.material.icons.twotone.Sync
 import androidx.compose.material.icons.twotone.TableChart
 import androidx.compose.material.icons.twotone.ToggleOn
 import androidx.compose.material.icons.twotone.TypeSpecimen
@@ -146,7 +145,6 @@ fun SettingsMainContent(
     onNavigateToPlugins: () -> Unit,
     onNavigateToModelLocal: () -> Unit = {},
     onNavigateToSmartPrediction: () -> Unit,
-    onNavigateToCorrection: () -> Unit = {},
     onNavigateToSpeechToText: () -> Unit,
     onNavigateToAbout: () -> Unit,
     onNavigateToWebDav: () -> Unit = {},
@@ -308,7 +306,7 @@ fun SettingsMainContent(
                                     Box {
                                         if (testText.isEmpty() && !isFocused) {
                                             Text(
-                                                tr(R.string.s_dianjicichukaishishuruceshi),
+                                                "点击此处开始输入测试...",
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                                             )
@@ -327,7 +325,7 @@ fun SettingsMainContent(
                             ) {
                                 TextButton(onClick = { testText = "" }) {
                                     Text(
-                                        tr(R.string.s_qingchu),
+                                        "清除",
                                         style = MaterialTheme.typography.bodyMedium
                                     )
                                 }
@@ -338,11 +336,11 @@ fun SettingsMainContent(
             }
 
             item {
-                SettingsSection(title = stringResource(R.string.settings_section_appearance), content = {
+                SettingsSection(title = "外观与交互", content = {
                     SettingsItem(
                         icon = Icons.TwoTone.Palette,
-                        title = tr(R.string.s_zhutiyudingzhi),
-                        subtitle = tr(R.string.s_zidingyiwaiguanheyangshi),
+                        title = "主题与定制",
+                        subtitle = "自定义外观和样式",
                         onClick = onNavigateToTheme,
                         showArrow = true
                     )
@@ -353,8 +351,8 @@ fun SettingsMainContent(
                     )
                     SettingsItem(
                         icon = Icons.TwoTone.Vibration,
-                        title = tr(R.string.s_anjianxiaoguo),
-                        subtitle = tr(R.string.s_anjianyinxiaohezhendongfankui),
+                        title = "按键效果",
+                        subtitle = "按键音效和振动反馈",
                         onClick = onNavigateToKeyEffect,
                         showArrow = true
                     )
@@ -365,8 +363,8 @@ fun SettingsMainContent(
                     )
                     SettingsItem(
                         icon = Icons.TwoTone.TableChart,
-                        title = tr(R.string.s_bujuyuxianshi),
-                        subtitle = tr(R.string.s_houxuancixianshi_jianpanbujudeng),
+                        title = "布局与显示",
+                        subtitle = "候选词显示、键盘布局等",
                         onClick = onNavigateToLayoutDisplay,
                         showArrow = true
                     )
@@ -374,11 +372,11 @@ fun SettingsMainContent(
             }
 
             item {
-                SettingsSection(title = tr(R.string.s_fanganyuciku), content = {
+                SettingsSection(title = "方案与词库", content = {
                     SettingsItem(
                         icon = Icons.TwoTone.KeyboardAlt,
-                        title = tr(R.string.s_shurufangan),
-                        subtitle = tr(R.string.s_guanlishurufangan),
+                        title = "输入方案",
+                        subtitle = "管理输入方案",
                         onClick = onNavigateToSchema,
                         showArrow = true
                     )
@@ -389,8 +387,8 @@ fun SettingsMainContent(
                     )
                     SettingsItem(
                         icon = Icons.TwoTone.Ballot,
-                        title = tr(R.string.s_cikuguanli),
-                        subtitle = tr(R.string.s_yonghuciku_kuaijieduanyuyuciti_be6d2),
+                        title = "词库管理",
+                        subtitle = "管理个人词库和自定义短语",
                         onClick = onNavigateToDictionary,
                         showArrow = true
                     )
@@ -398,15 +396,13 @@ fun SettingsMainContent(
             }
 
             item {
-                SettingsSection(title = tr(R.string.s_kuozhan), content = {
+                SettingsSection(title = "扩展", content = {
                     SettingsItem(
                         icon = Icons.TwoTone.Storefront,
-                        title = tr(R.string.s_kuozhanshangdian),
-                        subtitle = tr(R.string.s_xiazaishurufangan_moxing_chajian),
+                        title = "扩展商店",
+                        subtitle = "下载输入方案 / 模型 / 插件",
                         onClick = onNavigateToMarket,
-                        showArrow = true,
-                        badgeText = marketUpdates.totalUpdates.takeIf { it > 0 }
-                            ?.let { tr(R.string.s_xiangkegengxin, it) }
+                        showArrow = true
                     )
                     HorizontalDivider(
                         modifier = Modifier.padding(start = 56.dp),
@@ -415,8 +411,8 @@ fun SettingsMainContent(
                     )
                     SettingsItem(
                         icon = Icons.TwoTone.Extension,
-                        title = tr(R.string.s_chajianguanli),
-                        subtitle = tr(R.string.s_guanliyianzhuangdechajian),
+                        title = "插件管理",
+                        subtitle = "管理已安装的插件",
                         onClick = onNavigateToPlugins,
                         showArrow = true
                     )
@@ -427,8 +423,8 @@ fun SettingsMainContent(
                     )
                     SettingsItem(
                         icon = Icons.TwoTone.Straighten,
-                        title = tr(R.string.s_moxingguanli),
-                        subtitle = tr(R.string.s_guanlibendixiazaidezhinengmoxing),
+                        title = "模型管理",
+                        subtitle = "管理本地下载的智能模型",
                         onClick = onNavigateToModelLocal,
                         showArrow = true
                     )
@@ -436,24 +432,12 @@ fun SettingsMainContent(
             }
 
             item {
-                SettingsSection(title = tr(R.string.s_zhineng), content = {
+                SettingsSection(title = "智能", content = {
                     SettingsItem(
                         icon = Icons.TwoTone.AutoAwesome,
-                        title = tr(R.string.s_zhinenglianxiang),
-                        subtitle = tr(R.string.s_jiyu_ai_moxingdezhinenglianxia_5cce9),
+                        title = "智能联想",
+                        subtitle = "基于 AI 模型的智能联想词预测",
                         onClick = onNavigateToSmartPrediction,
-                        showArrow = true
-                    )
-                    HorizontalDivider(
-                        modifier = Modifier.padding(start = 56.dp),
-                        thickness = 0.5.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                    )
-                    SettingsItem(
-                        icon = Icons.TwoTone.AutoFixHigh,
-                        title = tr(R.string.s_zhinengjiucuo_shiyanxing),
-                        subtitle = tr(R.string.s_ancuoxianglinjianshigeichujiuz_834ec),
-                        onClick = onNavigateToCorrection,
                         showArrow = true
                     )
                     HorizontalDivider(
@@ -464,8 +448,8 @@ fun SettingsMainContent(
                     var sttEnabled by remember { mutableStateOf(SettingsPreferences.isSttEnabled(context)) }
                     SettingsToggleItem(
                         icon = Icons.TwoTone.GraphicEq,
-                        title = tr(R.string.s_yuyinzhuanwenben),
-                        subtitle = tr(R.string.s_zaixian_asr_fuwu_xuanzhuangyuy_74a1a),
+                        title = "语音转文本",
+                        subtitle = "在线 ASR 服务（需安装语音识别插件）",
                         checked = sttEnabled,
                         showArrow = true,
                         onClick = {
@@ -480,25 +464,19 @@ fun SettingsMainContent(
             }
 
             item {
-                // 分组含两类"本地数据/数据流向"设置：剪贴板（内容与同步）优先，其后是词典与配置的同步备份
-                SettingsSection(title = tr(R.string.s_shujuyutongbu), content = {
+                SettingsSection(                title = "同步与备份", content = {
                     SettingsItem(
-                        icon = Icons.TwoTone.ContentPaste,
-                        title = tr(R.string.s_jiantieban),
-                        subtitle = tr(R.string.s_tupianjilu_tijixianzhi_zhanyon_fa4c6),
-                        onClick = onNavigateToClipboard,
+                        icon = Icons.TwoTone.CloudSync,
+                        title = "WebDAV 同步",
+                        subtitle = "通过 WebDAV 备份和恢复输入方案与配置",
+                        onClick = onNavigateToWebDav,
                         showArrow = true
                     )
-                    HorizontalDivider(
-                        modifier = Modifier.padding(start = 56.dp),
-                        thickness = 0.5.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                    )
                     SettingsItem(
-                        icon = Icons.TwoTone.Backup,
-                        title = tr(R.string.s_tongbuyubeifen),
-                        subtitle = tr(R.string.s_duoshebeicidianhutongyupeizhib_1efa8),
-                        onClick = onNavigateToBackup,
+                        icon = Icons.TwoTone.Sync,
+                        title = "剪贴板同步",
+                        subtitle = "通过插件将剪贴板与远端设备双向同步",
+                        onClick = onNavigateToClipboardSync,
                         showArrow = true
                     )
                 })
@@ -519,7 +497,7 @@ fun SettingsMainContent(
             }
 
             item {
-                SettingsSection(title = tr(R.string.s_guanyu), content = {
+                SettingsSection(title = "关于", content = {
                     SettingsItem(
                         icon = Icons.TwoTone.Description,
                         title = supportItemDisplay.title,

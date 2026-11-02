@@ -197,9 +197,7 @@ object RimeDependencyResolver {
             val mainDict = scanSchemaRefs(schemaText, null).mainDicts.firstOrNull() ?: schemaId
             val dictFile = File(dir, "$mainDict.dict.yaml")
             val refs = scanSchemaRefs(schemaText, dictFile.takeIf { it.exists() }?.readText())
-            // app 内置共享文件（symbols/default 等）由 app 提供，部署前会自动补齐，不算缺依赖
-            val appProvided = RimeSharedFiles.names(context)
-            expectedFiles(refs).filter { it !in appProvided && !File(dir, it).exists() }
+            expectedFiles(refs).filter { !File(dir, it).exists() }
         } catch (e: Exception) {
             Log.e(TAG, "findMissingFiles($schemaId) failed", e)
             emptyList()

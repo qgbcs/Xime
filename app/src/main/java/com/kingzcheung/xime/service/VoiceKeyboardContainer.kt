@@ -52,9 +52,18 @@ class VoiceKeyboardContainer(
 
     fun updateHeight(heightDp: Int) {
         val heightPx = (heightDp * resources.displayMetrics.density).toInt()
-        val params = layoutParams ?: return
-        if (params.height != heightPx) {
+        val params = layoutParams
+        if (params != null && params.height != heightPx) {
             params.height = heightPx
+            layoutParams = params
+            requestLayout()
+        }
+    }
+
+    fun resetHeight() {
+        val params = layoutParams
+        if (params != null && params.height != FrameLayout.LayoutParams.MATCH_PARENT) {
+            params.height = FrameLayout.LayoutParams.MATCH_PARENT
             layoutParams = params
             requestLayout()
         }

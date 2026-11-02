@@ -21,6 +21,12 @@ object SettingsPreferences {
     private const val KEY_SETUP_COMPLETED = "setup_completed"
     private const val KEY_DARK_MODE = "dark_mode"
     private const val KEY_VERBOSE_LOGGING = "verbose_logging"
+    private const val KEY_PLUGIN_DEV_MODE = "plugin_dev_mode"
+    /** 按键坐标日志开关（相邻键纠错数据采集，默认关闭）。 */
+    private const val KEY_KEY_TAP_LOG = "key_tap_log"
+    /** 纠错模型影子模式（只记录"会怎么改"，不改行为，默认关闭）。 */
+
+    private const val KEY_CORRECTOR_ENABLED = "corrector_enabled"
     private const val KEY_RPC_LOG_TO_DISK = "rpc_log_to_disk"
     private const val KEY_RPC_LOG_AUTO_WRAP = "rpc_log_auto_wrap"
     private const val KEY_RPC_LOG_HEIGHT_DP = "rpc_log_height_dp"
@@ -264,6 +270,39 @@ object SettingsPreferences {
         getPrefs(context).edit().putBoolean(KEY_VERBOSE_LOGGING, enabled).apply()
     }
 
+    /**
+     * 插件开发模式：开启后允许 adb 通道热安装插件（xipm dev，仅约束 release 包；
+     * debug 包 debuggable 本就全量开放，门禁直接放行）。入口隐藏（设置 → 关于 →
+     * 连点设备信息 7 次解锁），默认关闭；关闭时热安装 Activity 秒退，adb 无法注入
+     * 插件代码。状态持久化（区别于解锁 flag），否则每次冷启动都要重敲一遍才能用
+     * xipm dev。
+     */
+    fun isPluginDevModeEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_PLUGIN_DEV_MODE, false)
+    }
+
+    fun setPluginDevModeEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_PLUGIN_DEV_MODE, enabled).apply()
+    }
+
+    /** 按键坐标日志（相邻键纠错采集），默认关闭。 */
+    fun isKeyTapLogEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_KEY_TAP_LOG, false)
+    }
+
+    fun setKeyTapLogEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_KEY_TAP_LOG, enabled).apply()
+    }
+
+    /** 智能纠错（相邻键纠错候选，默认关闭）。 */
+    fun isCorrectorEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_CORRECTOR_ENABLED, false)
+    }
+
+    fun setCorrectorEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_CORRECTOR_ENABLED, enabled).apply()
+    }
+
     fun isRpcLogToDiskEnabled(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_RPC_LOG_TO_DISK, false)
     }
@@ -497,6 +536,21 @@ object SettingsPreferences {
 
     fun setSttUseLocal(context: Context, useLocal: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_STT_USE_LOCAL, useLocal).apply()
+    }
+
+    /**
+     * 语音结束后是否保持识别引擎常驻（不随会话结束销毁）。
+     * 开启后闲置一段时间再使用无需重新加载引擎，"开始聆听"响应快。
+     * 仅本地（离线）模式生效：模型本就常驻 :asr 进程，保留 wrapper 代价极小；
+     * 在线插件常驻需保持 WebSocket 长连接（耗电、占用服务端资源），不提供常驻。
+     */
+    fun isSttKeepEngineAlive(context: Context): Boolean {
+        return isSttUseLocal(context) &&
+            getPrefs(context).getBoolean(KEY_STT_KEEP_ENGINE_ALIVE, false)
+    }
+
+    fun setSttKeepEngineAlive(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_STT_KEEP_ENGINE_ALIVE, enabled).apply()
     }
 
     /** 语音录音时是否请求音频焦点，静音/暂停其他应用（如抖音、音乐）的播放。 */
@@ -938,5 +992,115 @@ object SettingsPreferences {
             .remove(KEY_APPLIED_LAYOUT_VERSION)
             .remove(KEY_APPLIED_LAYOUT_FILES)
             .apply()
+    }
+
+    // ── 兼容块：上游已移除、用户分支仍在使用（WebDAV 同步 / 部署状态 / 市场安装 / 手势提示）──
+    private const val KEY_DEPLOYMENT_DONE = "deployment_done"
+    private const val KEY_DEPLOYMENT_HASH = "deployment_hash"
+    private const val KEY_RIME_ASSETS_VERSION = "rime_assets_version"
+    const val KEY_SWIPE_UP_HINTS_ENABLED = "swipe_up_hints_enabled"
+    const val KEY_SWIPE_DOWN_HINTS_ENABLED = "swipe_down_hints_enabled"
+    const val KEY_SHOW_PRESS_BUBBLE = "show_press_bubble"
+    private const val KEY_WEBDAV_URL = "webdav_url"
+    private const val KEY_WEBDAV_USERNAME = "webdav_username"
+    private const val KEY_WEBDAV_PASSWORD = "webdav_password"
+    private const val KEY_WEBDAV_PATH = "webdav_path"
+    private const val KEY_INSTALLED_MARKET_IDS = "installed_market_ids"
+
+    fun isDeploymentDone(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_DEPLOYMENT_DONE, false)
+    }
+
+    fun setDeploymentDone(context: Context, done: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_DEPLOYMENT_DONE, done).apply()
+    }
+
+    fun getDeploymentHash(context: Context): String {
+        return getPrefs(context).getString(KEY_DEPLOYMENT_HASH, "") ?: ""
+    }
+
+    fun setDeploymentHash(context: Context, hash: String) {
+        getPrefs(context).edit().putString(KEY_DEPLOYMENT_HASH, hash).apply()
+    }
+
+    fun getRimeAssetsVersion(context: Context): Int {
+        return getPrefs(context).getInt(KEY_RIME_ASSETS_VERSION, 0)
+    }
+
+    fun setRimeAssetsVersion(context: Context, version: Int) {
+        getPrefs(context).edit().putInt(KEY_RIME_ASSETS_VERSION, version).apply()
+    }
+
+    fun isSwipeUpHintsEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_SWIPE_UP_HINTS_ENABLED, true)
+    }
+
+    fun setSwipeUpHintsEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_SWIPE_UP_HINTS_ENABLED, enabled).apply()
+    }
+
+    fun isSwipeDownHintsEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_SWIPE_DOWN_HINTS_ENABLED, true)
+    }
+
+    fun setSwipeDownHintsEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_SWIPE_DOWN_HINTS_ENABLED, enabled).apply()
+    }
+
+    fun shouldShowPressBubble(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_SHOW_PRESS_BUBBLE, true)
+    }
+
+    fun setShowPressBubble(context: Context, show: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_SHOW_PRESS_BUBBLE, show).apply()
+    }
+
+    fun getWebDavUrl(context: Context): String {
+        return getPrefs(context).getString(KEY_WEBDAV_URL, "") ?: ""
+    }
+
+    fun setWebDavUrl(context: Context, url: String) {
+        getPrefs(context).edit().putString(KEY_WEBDAV_URL, url).apply()
+    }
+
+    fun getWebDavUsername(context: Context): String {
+        return getPrefs(context).getString(KEY_WEBDAV_USERNAME, "") ?: ""
+    }
+
+    fun setWebDavUsername(context: Context, username: String) {
+        getPrefs(context).edit().putString(KEY_WEBDAV_USERNAME, username).apply()
+    }
+
+    fun getWebDavPassword(context: Context): String {
+        return getPrefs(context).getString(KEY_WEBDAV_PASSWORD, "") ?: ""
+    }
+
+    fun setWebDavPassword(context: Context, password: String) {
+        getPrefs(context).edit().putString(KEY_WEBDAV_PASSWORD, password).apply()
+    }
+
+    fun getWebDavPath(context: Context): String {
+        return getPrefs(context).getString(KEY_WEBDAV_PATH, "xime") ?: "xime"
+    }
+
+    fun setWebDavPath(context: Context, path: String) {
+        getPrefs(context).edit().putString(KEY_WEBDAV_PATH, path).apply()
+    }
+
+    fun getInstalledMarketIds(context: Context): Set<String> =
+        getPrefs(context).getStringSet(KEY_INSTALLED_MARKET_IDS, emptySet())?.toSet() ?: emptySet()
+
+    fun addInstalledMarketId(context: Context, id: String) {
+        val cur = getInstalledMarketIds(context).toMutableSet()
+        if (cur.add(id)) {
+            getPrefs(context).edit().putStringSet(KEY_INSTALLED_MARKET_IDS, cur).apply()
+        }
+    }
+
+    fun removeInstalledMarketId(context: Context, id: String) {
+        val cur = getInstalledMarketIds(context).toMutableSet()
+        if (cur.remove(id)) {
+            getPrefs(context).edit().putStringSet(KEY_INSTALLED_MARKET_IDS, cur).apply()
+        }
     }
 }

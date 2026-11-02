@@ -187,7 +187,7 @@ class FeedbackManager(private val context: Context) {
     fun performKeyPressDownEffect(key: String, view: View) {
         val keyType = when (key) {
             "delete", "clear_composition" -> "delete"
-            "enter", "newline" -> "enter"
+            "enter" -> "enter"
             "space" -> "space"
             else -> "standard"
         }

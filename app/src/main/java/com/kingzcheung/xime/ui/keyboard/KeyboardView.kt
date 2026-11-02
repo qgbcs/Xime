@@ -1,19 +1,13 @@
 package com.kingzcheung.xime.ui.keyboard
 
-import com.kingzcheung.xime.R
-
-import com.kingzcheung.xime.i18n.tr
-
 import android.content.res.Configuration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,17 +15,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -54,8 +42,6 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -70,18 +56,13 @@ import com.kingzcheung.xime.keyboard.OverlayRoute
 import com.kingzcheung.xime.keyboard.PanelType
 import com.kingzcheung.xime.keyboard.ToolbarAction
 import com.kingzcheung.xime.keyboard.ToolbarButton
-import com.kingzcheung.xime.keyboard.ToolbarButtonItem
-import com.kingzcheung.xime.keyboard.isBuiltinToolbarButtonAvailable
-import com.kingzcheung.xime.keyboard.resolveToolbarButtonItem
 import com.kingzcheung.xime.rime.T9InputController
 import com.kingzcheung.xime.service.CandidateState
-import com.kingzcheung.xime.service.ExpandedCandidatePager
 import com.kingzcheung.xime.settings.KeysConfigHelper
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kingzcheung.xime.ui.feedback.FeedbackActivity
 import com.kingzcheung.xime.ui.menubar.ClipboardView
 import com.kingzcheung.xime.ui.menubar.SchemaListView
-import com.kingzcheung.xime.ui.menubar.SchemaSwitchListView
 import com.kingzcheung.xime.ui.menubar.ToolbarCustomizeView
 import com.kingzcheung.xime.ui.theme.KeyboardThemes
 import com.kingzcheung.xime.ui.theme.keyboardBackground
@@ -95,14 +76,6 @@ import kotlin.math.roundToInt
 
 val LocalStretchFactor = compositionLocalOf { 1f }
 val LocalSuppressCursorMove = compositionLocalOf { mutableStateOf(false) }
-
-/**
- * 父层光标手势是否已接管本次横向滑动。
- *
- * 父层激活光标手势后会 consume 横向位移（[KeyboardView] 内 activationThresholdPx），
- * 按键层的拖拽累积随之停止增长，仍可能小于点击取消阈值，导致"光标已移动、按键又打出字"。
- * 按键层据此放弃点击判定：横向滑动已被父层消费，就不该再算作点击。
- */
 val LocalCursorGestureActive = compositionLocalOf { mutableStateOf(false) }
 
 @Composable
@@ -116,33 +89,10 @@ fun KeyboardView(
     candidateState: State<CandidateState> = remember { mutableStateOf(CandidateState()) },
     voiceAmplitudeState: State<Float> = remember { mutableFloatStateOf(0f) },
     voiceSpectrumState: State<FloatArray> = remember { mutableStateOf(FloatArray(16)) },
-    /**
-     * 非按键交互（符号/表情面板、菜单栏、候选栏按钮等）的振动钩子。
-     * 按键本身的反馈走 onKeyPressDown 回调（服务层 FeedbackManager），
-     * 此处只覆盖没有经过按键回调链路的点击交互，宿主按按键振动同款语义实现。
-     */
-    onHapticFeedback: (() -> Unit)? = null,
 ) {
     val isShifted by viewModel.isShifted.collectAsStateWithLifecycle()
     val keyboardState by viewModel.keyboardState.collectAsStateWithLifecycle()
     val page by viewModel.page.collectAsStateWithLifecycle()
-    val candidatePageExpanded by viewModel.candidatePageExpanded.collectAsStateWithLifecycle()
-    val singleCharFilter by viewModel.singleCharFilter.collectAsStateWithLifecycle()
-
-    // 候选展开页自动收起：编码删空（无候选也无联想）时不留空页。
-    // 展开态是候选栏的在位扩展（非 Overlay），删除实时更新页内候选，删空即回到键盘。
-    LaunchedEffect(
-        candidatePageExpanded,
-        candidateState.value.candidates.size,
-        candidateState.value.associationCandidates.size
-    ) {
-        if (candidatePageExpanded &&
-            candidateState.value.candidates.isEmpty() &&
-            candidateState.value.associationCandidates.isEmpty()
-        ) {
-            viewModel.setCandidatePageExpanded(false)
-        }
-    }
     val viewState by viewModel.viewState.collectAsStateWithLifecycle()
     val isLandscape = if (state.isFloatingMode) false
         else LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -164,19 +114,13 @@ fun KeyboardView(
                 callbacks.onT9RefreshComposition?.invoke(composition)
             },
             onRightCommitUndone = callbacks.onT9RightCommitUndone,
-            candidateTransform = callbacks.onTCandidateTransform,
         )
     }
 
     LaunchedEffect(state.inputSessionId) {
         t9Controller.reset()
-        FileLogger.i("XimeKeyboard", "InputSessionStarted: isAsciiMode=${state.isAsciiMode}, schemaId=${state.currentSchemaId}, kb=$keyboardState, vs=$viewState, page=$page, restarting=${state.isInputSessionRestarting}")
-        // restarting（同一编辑框刷新，如聊天发送消息后 app restartInput）不是新会话：
-        // 不清 ascii 记忆——否则"主键盘=中文"的记忆丢失，退出符号/数字面板时
-        // targetFor(MAIN) 会 fallback 到引擎的面板态（面板首入默认英文），主键盘被误留英文。
-        if (!state.isInputSessionRestarting) {
-            viewModel.asciiStateMachine.reset()
-        }
+        FileLogger.i("XimeKeyboard", "InputSessionStarted: isAsciiMode=${state.isAsciiMode}, schemaId=${state.currentSchemaId}, kb=$keyboardState, vs=$viewState, page=$page")
+        viewModel.asciiStateMachine.reset()
         viewModel.dispatch(
             KeyboardDispatchAction.InputSessionStarted(state.isAsciiMode, state.currentSchemaId)
         )
@@ -196,15 +140,13 @@ fun KeyboardView(
         val prevContext = lastAsciiContext
         val curContext = viewState.asciiContext()
         lastAsciiContext = curContext
-        // curContext 为 null（符号面板）时不参与同步：不进/退该面板都不碰引擎中英态
-        if (prevContext == null || curContext == null || prevContext == curContext) return@LaunchedEffect
-        viewModel.asciiStateMachine.saveMemory(prevContext, state.isAsciiMode)
+        if (prevContext == null || prevContext == curContext) return@LaunchedEffect
+        val prev = prevContext ?: return@LaunchedEffect
+        viewModel.asciiStateMachine.saveMemory(prev, state.isAsciiMode)
         val target = viewModel.asciiStateMachine.targetFor(curContext, state.isAsciiMode)
         if (target != null) {
-            FileLogger.i("XimeKeyboard", "ascii sync: ${prevContext.name}(${state.isAsciiMode}) -> ${curContext.name}($target)")
-            // 面板上下文同步走 ime_switch_panel（PANEL_SYNC）：切引擎但不写 user.yaml，
-            // 临时态不污染用户显式中英选择
-            callbacks.onKeyPress("ime_switch_panel", false)
+            FileLogger.i("XimeKeyboard", "ascii sync: ${prev.name}(${state.isAsciiMode}) -> ${curContext.name}($target)")
+            callbacks.onKeyPress("ime_switch", false)
         }
     }
 
@@ -251,9 +193,8 @@ fun KeyboardView(
     val specialKeyBgColor = if (state.isDarkTheme) kbColors.specialKeyBgColorDark?.let { longToColor(it) }
         ?: themeSpecialKeyColor
         else kbColors.specialKeyBgColor?.let { longToColor(it) } ?: themeSpecialKeyColor
-    val specialKeyTextColor = KeyboardThemes.getSpecialKeyTextColorForBackground(
-        specialKeyBgColor, keyTextColor
-    )
+    val specialKeyTextColor = if (state.isDarkTheme) androidx.compose.ui.graphics.Color.White
+        else KeyboardThemes.getSpecialKeyTextColor(state.themeId, false)
     val candidateTextColor = KeyboardThemes.getCandidateTextColorOverride(state.themeId, state.isDarkTheme)
         ?: if (state.isDarkTheme) longToColor(kbColors.candidateTextColorDark)
         else longToColor(kbColors.candidateTextColor)
@@ -267,14 +208,9 @@ fun KeyboardView(
     val screenW = LocalConfiguration.current.screenWidthDp
     val screenH = LocalConfiguration.current.screenHeightDp
     val portraitScreenWidth = minOf(screenW, screenH)
-    val cardWidthDp = FloatingCardGeometry.cardWidthDp(portraitScreenWidth)
-    val floatScaleFactor = if (state.isFloatingMode) FloatingCardGeometry.widthFraction(portraitScreenWidth, screenW)
-        else FloatingCardGeometry.CARD_SCALE
-    val floatFontScale = if (state.isFloatingMode) FloatingCardGeometry.CARD_SCALE else 1f
-    // 键盘调节支持左右收窄后，实际渲染宽 ≠ 屏宽（屏幕宽度只作首帧兜底）：
-    // 展开候选页的行宽/九键左栏宽度按实测宽计算，收窄后不高估每行容量
-    val densityForMeasure = LocalDensity.current
-    var measuredWidthDp by remember { mutableIntStateOf(0) }
+    val cardWidthDp = (portraitScreenWidth * 0.85f).roundToInt()
+    val floatScaleFactor = if (state.isFloatingMode) cardWidthDp.toFloat() / screenW.toFloat() else 0.85f
+    val floatFontScale = if (state.isFloatingMode) cardWidthDp.toFloat() / portraitScreenWidth.toFloat() else 1f
 
     val contentModifier = if (state.isFloatingMode) {
         modifier.keyboardBackground(themeScheme.keyboardBackground, state.isDarkTheme, keyboardBgColor)
@@ -289,6 +225,7 @@ fun KeyboardView(
         fontScaleFactor = floatFontScale,
         offsetX = state.floatingOffsetX,
         offsetY = state.floatingOffsetY,
+        minOffsetY = state.floatingMinOffsetY,
         backgroundColor = keyboardBgColor,
         onDrag = { dx, dy -> callbacks.onFloatingKeyboardDrag?.invoke(dx, dy) },
         onDragEnd = { callbacks.onFloatingKeyboardDragEnd?.invoke() },
@@ -370,37 +307,11 @@ fun KeyboardView(
             var handwritingComments by remember { mutableStateOf<List<String>>(emptyList()) }
             var handwritingClearSignal by remember { mutableIntStateOf(0) }
             var isHandwritingLookup by remember { mutableStateOf(false) }
-            // 手写叠写状态真源：tailText=屏上手写会话尾部文本（含固化+活动字）；
-            // activeLen=其中活动部分长度（可被识别结果替换/固化/撤销）；
-            // lastSegLen=最后一次识别的段长（停顿定型不清零）——点选替换据此定位
-            // "最后上屏的字"（停顿后再点候选仍可替换，而非追加）
-            var handwritingTail by remember { mutableStateOf("") }
-            var handwritingActiveLen by remember { mutableStateOf(0) }
-            var handwritingLastSegLen by remember { mutableStateOf(0) }
-
-            // 数据源（展开与否即切换点）：展开态下候选栏与展开页同吃全量列表
-            // （expandedCandidates，展开时服务层重新拉取）；非展开态候选栏保持
-            // 引擎当前页（"每页候选词数"）
-            val expandedDataMode = candidatePageExpanded &&
-                candidateState.value.expandedCandidates.isNotEmpty()
 
             val isHandwritingPage = page is KeyboardPage.Main && (page as KeyboardPage.Main).type == MainType.HANDWRITING
             val showHandwritingCandidates = (isHandwritingPage || isHandwritingLookup) && handwritingCandidates.isNotEmpty()
 
             val cs = candidateState.value
-            // 展开态候选栏数据源：全量列表（筛选态取单字子列表，仍是同源关系）。
-            // 每项携带全量原索引：筛选态过滤掉词组后位置索引 ≠ 全局索引，
-            // 点选/长按必须经 first 换算回全局索引，与展开页 globalIndices 同口径
-            val railExpanded = if (expandedDataMode) {
-                if (singleCharFilter) {
-                    cs.expandedCandidates.withIndex()
-                        .mapNotNull { (i, c) -> if (c.text.length == 1) i to c else null }
-                } else {
-                    cs.expandedCandidates.withIndex().map { it.index to it.value }
-                }
-            } else {
-                emptyList()
-            }
             val candidateBarState = remember(
                 cs.candidates, cs.candidateComments, cs.inputText, cs.preeditText, cs.isComposing,
                 cs.associationCandidates, cs.pendingEnglishText, cs.isShowingRecentClipboard, cs.hasNextPage,
@@ -415,12 +326,12 @@ fun KeyboardView(
                     )
                 } else {
                     CandidateBarState.from(
-                        candidates = if (railExpanded.isNotEmpty()) railExpanded.map { it.second.text } else cs.candidates,
-                        candidateComments = if (railExpanded.isNotEmpty()) railExpanded.map { it.second.comment } else cs.candidateComments,
+                        candidates = cs.candidates,
+                        candidateComments = cs.candidateComments,
                         inputText = cs.inputText,
                         preeditText = cs.preeditText,
                         isComposing = cs.isComposing,
-                        associationCandidates = if (cs.pendingEnglishText.isNotEmpty() && cs.englishReplaceSupported) {
+                        associationCandidates = if (cs.pendingEnglishText.isNotEmpty()) {
                             listOf(cs.pendingEnglishText) + cs.associationCandidates
                         } else {
                             cs.associationCandidates
@@ -440,26 +351,21 @@ fun KeyboardView(
                     accentColor = accentColor,
                     isFocused = state.quickSendFormFocused,
                     initialText = state.quickSendEditingItemText,
-                    initialCode = state.quickSendEditingItemCode,
                     cardBgColor = keyBgColor,
                     editingItemId = state.quickSendEditingItemId,
-                    onClose = { text: String, code: String ->
-                        android.util.Log.d("QuickSendForm", "onClose: textLen=${text.length}, editingId=${state.quickSendEditingItemId}, showForm=${state.showQuickSendForm}")
+                    onClose = { text: String ->
                         if (text.isNotBlank()) {
                             val editingId = state.quickSendEditingItemId
                             if (editingId != null) {
-                                viewModel.updateQuickSendItem(editingId, text, code)
+                                viewModel.updateQuickSendItem(editingId, text)
                             } else {
-                                viewModel.addQuickSendText(text, code)
+                                viewModel.addQuickSendText(text)
                             }
                         }
                         callbacks.onHideQuickSendForm?.invoke()
                     },
                     onFocusChange = { focused: Boolean ->
                         callbacks.onQuickSendFormFocusChange?.invoke(focused)
-                    },
-                    onCodeFocusChange = { focused: Boolean ->
-                        callbacks.onQuickSendCodeFocusChange?.invoke(focused)
                     },
                 )
             }
@@ -484,10 +390,7 @@ fun KeyboardView(
             CandidateBar(
                 state = candidateBarState,
                 page = page,
-                candidatePageExpanded = candidatePageExpanded,
                 isFloatingMode = state.isFloatingMode,
-                // 候选栏图片候选的缩略图文件（不存在返回 null → 渲染占位图标）
-                clipboardImageFileOf = { item -> viewModel.clipboardManager.imageFileOf(item) },
                 isVoiceSticky = state.voiceSticky,
                 voiceAmplitude = voiceAmplitudeState.value,
                 voiceSpectrum = voiceSpectrumState.value,
@@ -495,61 +398,35 @@ fun KeyboardView(
                 voicePluginName = state.voicePluginName,
                 customPhraseWords = customPhraseWords,
                 toolbarActions = state.toolbarButtons.mapNotNull { id ->
-                    val item = resolveToolbarButtonItem(id, state.toolbarPluginButtons) ?: return@mapNotNull null
-                    // 承载区受限（独立 IME 面板）：浮动键盘没有意义也放不下，隐藏入口
-                    if (state.isHostConstrained &&
-                        item is ToolbarButtonItem.Builtin &&
-                        item.button == ToolbarButton.FLOAT
-                    ) {
-                        return@mapNotNull null
+                    val button = ToolbarButton.fromId(id) ?: return@mapNotNull null
+                    if (button == ToolbarButton.HANDWRITING_LOOKUP) {
+                        if (!com.kingzcheung.xime.handwriting.HandwritingEngine.hasModel(LocalContext.current)) return@mapNotNull null
                     }
-                    // 与定制列表同一口径（关掉语音转文本 / 未装手写模型则不显示）
-                    if (item is ToolbarButtonItem.Builtin &&
-                        !isBuiltinToolbarButtonAvailable(
-                            item.button,
-                            isSttEnabled = state.isSttEnabled,
-                            hasHandwritingModel = {
-                                com.kingzcheung.xime.handwriting.HandwritingEngine.hasModel(toolbarContext)
-                            },
-                        )
-                    ) {
-                        return@mapNotNull null
-                    }
-                    val onClick: () -> Unit = when (item) {
-                        is ToolbarButtonItem.Builtin -> when (item.button) {
-                            ToolbarButton.EMOJI -> ({ viewModel.showOverlay(OverlayRoute.Emoji) })
-                            ToolbarButton.CLIPBOARD -> ({ viewModel.showOverlay(OverlayRoute.Clipboard(0)) })
-                            ToolbarButton.SCHEMA -> ({ viewModel.showOverlay(OverlayRoute.SchemaList) })
-                            ToolbarButton.SWITCHES -> ({ viewModel.showOverlay(OverlayRoute.SchemaSwitches) })
-                            ToolbarButton.QUICK_PHRASE -> ({ viewModel.showOverlay(OverlayRoute.Clipboard(1)) })
-                            ToolbarButton.SYMBOL -> ({ viewModel.showOverlay(OverlayRoute.Symbol) })
-                            ToolbarButton.SELECT_ALL -> ({ callbacks.onToolbarEditingAction?.invoke("select_all") })
-                            ToolbarButton.COPY -> ({ callbacks.onToolbarEditingAction?.invoke("copy") })
-                            ToolbarButton.PASTE -> ({ callbacks.onToolbarEditingAction?.invoke("paste") })
-                            ToolbarButton.HOME -> ({ callbacks.onToolbarEditingAction?.invoke("home") })
-                            ToolbarButton.END -> ({ callbacks.onToolbarEditingAction?.invoke("end") })
-                            ToolbarButton.FLOAT -> ({ callbacks.onFloatingModeChange?.invoke(!state.isFloatingMode) })
-                            ToolbarButton.HANDWRITING_LOOKUP -> ({ isHandwritingLookup = !isHandwritingLookup })
-                            ToolbarButton.EDIT -> ({ viewModel.showOverlay(OverlayRoute.Edit) })
-                            ToolbarButton.VOICE -> ({
-                                if (PermissionHelper.hasRecordAudioPermission(toolbarContext)) {
-                                    callbacks.onVoiceStickyToggle?.invoke()
-                                } else {
-                                    android.widget.Toast.makeText(toolbarContext, tr(R.string.s_xuyaomaikefengquanxiancainengs_3b6e4), android.widget.Toast.LENGTH_SHORT).show()
-                                    PermissionHelper.requestRecordAudioPermission(toolbarContext)
-                                }
-                            })
-                        }
-                        is ToolbarButtonItem.Plugin -> ({
-                            if (item.action == "open_panel") {
-                                callbacks.onOpenToolPanel?.invoke(item.pluginId)
+                    val toolbarContext = LocalContext.current
+                    val onClick: () -> Unit = when (button) {
+                        ToolbarButton.EMOJI -> ({ viewModel.showOverlay(OverlayRoute.Emoji) })
+                        ToolbarButton.CLIPBOARD -> ({ viewModel.showOverlay(OverlayRoute.Clipboard(0)) })
+                        ToolbarButton.SCHEMA -> ({ viewModel.showOverlay(OverlayRoute.SchemaList, listOf(OverlayRoute.Menu)) })
+                        ToolbarButton.QUICK_PHRASE -> ({ viewModel.showOverlay(OverlayRoute.Clipboard(1)) })
+                        ToolbarButton.SYMBOL -> ({ viewModel.showOverlay(OverlayRoute.Symbol) })
+                        ToolbarButton.SELECT_ALL -> ({ callbacks.onToolbarEditingAction?.invoke("select_all") })
+                        ToolbarButton.COPY -> ({ callbacks.onToolbarEditingAction?.invoke("copy") })
+                        ToolbarButton.PASTE -> ({ callbacks.onToolbarEditingAction?.invoke("paste") })
+                        ToolbarButton.HOME -> ({ callbacks.onToolbarEditingAction?.invoke("home") })
+                        ToolbarButton.END -> ({ callbacks.onToolbarEditingAction?.invoke("end") })
+                        ToolbarButton.FLOAT -> ({ callbacks.onFloatingModeChange?.invoke(!state.isFloatingMode) })
+                        ToolbarButton.HANDWRITING_LOOKUP -> ({ isHandwritingLookup = !isHandwritingLookup })
+                        ToolbarButton.EDIT -> ({ viewModel.showOverlay(OverlayRoute.Edit) })
+                        ToolbarButton.VOICE -> ({
+                            if (PermissionHelper.hasRecordAudioPermission(toolbarContext)) {
+                                callbacks.onVoiceStickyToggle?.invoke()
+                            } else {
+                                android.widget.Toast.makeText(toolbarContext, "需要麦克风权限才能使用语音输入", android.widget.Toast.LENGTH_SHORT).show()
+                                PermissionHelper.requestRecordAudioPermission(toolbarContext)
                             }
                         })
                     }
-                    ToolbarAction(item) {
-                        onHapticFeedback?.invoke()
-                        onClick()
-                    }
+                    ToolbarAction(button, onClick)
                 },
                 visuals = CandidateBarVisuals(
                     backgroundColor = Color.Transparent,
@@ -557,8 +434,7 @@ fun KeyboardView(
                     dividerColor = dividerColor,
                     accentColor = accentColor,
                     selectedTextColor = candidateSelectedTextColor,
-                    isDarkTheme = state.isDarkTheme,
-                    keyBgColor = keyBgColor
+                    isDarkTheme = state.isDarkTheme
                 ),
                 callbacks = CandidateBarCallbacks(
                     onCandidateSelect = { index, candidate ->
@@ -571,22 +447,7 @@ fun KeyboardView(
                             callbacks.onCandidateSelect(index, candidate)
                         }
                     },
-                    onCandidateLongPress = { index ->
-                        val railEntry = if (expandedDataMode) railExpanded.getOrNull(index) else null
-                        val word = railEntry?.second?.text
-                            ?: candidateState.value.candidates.getOrNull(index)
-                        if (!word.isNullOrEmpty()) {
-                            deletePending = DeletePendingWord(word) {
-                                if (railEntry != null) {
-                                    callbacks.onGlobalCandidateDelete?.invoke(railEntry.first)
-                                } else {
-                                    callbacks.onCandidateDelete?.invoke(index)
-                                }
-                            }
-                        }
-                    },
                     onClearAssociation = {
-                        onHapticFeedback?.invoke()
                         if (showHandwritingCandidates) {
                             handwritingCandidates = emptyList()
                             handwritingComments = emptyList()
@@ -597,30 +458,27 @@ fun KeyboardView(
                     },
                     onLogoClick = { viewModel.showOverlay(OverlayRoute.Menu) },
                     onBack = {
-                        onHapticFeedback?.invoke()
                         if (showHandwritingCandidates) {
                             handwritingCandidates = emptyList()
                             handwritingComments = emptyList()
                             handwritingClearSignal++
                         } else {
                             when (page) {
-                                is KeyboardPage.Overlay -> viewModel.closeOverlay()
+                                is KeyboardPage.Overlay -> {
+                                    if ((page as KeyboardPage.Overlay).backStack.isEmpty())
+                                        viewModel.closeOverlay()
+                                    else viewModel.popOverlay()
+                                }
                                 is KeyboardPage.Panel -> viewModel.exitPanel()
-                                is KeyboardPage.Main -> viewModel.setCandidatePageExpanded(false)
+                                is KeyboardPage.Main -> {}
                             }
                         }
                     },
                     onHideKeyboard = {
-                        onHapticFeedback?.invoke()
                         callbacks.onHideKeyboard?.invoke()
                         viewModel.resetKeyboard(state.isAsciiMode, state.currentSchemaId)
                     },
-                    onShowMoreCandidates = {
-                        onHapticFeedback?.invoke()
-                        viewModel.setCandidatePageExpanded(true)
-                        // 拉取跨页全量候选（展开页数据源，含首次展开）
-                        callbacks.onRequestExpandedCandidates?.invoke()
-                    },
+                    onShowMoreCandidates = { viewModel.showOverlay(OverlayRoute.CandidatePage) },
                     onInputTextClick = {
                         val rawInput = candidateState.value.inputText
                         if (rawInput.isNotEmpty()) {
@@ -665,57 +523,49 @@ fun KeyboardView(
                     MainType.FULL -> {
                         val currentOnCursorMove = rememberUpdatedState(callbacks.onCursorMove)
                         val suppressCursorMove = remember { mutableStateOf(false) }
-                        val cursorGestureActive = remember { mutableStateOf(false) }
                         val cursorMod = if (callbacks.onCursorMove != null) {
                             Modifier.pointerInput(Unit) {
                                 val stepThresholdPx = 25.dp.toPx()
                                 val activationThresholdPx = 60.dp.toPx()
                                 awaitEachGesture {
                                     suppressCursorMove.value = false
-                                    cursorGestureActive.value = false
                                     val down = awaitFirstDown(requireUnconsumed = false)
                                     var isCursorGesture = false
                                     var lastSteps = 0
                                     var activationAnchorX = down.position.x
 
-                                    // 手势结束即清标志，避免跨手势残留（26 键已改按本次手势峰值判定）
-                                    try {
-                                        do {
-                                            val event = awaitPointerEvent()
-                                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                            val dx = change.position.x - down.position.x
-                                            val dy = change.position.y - down.position.y
+                                    do {
+                                        val event = awaitPointerEvent()
+                                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                        val dx = change.position.x - down.position.x
+                                        val dy = change.position.y - down.position.y
 
-                                            if (!change.pressed) {
-                                                if (isCursorGesture) {
-                                                    event.changes.forEach { it.consume() }
-                                                }
-                                                break
+                                        if (!change.pressed) {
+                                            if (isCursorGesture) {
+                                                event.changes.forEach { it.consume() }
                                             }
-                                            if (suppressCursorMove.value) break
-                                            if (abs(dx) > abs(dy) * 4f) {
+                                            break
+                                        }
+                                        if (suppressCursorMove.value) break
+                                        if (abs(dx) > abs(dy) * 4f) {
 
-                                                if (!isCursorGesture && abs(dx) > activationThresholdPx) {
-                                                    isCursorGesture = true
-                                                    activationAnchorX = change.position.x
-                                                    cursorGestureActive.value = true
-                                                }
+                                            if (!isCursorGesture && abs(dx) > activationThresholdPx) {
+                                                isCursorGesture = true
+                                                activationAnchorX = change.position.x
+                                            }
 
-                                                if (isCursorGesture) {
-                                                    event.changes.forEach { it.consume() }
-                                                    val dxFromAnchor = change.position.x - activationAnchorX
-                                                    val steps = (dxFromAnchor / stepThresholdPx).toInt()
-                                                    if (steps != lastSteps) {
-                                                        val delta = steps - lastSteps
-                                                        currentOnCursorMove.value?.invoke(delta)
-                                                        lastSteps = steps
-                                                    }
+                                            if (isCursorGesture) {
+                                                event.changes.forEach { it.consume() }
+                                                val dxFromAnchor = change.position.x - activationAnchorX
+                                                val steps = (dxFromAnchor / stepThresholdPx).toInt()
+                                                if (steps != lastSteps) {
+                                                    val delta = steps - lastSteps
+                                                    currentOnCursorMove.value?.invoke(delta)
+                                                    lastSteps = steps
                                                 }
                                             }
-                                        } while (true)
-                                    } finally {
-                                        cursorGestureActive.value = false
-                                    }
+                                        }
+                                    } while (true)
                                 }
                             }
                         } else {
@@ -761,8 +611,6 @@ fun KeyboardView(
                                     ))
                                 }
                                 "emoji" -> viewModel.showOverlay(OverlayRoute.Emoji)
-                                // 与 emoji 同档：command: symbol / 自定义键发 "symbol" 时打开符号面板
-                                "symbol" -> viewModel.showOverlay(OverlayRoute.Symbol)
                                 else -> {
                                     callbacks.onKeyPress(key, isShifted)
                                     viewModel.onCharacterTyped()
@@ -771,12 +619,18 @@ fun KeyboardView(
                         }
                         val numberOnKeyPress: (String) -> Unit = { key ->
                             when (key) {
-                                // 面板上的 shift/caps 键（caps 功能键 id 发 "shift_caps"）：
-                                // 接入 26 键同款 shift 状态机，避免字符串落到引擎被当成编码
-                                "shift", "shift_single", "shift_caps" -> viewModel.consumeShiftKey(key)
                                 "abc" -> {
                                     callbacks.onKeyPress("abc", false)
-                                    viewModel.returnToMain(state.isAsciiMode, state.currentSchemaId)
+                                    if (page is KeyboardPage.Panel) {
+                                        viewModel.exitPanel()
+                                    } else {
+                                        val mainTarget = viewModel.asciiStateMachine.targetFor(
+                                            AsciiKeyboardContext.MAIN, state.isAsciiMode
+                                        ) ?: state.isAsciiMode
+                                        viewModel.setKeyboardState(
+                                            initialKeyboardLayoutState(mainTarget, state.currentSchemaId)
+                                        )
+                                    }
                                 }
                                 "symbol" -> {
                                     viewModel.showOverlay(OverlayRoute.Symbol)
@@ -789,7 +643,18 @@ fun KeyboardView(
                         }
                         val symbolOnKeyPress: (String) -> Unit = { key ->
                             when (key) {
-                                "abc" -> viewModel.returnToMain(state.isAsciiMode, state.currentSchemaId)
+                                "abc" -> {
+                                    if (page is KeyboardPage.Panel) {
+                                        viewModel.exitPanel()
+                                    } else {
+                                        val mainTarget = viewModel.asciiStateMachine.targetFor(
+                                            AsciiKeyboardContext.MAIN, state.isAsciiMode
+                                        ) ?: state.isAsciiMode
+                                        viewModel.setKeyboardState(
+                                            initialKeyboardLayoutState(mainTarget, state.currentSchemaId)
+                                        )
+                                    }
+                                }
                                 "?123" -> {
                                     callbacks.onCommitCandidateBeforeModeChange?.invoke()
                                     viewModel.setKeyboardState(keyboardState.transition(
@@ -802,9 +667,20 @@ fun KeyboardView(
                         }
                         val commonSymbolOnKeyPress: (String) -> Unit = { key ->
                             when (key) {
-                                "shift", "shift_single", "shift_caps" -> viewModel.consumeShiftKey(key)
-                                // 返回主键盘：符号/数字页不碰引擎中英态，布局跟随引擎当前状态
-                                "abc" -> viewModel.returnToMain(state.isAsciiMode, state.currentSchemaId)
+                                "abc" -> {
+                                    // 返回主键盘：面板内 ascii 模式不应影响主键盘布局，
+                                    // 用主键盘记忆（或恢复进入面板前状态），避免"先英文后切回中文"闪变。
+                                    if (page is KeyboardPage.Panel) {
+                                        viewModel.exitPanel()
+                                    } else {
+                                        val mainTarget = viewModel.asciiStateMachine.targetFor(
+                                            AsciiKeyboardContext.MAIN, state.isAsciiMode
+                                        ) ?: state.isAsciiMode
+                                        viewModel.setKeyboardState(
+                                            initialKeyboardLayoutState(mainTarget, state.currentSchemaId)
+                                        )
+                                    }
+                                }
                                 "number" -> {
                                     viewModel.setKeyboardState(keyboardState.transition(
                                         KeyboardLayoutAction.SwitchToNumber, state.isAsciiMode
@@ -863,7 +739,6 @@ fun KeyboardView(
                         }
                         CompositionLocalProvider(
                             LocalSuppressCursorMove provides suppressCursorMove,
-                            LocalCursorGestureActive provides cursorGestureActive,
                         ) {
                             KeyboardLayoutScreen(
                                 keyboardState = keyboardState,
@@ -895,93 +770,38 @@ fun KeyboardView(
                             onKeyPress = { key ->
                                 when (key) {
                                     "delete" -> {
-                                        when {
-                                            handwritingActiveLen > 0 -> {
-                                                // 撤销当前字：删屏上活动区文本，清笔画重写
-                                                callbacks.onDeleteText?.invoke(handwritingActiveLen)
-                                                handwritingTail = handwritingTail.dropLast(handwritingActiveLen)
-                                                handwritingActiveLen = 0
-                                                handwritingLastSegLen = 0
-                                                handwritingCandidates = emptyList()
-                                                handwritingComments = emptyList()
-                                                handwritingClearSignal++
-                                            }
-                                            handwritingTail.isNotEmpty() -> {
-                                                // 无活动字：退格删固化尾字，tail 乐观修剪（下次替换校验兜底）。
-                                                // 候选栏同步失效（tail 已变，点选替换无意义）
-                                                callbacks.onDeleteText?.invoke(1)
-                                                handwritingTail = handwritingTail.dropLast(1)
-                                                handwritingLastSegLen = 0
-                                                handwritingCandidates = emptyList()
-                                                handwritingComments = emptyList()
-                                            }
-                                            else -> callbacks.onKeyPress("delete", false)
+                                        if (handwritingCandidates.isNotEmpty()) {
+                                            handwritingCandidates = emptyList()
+                                            handwritingComments = emptyList()
+                                            handwritingClearSignal++
+                                        } else {
+                                            callbacks.onKeyPress("delete", false)
                                         }
                                     }
                                     "symbol" -> viewModel.enterPanel(PanelType.COMMON_SYMBOL)
                                     "number" -> viewModel.enterPanel(PanelType.NUMBER)
                                     "ime_switch" -> {
-                                        // 离开手写页即卸载手写模型（回到手写页时布局重建重载）
-                                        com.kingzcheung.xime.handwriting.HandwritingEngine.release()
                                         viewModel.switchMain(MainType.FULL)
                                         callbacks.onKeyPress("ime_switch", false)
                                     }
                                     "space" -> {
-                                        // 当前字已自动上屏：空格=固化 + 上屏空格（全量 commitText 触发联想）。
-                                        // 选择期结束：清候选栏
-                                        handwritingActiveLen = 0
-                                        handwritingLastSegLen = 0
-                                        handwritingCandidates = emptyList()
-                                        handwritingComments = emptyList()
-                                        callbacks.onCommitText?.invoke(" ")
+                                        if (handwritingCandidates.isNotEmpty()) {
+                                            val ch = handwritingCandidates[0]
+                                            callbacks.onCommitText?.invoke(ch)
+                                            handwritingCandidates = emptyList()
+                                            handwritingComments = emptyList()
+                                            handwritingClearSignal++
+                                        } else {
+                                            callbacks.onKeyPress("space", false)
+                                        }
                                     }
-                                    "enter" -> {
-                                        // 换行定稿：选择期结束
-                                        handwritingActiveLen = 0
-                                        handwritingLastSegLen = 0
-                                        handwritingCandidates = emptyList()
-                                        handwritingComments = emptyList()
-                                        callbacks.onKeyPress("enter", false)
-                                    }
-                                    else -> {
-                                        // 标点等直接上屏：固化活动字 + 选择期结束
-                                        handwritingActiveLen = 0
-                                        handwritingLastSegLen = 0
-                                        handwritingCandidates = emptyList()
-                                        handwritingComments = emptyList()
-                                        callbacks.onCommitText?.invoke(key)
-                                    }
+                                    "enter" -> callbacks.onKeyPress("enter", false)
+                                    else -> callbacks.onCommitText?.invoke(key)
                                 }
                             },
-                            onRecognition = { segments ->
-                                val segText = segments.mapNotNull { seg ->
-                                    seg.candidates.firstOrNull()?.char
-                                }.joinToString("")
-                                if (segText.isNotEmpty()) {
-                                    // 替换式上屏：活动区整体重写为最新识别结果（边写边上屏）。
-                                    // 校验失败（光标漂移）时重置尾部状态，后续识别以追加模式重建
-                                    val newTail = handwritingTail.dropLast(handwritingActiveLen) + segText
-                                    val ok = callbacks.onHandwritingAutoCommit?.invoke(newTail, handwritingTail) ?: false
-                                    handwritingTail = if (ok || handwritingTail.isEmpty()) newTail else ""
-                                    handwritingActiveLen = segText.length
-                                    handwritingLastSegLen = segText.length
-                                    handwritingCandidates = segments.last().candidates.map { it.char }
-                                    handwritingComments = emptyList()
-                                }
-                            },
-                            onSegmentSettled = { ch ->
-                                // 叠写满上限：最早段固化（屏上不动，退出活动区）
-                                handwritingActiveLen = (handwritingActiveLen - ch.length).coerceAtLeast(0)
-                            },
-                            onUndoActive = {
-                                if (handwritingActiveLen > 0) {
-                                    callbacks.onDeleteText?.invoke(handwritingActiveLen)
-                                    handwritingTail = handwritingTail.dropLast(handwritingActiveLen)
-                                    handwritingActiveLen = 0
-                                    handwritingCandidates = emptyList()
-                                    handwritingComments = emptyList()
-                                    handwritingClearSignal++
-                                }
+                            onCandidates = { candidates ->
+                                handwritingCandidates = candidates.map { it.char }
+                                handwritingComments = emptyList()
                             },
                             onButtonFeedback = { key ->
                                 callbacks.onKeyPressDown?.invoke(key)
@@ -1029,16 +849,10 @@ fun KeyboardView(
             val isPanelKeyboard = page is KeyboardPage.Panel
             if (isPanelKeyboard) {
                 val panelType = (page as KeyboardPage.Panel).type
-                // 面板圆角与平板 26 键共用同一条规则（yaml 按键盘覆盖优先 → 设备档默认，
-                // 平板用大键面档）：xime.yaml 写 keyboard.key.number/symbol.corner_radius 可单独调
-                val numberPanelRadius = keyCornerRadiusFor(kbKey, "number", isTablet())
-                val symbolPanelRadius = keyCornerRadiusFor(kbKey, "symbol", isTablet())
                 when (panelType) {
-                    PanelType.NUMBER -> PanelKeyboardLayout(
-                        section = "number",
+                    PanelType.NUMBER -> NumberKeyboardLayout(
                         onKeyPress = { key ->
                             when (key) {
-                                "shift", "shift_single", "shift_caps" -> viewModel.consumeShiftKey(key)
                                 "abc" -> viewModel.exitPanel()
                                 "symbol" -> {
                                     viewModel.showOverlay(OverlayRoute.Symbol)
@@ -1049,10 +863,6 @@ fun KeyboardView(
                                 else -> callbacks.onKeyPress(key, false)
                             }
                         },
-                        viewModel = viewModel,
-                        callbacks = callbacks,
-                        uiState = state,
-                        isAsciiMode = state.isAsciiMode,
                         keyBackgroundColor = keyBgColor,
                         keyTextColor = keyTextColor,
                         specialKeyBackgroundColor = specialKeyBgColor,
@@ -1060,23 +870,17 @@ fun KeyboardView(
                         keyboardBackgroundColor = keyboardBgColor,
                         shadowEnabled = kbShadow.enabled,
                         shadowElevation = kbShadow.elevation.dp,
-                        // 平板参数档：阴影圆角不小于键圆角（与主键盘同规则）
-                        shadowShapeRadius = maxOf(kbShadow.shapeRadius.dp, numberPanelRadius),
-                        keyCornerRadius = numberPanelRadius,
-                        keySpacingX = kbKey.spacingFor("number").first?.dp ?: if (isTablet()) 4.dp else null,
-                        keySpacingY = kbKey.spacingFor("number").second?.dp ?: if (isTablet()) 6.dp else null,
+                        shadowShapeRadius = kbShadow.shapeRadius.dp,
+                        keyCornerRadius = kbKey.cornerRadius.dp,
                         onKeyPressDown = callbacks.onKeyPressDown,
                         isFloatingMode = state.isFloatingMode,
                         specialKeyTextColor = specialKeyTextColor,
-                        landscapeSplit = SettingsPreferences.isLandscapeSplitKeyboardEnabled(LocalContext.current),
                         modifier = Modifier.weight(1f).fillMaxWidth()
                     )
 
-                    PanelType.COMMON_SYMBOL -> PanelKeyboardLayout(
-                        section = "common_symbols",
+                    PanelType.COMMON_SYMBOL -> CommonSymbolKeyboardLayout(
                         onKeyPress = { key ->
                             when (key) {
-                                "shift", "shift_single", "shift_caps" -> viewModel.consumeShiftKey(key)
                                 "abc" -> {
                                     viewModel.exitPanel()
                                 }
@@ -1092,10 +896,10 @@ fun KeyboardView(
                                 else -> callbacks.onKeyPress(key, false)
                             }
                         },
-                        viewModel = viewModel,
-                        callbacks = callbacks,
-                        uiState = state,
                         isAsciiMode = state.isAsciiMode,
+                        initialAsciiMode = viewModel.asciiStateMachine.targetFor(
+                            AsciiKeyboardContext.SYMBOL_PANEL, state.isAsciiMode
+                        ) ?: state.isAsciiMode,
                         keyBackgroundColor = keyBgColor,
                         keyTextColor = keyTextColor,
                         specialKeyBackgroundColor = specialKeyBgColor,
@@ -1103,20 +907,16 @@ fun KeyboardView(
                         keyboardBackgroundColor = keyboardBgColor,
                         shadowEnabled = kbShadow.enabled,
                         shadowElevation = kbShadow.elevation.dp,
-                        shadowShapeRadius = maxOf(kbShadow.shapeRadius.dp, symbolPanelRadius),
-                        keyCornerRadius = symbolPanelRadius,
-                        keySpacingX = kbKey.spacingFor("symbol").first?.dp ?: if (isTablet()) 4.dp else null,
-                        keySpacingY = kbKey.spacingFor("symbol").second?.dp ?: if (isTablet()) 6.dp else null,
+                        shadowShapeRadius = kbShadow.shapeRadius.dp,
+                        keyCornerRadius = kbKey.cornerRadius.dp,
                         onKeyPressDown = callbacks.onKeyPressDown,
                         isFloatingMode = state.isFloatingMode,
                         specialKeyTextColor = specialKeyTextColor,
-                        landscapeSplit = SettingsPreferences.isLandscapeSplitKeyboardEnabled(LocalContext.current),
                         modifier = Modifier.weight(1f).fillMaxWidth()
                     )
 
                 }
             }
-            } // candidatePageExpanded else
 
             val configuration = LocalConfiguration.current
             val isLandscapeBottom = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -1151,21 +951,21 @@ fun KeyboardView(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = state.deploymentMessage.ifEmpty { tr(R.string.s_zhengzaichushihua) },
+                        text = state.deploymentMessage.ifEmpty { "正在初始�?.." },
                         color = keyTextColor,
                         style = androidx.compose.material3.MaterialTheme.typography.bodyLarge
                     )
                     if (isError) {
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = tr(R.string.s_dianjiguanbi),
+                            text = "点击关闭",
                             color = keyTextColor.copy(alpha = 0.5f),
                             style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
                             textAlign = TextAlign.Center
                         )
                     } else {
                         Text(
-                            text = tr(R.string.s_qingshaohou),
+                            text = "???",
                             color = keyTextColor.copy(alpha = 0.7f),
                             style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
                         )
@@ -1195,8 +995,7 @@ fun KeyboardView(
                             keyBgColor = keyBgColor,
                             keyTextColor = keyTextColor,
                             isFloatingMode = state.isFloatingMode,
-                            canResizeKeyboard = !state.isHostConstrained,
-                            canFloatKeyboard = !state.isHostConstrained,
+                            schemaSwitches = state.schemaSwitches,
                         ),
                         callbacks = MenuBarCallbacks(
                             onDismiss = { viewModel.closeOverlay() },
@@ -1220,15 +1019,6 @@ fun KeyboardView(
                         ),
                         modifier = Modifier.fillMaxWidth().fillMaxHeight()
                     )
-                    is OverlayRoute.SchemaSwitches -> SchemaSwitchListView(
-                        switches = state.schemaSwitches,
-                        backgroundColor = keyboardBgColor,
-                        keyTextColor = keyTextColor,
-                        keyBgColor = keyBgColor,
-                        onToggleSwitch = { sw -> onHapticFeedback?.invoke(); callbacks.onToggleSchemaSwitch?.invoke(sw) },
-                        onBack = { viewModel.closeOverlay() },
-                        modifier = Modifier.fillMaxWidth().fillMaxHeight()
-                    )
                     is OverlayRoute.SchemaList -> SchemaListView(
                         schemas = state.schemas,
                         currentSchemaId = state.currentSchemaId,
@@ -1240,7 +1030,7 @@ fun KeyboardView(
                             callbacks.onSwitchSchema?.invoke(schemaId)
                             viewModel.closeOverlay()
                         },
-                        onBack = { viewModel.closeOverlay() },
+                        onBack = { viewModel.popOverlay() },
                         modifier = Modifier.fillMaxWidth().fillMaxHeight()
                     )
                     is OverlayRoute.Clipboard -> clipboardPanel(
@@ -1248,8 +1038,6 @@ fun KeyboardView(
                     )
                     is OverlayRoute.ToolbarCustomize -> ToolbarCustomizeView(
                         toolbarButtons = state.toolbarButtons,
-                        pluginButtons = state.toolbarPluginButtons,
-                        isSttEnabled = state.isSttEnabled,
                         keyTextColor = keyTextColor,
                         backgroundColor = keyboardBgColor,
                         accentColor = accentColor,
@@ -1275,16 +1063,11 @@ fun KeyboardView(
                             accentColor = accentColor,
                             keyBgColor = keyBgColor,
                             bottomPaddingDp = state.keyboardBottomPaddingDp,
-                            keyCornerRadius = overlayKeyCornerRadius(kbKey, isTablet()),
-                            shadowEnabled = kbShadow.enabled,
-                            shadowElevation = kbShadow.elevation.dp,
-                            shadowShapeRadius = kbShadow.shapeRadius.dp,
                             modifier = Modifier.fillMaxWidth().fillMaxHeight()
                         )
                     }
                     is OverlayRoute.Emoji -> EmojiKeyboardLayout(
                         onEmojiSelect = { emoji ->
-                            onHapticFeedback?.invoke()
                             if (emoji == "delete") {
                                 callbacks.onKeyPress("delete", false)
                             } else {
@@ -1297,12 +1080,10 @@ fun KeyboardView(
                         textColor = keyTextColor,
                         accentColor = accentColor,
                         bottomPaddingDp = state.keyboardBottomPaddingDp,
-                        modifier = Modifier.fillMaxWidth().fillMaxHeight(),
-                        onHapticFeedback = onHapticFeedback,
+                        modifier = Modifier.fillMaxWidth().fillMaxHeight()
                     )
                     is OverlayRoute.Symbol -> SymbolKeyboardLayout(
                         onSelect = { symbol ->
-                            onHapticFeedback?.invoke()
                             if (symbol == "delete") {
                                 callbacks.onKeyPress("delete", false)
                             } else {
@@ -1314,8 +1095,6 @@ fun KeyboardView(
                         textColor = keyTextColor,
                         accentColor = accentColor,
                         keyBgColor = keyBgColor,
-                        specialKeyBgColor = specialKeyBgColor,
-                        specialKeyTextColor = specialKeyTextColor,
                         bottomPaddingDp = state.keyboardBottomPaddingDp,
                         modifier = Modifier.fillMaxWidth().fillMaxHeight()
                     )
@@ -1354,35 +1133,22 @@ fun KeyboardView(
                         text = p.route.text,
                         backgroundColor = keyboardBgColor,
                         viewModel = viewModel,
-                        onBack = { viewModel.closeOverlay() },
+                        onBack = { viewModel.popOverlay() },
                         onNavigateToQuickSend = { viewModel.pushOverlay(OverlayRoute.Clipboard(1)) },
                         onSelectChar = { char -> callbacks.onCommitText?.invoke(char) },
                         onDeleteText = { count -> callbacks.onDeleteText?.invoke(count) },
                         bottomPaddingDp = state.keyboardBottomPaddingDp,
                         modifier = Modifier.fillMaxWidth().fillMaxHeight()
                     )
-                    is OverlayRoute.ToolPanel -> InfoPanel(
-                        title = state.toolPanelTitle,
-                        nodes = state.toolPanelUiNodes ?: emptyList(),
-                        items = state.toolPanelItems,
-                        isLoading = state.toolPanelLoading,
-                        backgroundColor = keyboardBgColor,
-                        textColor = keyTextColor,
-                        accentColor = accentColor,
-                        itemBgColor = keyBgColor,
-                        bottomPaddingDp = state.keyboardBottomPaddingDp,
-                        onClose = { callbacks.onToolPanelClose?.invoke() },
-                        onAction = { actionId -> callbacks.onToolPanelAction?.invoke(actionId) },
-                        onItemClick = { item -> callbacks.onToolPanelItemClick?.invoke(item) },
-                        modifier = Modifier.fillMaxWidth().fillMaxHeight()
-                    )
+                    // 上游新增路由：用户树尚未接入对应面板，暂不处理以保持原行为
+                    is OverlayRoute.SchemaSwitches -> {}
+                    is OverlayRoute.ToolPanel -> {}
                 }
                 else -> {}
             }
         }
         }
     }
-}
 }
 }
 

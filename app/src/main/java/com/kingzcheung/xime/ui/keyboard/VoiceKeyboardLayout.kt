@@ -1,9 +1,5 @@
 package com.kingzcheung.xime.ui.keyboard
 
-import com.kingzcheung.xime.R
-
-import com.kingzcheung.xime.i18n.tr
-
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -101,10 +97,10 @@ fun VoiceKeyboardLayout(
             }
             
             val statusText = when (recognitionState) {
-                RecognitionState.IDLE -> tr(R.string.s_zhangankonggekaishishuohua)
-                RecognitionState.LISTENING -> tr(R.string.s_zhengzailingting)
-                RecognitionState.PROCESSING -> tr(R.string.s_zhengzaishibie)
-                RecognitionState.ERROR -> tr(R.string.s_shibiechucuo)
+                RecognitionState.IDLE -> "长按空格开始说话"
+                RecognitionState.LISTENING -> "正在聆听..."
+                RecognitionState.PROCESSING -> "正在识别..."
+                RecognitionState.ERROR -> "识别出错"
             }
             
             // 录音/识别/出错状态由悬浮状态标签（VoiceStatusLabel）展示，这里只在空闲时提示
@@ -193,7 +189,7 @@ fun VoiceKeyboardLayout(
                 }
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.Undo,
-                    contentDescription = tr(R.string.s_chexiao),
+                    contentDescription = "撤销",
                     tint = if (leftActive) Color.White else if (isDarkTheme) Color.DarkGray else Color.Gray,
                     modifier = Modifier
                         .size(28.dp)
@@ -242,7 +238,7 @@ fun VoiceKeyboardLayout(
                 }
                 Icon(
                     imageVector = Icons.Default.ArrowUpward,
-                    contentDescription = tr(R.string.s_fasong),
+                    contentDescription = "发送",
                     tint = if (rightActive) Color.White else if (isDarkTheme) Color.DarkGray else Color.Gray,
                     modifier = Modifier
                         .size(28.dp)
@@ -297,7 +293,7 @@ fun VoiceKeyboardLayout(
             }
             
             Text(
-                text = tr(R.string.s_songkaijieshu),
+                text = "松开结束",
                 color = if (bottomActive) Color.DarkGray else Color.Gray,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Normal,
