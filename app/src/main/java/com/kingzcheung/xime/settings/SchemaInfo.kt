@@ -1,11 +1,15 @@
 package com.kingzcheung.xime.settings
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 /**
  * 键盘布局标识
  */
 enum class KeyboardLayout(val id: String, val displayName: String) {
-    FULL("full", "全键盘"),
-    NINEKEY("ninekey", "九键拼音");
+    FULL("full", tr(R.string.s_quanjianpan)),
+    NINEKEY("ninekey", tr(R.string.s_jiujianpinyin));
 
     companion object {
         fun fromId(id: String): KeyboardLayout =

@@ -34,6 +34,7 @@
 ## PR 提交检查清单
 
 - [ ] 关联的 Issue 已创建并讨论通过
+  - 正文写 `Closes #123` 或在右侧 **Development** 面板关联；未关联的 PR 会先收到提醒，满 24 小时仍未关联将被自动关闭
 - [ ] 改动符合最小修改原则
 - [ ] 所有 commit 均已 GPG 签名
 - [ ] 本地构建通过：`./gradlew assembleDebug --quiet`

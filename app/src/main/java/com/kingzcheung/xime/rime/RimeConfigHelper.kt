@@ -1,14 +1,17 @@
 package com.kingzcheung.xime.rime
 
+import com.kingzcheung.xime.util.FileLogger
 import android.content.Context
 import android.util.Log
-import com.kingzcheung.xime.BuildConfig
 import com.kingzcheung.xime.settings.PersonalDictManager
 import com.kingzcheung.xime.settings.SchemaConfigHelper
-import com.kingzcheung.xime.settings.SchemaManifestManager
 import com.kingzcheung.xime.settings.MarketVersionStore
 import com.kingzcheung.xime.settings.SchemaManager
-import com.kingzcheung.xime.settings.SettingsPreferences
+import com.kingzcheung.xime.scheme.SchemeFiles
+import com.kingzcheung.xime.scheme.SchemeInstaller
+import com.kingzcheung.xime.scheme.SchemeStore
+import com.kingzcheung.xime.settings.RimeDependencyResolver
+import com.kingzcheung.xime.settings.RimeSharedFiles
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -19,14 +22,22 @@ import java.io.IOException
 object RimeConfigHelper {
     private const val TAG = "RimeConfigHelper"
     private const val ASSETS_RIME_DIR = "rime"
+    /** app 固定的 default.custom.yaml 模板（assets 根，与 xime.yaml 并列，不随 submodule 分发）。 */
+    private const val ASSETS_DEFAULT_CUSTOM = "default.custom.yaml"
 
     /** 市场索引中随 app 发布的内置默认方案集条目 id（见 rimes/index.yaml 的 `builtin`）。 */
     private const val BUILTIN_MARKET_ID = "builtin"
     /** 内置方案集的初始占位版本：`0.0.0` 保证不等于任何真实 git tag，从而在市场提示「更新」。 */
     private const val BUILTIN_PLACEHOLDER_VERSION = "0.0.0"
+    /** 用户配置 BOM 扫描上限：词典等大文件不参与（体积大且不应被编辑器改写）。 */
+    private const val BOM_SCAN_MAX_BYTES = 4L * 1024 * 1024
 
     /** 部署互斥：Application 预初始化与输入法服务初始化可能并发触发部署，串行化避免重复/并发全量编译。 */
     private val deploymentLock = Any()
+
+    /** 冷启动自检（fullCheck=false）每进程只跑一次；用户主动部署不受此限。 */
+    @Volatile
+    private var startupCheckDone = false
     
     suspend fun initializeRimeDataAsync(context: Context): Pair<String, String> {
         val rimeDir = File(context.filesDir, "rime")
@@ -57,43 +68,38 @@ object RimeConfigHelper {
     }
 
     /**
-     * 统一部署入口（进程内互斥）：
-     * - 部署 hash 一致 → build 已是最新，对齐 deploymentDone 标记，跳过编译；
-     * - hash 缺失/不一致 → 优先增量维护（librime 按文件时间戳只编译变更），
-     *   仅当 build 缺失/为空或增量失败时才清空全量编译。
+     * 统一部署入口（进程内互斥），语义对齐成熟实现：
      *
-     * 必须由调用方保证 engine 已 initialize（deploy() 未初始化时返回 false）。
-     * 该入口被 Application 预初始化与输入法服务共享，配合 deploymentLock
-     * 避免两者并发触发两次全量编译。
+     * - 用户主动部署 / 安装替换（[fullCheck] = true）：先重启维护（native 侧销毁
+     *   会话 → `start_maintenance(true)` → 重建会话），再校验产物。
+     *   维护会卸载已加载的方案与词典，沿用旧会话会让之后所有查询为空
+     *   （症状：部署后打不出中文，必须重启 app），所以必须走同一条“重建会话”路径。
+     * - 冷启动自检（[fullCheck] = false）：按数据目录顶层 yaml 的 mtime 做一次快速
+     *   判断，无改动立即返回；每个进程只跑一次。
+     *
+     * 不再维护部署 hash：librime 的 `workspace_update` 会按
+     * `__build_info/timestamps` 逐文件比对，`__include` 的自定义 yaml 也在其中；
+     * 自建 hash 反而漏文件（曾出现改 `opencc/`、`lua/`、include 文件后部署不生效）。
+     * 部署成功与否只看产物：librime 部署失败只写日志，返回值仍为 true。
      */
-    fun ensureDeployment(context: Context): Boolean {
+    fun ensureDeployment(context: Context, fullCheck: Boolean = false): Boolean {
         synchronized(deploymentLock) {
-            val currentHash = computeDeploymentHash(context)
-            if (currentHash.isNotEmpty() && currentHash == SettingsPreferences.getDeploymentHash(context)) {
-                SettingsPreferences.setDeploymentDone(context, true)
-                return true
+            // 外部编辑器保存 YAML 可能写入 UTF-8 BOM，librime 的解析器不会跳过 BOM，
+            // 整份配置会解析失败（部署后方案无产物、打字无候选），部署前统一清掉。
+            val bomFixed = stripBomFromUserYaml(File(context.filesDir, "rime"))
+            if (bomFixed > 0) {
+                FileLogger.w(TAG, "Stripped UTF-8 BOM from $bomFixed yaml file(s) before deploy")
             }
-            Log.i(TAG, "Deployment hash mismatch or missing")
-            val buildDir = File(context.filesDir, "rime/build")
-            val buildExists = buildDir.exists() && buildDir.listFiles()?.isNotEmpty() == true
+            // 刚补回基础文件：必须重跑维护，否则缺失文件不会被重新引用/编译
+            val restored = ensureBuiltinBaseFiles(context)
+            if (restored > 0) {
+                FileLogger.w(TAG, "Restored $restored builtin file(s), forcing full check")
+            }
+
             val engine = RimeEngine.getInstance()
-            val deployed: Boolean
-            if (buildExists) {
-                // build 已就位但配置有变化：增量维护，只编译变更的 schema/dict，
-                // 避免 custom.yaml 补丁等小幅改动触发 60MB 词库全量重编译（持锁 30s+）。
-                Log.i(TAG, "Build exists, running incremental maintenance")
-                if (engine.deployIncremental()) {
-                    deployed = true
-                } else {
-                    Log.w(TAG, "Incremental maintenance failed, falling back to full deploy")
-                    buildDir.deleteRecursively()
-                    buildDir.mkdirs()
-                    deployed = engine.deploy()
-                }
-            } else {
-                Log.i(TAG, "Build directory missing or empty, running full deploy")
-                buildDir.mkdirs()
-                deployed = engine.deploy()
+            if (!RimeEngine.isInitialized()) {
+                val (userDataDir, sharedDataDir) = initializeRimeData(context)
+                engine.initialize(userDataDir, sharedDataDir)
             }
             if (deployed) {
                 storeDeploymentHash(context)
@@ -102,13 +108,107 @@ object RimeConfigHelper {
                 com.kingzcheung.xime.storage.RimeBackup.mirrorOut(context)
                 return true
             }
-            return false
+            val needFull = fullCheck || restored > 0 || brokenRemoved || missing.isNotEmpty()
+            Log.i(
+                TAG,
+                "Deploying: fullCheck=$needFull, missing=${missing.size}, " +
+                    "restored=$restored, brokenRemoved=$brokenRemoved",
+            )
+            var deployed = engine.deploy(needFull)
+            if (!deployed) {
+                FileLogger.e(TAG, "deploy returned false")
+                return false
+            }
+
+            var stillMissing = missingCompiledSchemas(context)
+            if (stillMissing.isNotEmpty() && !needFull) {
+                // 只有一次兜底：不再做「逐方案补编 → 再全量」的多层重试
+                FileLogger.w(
+                    TAG,
+                    "Still missing after incremental maintenance, forcing full check: " +
+                        stillMissing.joinToString(),
+                )
+                deployed = engine.deploy(true)
+                stillMissing = missingCompiledSchemas(context)
+            }
+            if (stillMissing.isNotEmpty()) {
+                FileLogger.e(
+                    TAG,
+                    "Deployment finished but schemas are not compiled: ${stillMissing.joinToString()}",
+                )
+                return false
+            }
+            startupCheckDone = true
+            return deployed
         }
     }
+
+    /**
+     * 去掉用户 YAML 的 UTF-8 BOM，返回实际改写的文件数。
+     *
+     * 文件管理器/记事本类编辑器保存时可能写入 BOM，librime 的 YAML 解析不跳过 BOM，
+     * 整份配置会解析失败，表现为部署后方案没有编译产物（打字无候选）。
+     * 幂等：无 BOM 不写盘；只扫根目录配置，跳过 `*.dict.yaml` 与超大文件。
+     */
+    internal fun stripBomFromUserYaml(rimeDir: File): Int {
+        if (!rimeDir.isDirectory) return 0
+        var fixed = 0
+        rimeDir.listFiles()?.forEach { file ->
+            if (!file.isFile || !file.name.endsWith(".yaml")) return@forEach
+            if (file.name.endsWith(".dict.yaml") || file.length() > BOM_SCAN_MAX_BYTES) return@forEach
+            runCatching {
+                val bytes = file.readBytes()
+                if (bytes.size >= 3 &&
+                    bytes[0] == 0xEF.toByte() &&
+                    bytes[1] == 0xBB.toByte() &&
+                    bytes[2] == 0xBF.toByte()
+                ) {
+                    file.writeBytes(bytes.copyOfRange(3, bytes.size))
+                    fixed++
+                }
+            }.onFailure { FileLogger.w(TAG, "strip BOM failed: ${file.name}", it) }
+        }
+        return fixed
+    }
+
+    /**
+     * 已启用但缺少编译产物（build/<id>.prism.bin 或 build/<id>.schema.yaml）的方案。
+     * librime 部署失败只写日志、部署任务本身仍返回成功，必须由宿主自行校验，
+     * 否则「部署完成」会掩盖方案未编译（如 t9_pinyin 不在 schema_list 里）。
+     */
+    fun missingCompiledSchemas(context: Context): List<String> {
+        val rimeDir = File(context.filesDir, "rime")
+        // 只看源码还在的启用方案：源码已被卸载的残留项重编也补不出产物，
+        // 不应因此让每次启动都触发一次维护。
+        val enabled = SchemaManager.getEnabledSchemas(context)
+            .filter { File(rimeDir, "$it.schema.yaml").isFile }
+        return missingCompiledSchemas(
+            enabled = enabled,
+            buildDir = File(rimeDir, "build"),
+        )
+    }
+
+    /** 纯文件校验（可单测）：启用方案是否都有至少一个编译产物。 */
+    internal fun missingCompiledSchemas(
+        enabled: List<String>,
+        buildDir: File,
+    ): List<String> = enabled.filter { schemaId ->
+        !File(buildDir, "$schemaId.prism.bin").exists() &&
+            !File(buildDir, "$schemaId.schema.yaml").exists()
+    }
+
+    /** [missingCompiledSchemas] 的显示名版本，用于部署失败提示。 */
+    fun missingCompiledSchemaNames(context: Context): List<String> =
+        missingCompiledSchemas(context).map { schemaId ->
+            SchemaManager.getSchemaDisplayName(context, schemaId) ?: schemaId
+        }
     
     fun initializeRimeData(context: Context): Pair<String, String> {
-        val rimeDir = File(context.filesDir, "rime")
-        
+        val rimeDir = SchemeFiles.rimeDir(context)
+
+        // 上次安装若在解压阶段被打断（EXTRACTING），先按压缩包重来一次，再读写 rime。
+        SchemeInstaller.recoverIfNeeded(context)
+
         migrateOldStructure(context, rimeDir)
         
         if (!rimeDir.exists()) {
@@ -127,121 +227,128 @@ object RimeConfigHelper {
         
         return Pair(rimeDir.absolutePath, rimeDir.absolutePath)
     }
-    
-    fun storeDeploymentHash(context: Context) {
-        val hash = computeDeploymentHash(context)
-        if (hash.isNotEmpty()) {
-            SettingsPreferences.setDeploymentHash(context, hash)
+
+    /**
+     * 部署产物完整性检查（半成品检测）：librime 的 table/prism 产物文件头是固定
+     * magic（"Rime::Table/" / "Rime::Prism/"，Metadata.format 位于文件偏移 0）。
+     * 部署进行中进程被杀会留下空文件或截断的半成品——其 mtime 比源文件新，
+     * librime 增量维护会视为"已是最新"而跳过重编，导致该方案查询永远零命中
+     * （症状：九键方案切换正常、按键进 buffer，但候选恒空、候选栏恒 IDLE）。
+     */
+    internal fun isBrokenBuildArtifact(file: File): Boolean {
+        val expectedMagic = when {
+            file.name.endsWith(".prism.bin") -> "Rime::Prism/"
+            file.name.endsWith(".table.bin") -> "Rime::Table/"
+            // 未知类型（如 reverse.bin、日志）不判损坏，避免误删触发部署循环
+            else -> return false
+        }
+        if (!file.isFile || file.length() == 0L) return true
+        if (file.length() < expectedMagic.length) return true
+        return try {
+            java.io.FileInputStream(file).use { input ->
+                val head = ByteArray(expectedMagic.length)
+                var read = 0
+                while (read < head.size) {
+                    val n = input.read(head, read, head.size - read)
+                    if (n < 0) return true
+                    read += n
+                }
+                !String(head, Charsets.US_ASCII).startsWith(expectedMagic)
+            }
+        } catch (_: IOException) {
+            // 读不了不臆断损坏，交由 librime 运行时自检兜底
+            false
         }
     }
 
+    /**
+     * 部署产物完整性：纯查询，不改磁盘。
+     *
+     * 仅用于 UI 提示（引导页/设置页）；「要不要重新部署」由 [ensureDeployment]
+     * 自己判断（它会先删掉半成品产物再决定 fullCheck）。
+     */
     fun isDeploymentComplete(context: Context): Boolean {
         val rimeDir = File(context.filesDir, "rime")
         val buildDir = File(rimeDir, "build")
         if (!buildDir.exists()) return false
-
-        val enabledSchemas = SchemaManager.getEnabledSchemas(context)
-        if (enabledSchemas.isEmpty()) return false
-
-        for (schemaId in enabledSchemas) {
-            if (!File(buildDir, "$schemaId.prism.bin").exists() &&
-                !File(buildDir, "$schemaId.schema.yaml").exists()) {
-                return false
-            }
-        }
-
-        val currentHash = computeDeploymentHash(context)
-        if (currentHash.isEmpty()) return false
-
-        val storedHash = SettingsPreferences.getDeploymentHash(context)
-        if (storedHash.isEmpty()) {
-            SettingsPreferences.setDeploymentHash(context, currentHash)
-            return true
-        }
-
-        if (currentHash != storedHash) {
+        if (SchemaManager.getEnabledSchemas(context).isEmpty()) return false
+        // 半成品产物（空文件/魔数错误）也算未完成
+        if (buildDir.listFiles()?.any { it.isFile && isBrokenBuildArtifact(it) } == true) {
             return false
         }
-
-        return true
+        return missingCompiledSchemas(context).isEmpty()
     }
 
-    private fun fileUpdateDigest(digest: java.security.MessageDigest, file: File) {
-        if (!file.exists()) return
-        java.io.FileInputStream(file).use { input ->
-            java.security.DigestInputStream(input, digest).use { dis ->
-                val buffer = ByteArray(8192)
-                while (dis.read(buffer) != -1) { }
+    /**
+     * 删除部署中断留下的半成品产物（空文件/魔数错误），返回是否删过。
+     *
+     * librime 的 table/prism 产物文件头是固定 magic（"Rime::Table/" / "Rime::Prism/"）。
+     * 部署被中断会留下空文件或截断文件，其 mtime 比源文件新，维护会当作“已是最新”
+     * 跳过重编，导致该方案查询永远零命中。词典产物按 dictionary 名生成，可能与
+     * schemaId 不同名（如 t9_pinyin 用 pinyin_simp 词典），故扫描整个 build 目录。
+     */
+    internal fun removeBrokenBuildArtifacts(rimeDir: File): Boolean {
+        var removed = false
+        File(rimeDir, "build").listFiles()?.forEach { artifact ->
+            if (artifact.isFile && isBrokenBuildArtifact(artifact)) {
+                if (artifact.delete()) {
+                    removed = true
+                    FileLogger.w(TAG, "Broken build artifact removed: ${artifact.name}")
+                }
             }
         }
+        return removed
     }
 
-    private fun computeDeploymentHash(context: Context): String {
-        val rimeDir = File(context.filesDir, "rime")
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
-
-        val enabledSchemas = SchemaManager.getEnabledSchemas(context)
-        for (schemaId in enabledSchemas.sorted()) {
-            val schemaFile = File(rimeDir, "$schemaId.schema.yaml")
-            if (schemaFile.exists()) {
-                digest.update(schemaId.toByteArray())
-                fileUpdateDigest(digest, schemaFile)
-            }
-            val customFile = File(rimeDir, "$schemaId.custom.yaml")
-            if (customFile.exists()) {
-                fileUpdateDigest(digest, customFile)
-            }
-            // merged dict 由 app 生成、librime 实际编译，计入 hash 以便其变更（如转发器展开修复）触发重编译
-            val mergedDictFile = File(rimeDir, "${schemaId}_merged.dict.yaml")
-            if (mergedDictFile.exists()) {
-                digest.update("${schemaId}_merged".toByteArray())
-                fileUpdateDigest(digest, mergedDictFile)
-            }
-        }
-
-        // 所有词典文件（内置词典与个人词库）纳入 hash：
-        // 否则词典新增/变更（如 pinyin_simp.dict.yaml）不会改变 hash，
-        // build 目录不重建、不重新部署，导致 table.bin 缺失（运行时反复报错）。
-        rimeDir.listFiles()
-            ?.filter { it.isFile && it.name.endsWith(".dict.yaml") }
-            ?.sortedBy { it.name }
-            ?.forEach { dictFile ->
-                digest.update(dictFile.name.toByteArray())
-                fileUpdateDigest(digest, dictFile)
-            }
-
-        val defaultYaml = File(rimeDir, "default.yaml")
-        if (defaultYaml.exists()) {
-            digest.update("default".toByteArray())
-            fileUpdateDigest(digest, defaultYaml)
-        }
-
-        return digest.digest().joinToString("") { String.format("%02x", it) }
-    }
-
+    /**
+     * 内置方案集播种：只在 `rime` 里**一个方案都没有**时铺一份。
+     *
+     * 判据是内容而不是一次性标记：有内容说明用户已经有一整套方案（内置或第三方），
+     * 不能覆盖；没有内容（全新安装、被清空、安装失败回退）才铺。
+     */
     private fun copyAssetsToRimeDir(context: Context, targetDir: File): Boolean {
-        // 判断 rime/ 是否已部署过任何方案（存在任意 <name>.schema.yaml）。
-        // 全新安装时 rime/ 为空 → 全量复制内置默认方案与系统文件，保证开箱即用。
-        // 一旦已部署过方案（内置旧版或从市场安装的第三方方案），app 更新时
-        // 一律不再用内置 assets 覆盖，避免覆盖第三方同名文件造成污染；
-        // 需要更新的方案统一走方案市场。此判定不依赖具体方案 id/文件名，天然鲁棒。
-        val alreadyHasSchemas = targetDir.listFiles()
-            ?.any { it.isFile && it.name.endsWith(".schema.yaml") } == true
-        if (alreadyHasSchemas) {
-            // 仅兜底确保 default.yaml 存在（librime 入口必需），缺失时补一份，不覆盖已有。
-            ensureDefaultYaml(context, targetDir)
+        if (SchemeFiles.installedSchemaIds(targetDir).isNotEmpty()) {
+            // 已有方案集：只补用户模板与存量迁移，不碰方案文件
+            seedAndMigrateDefaultCustom(context, targetDir)
             return false
         }
+
         val copied = try {
             copyAssetsRecursively(context, ASSETS_RIME_DIR, targetDir)
         } catch (e: IOException) {
-            Log.e(TAG, "Failed to copy assets", e)
+            FileLogger.e(TAG, "Failed to copy assets", e)
             false
         }
-        if (copied) {
-            seedBuiltinPackageVersion(context)
+        if (!copied) return false
+
+        seedBuiltinPackageVersion(context)
+        ensureDefaultYaml(context, targetDir)
+        seedAndMigrateDefaultCustom(context, targetDir)
+        FileLogger.i(TAG, "Seeded builtin schemas (rime was empty)")
+        return true
+    }
+
+    /**
+     * default.custom.yaml 种子复制 + 存量迁移。
+     *
+     * 该文件完全归用户：缺失时复制一次 app 模板（不含 schema_list，见模板头注释）
+     * 作为起始基线，此后 app 零写入——不再对齐 page_size、不再清理 key_binder，
+     * 用户修改经部署合并覆盖 default.yaml 同名键、下次部署自动生效。
+     * 存量迁移（[SchemaManager.migrateDefaultCustomSchemaList]）把老版本写入的
+     * schema_list 迁往 prefs；必须先于任何 [SchemaManager.getEnabledSchemas]
+     * 消费者执行（copyAssetsToRimeDir 之后的 applyEnabledSchemasToDefaultYaml /
+     * ensureDeployment 均在其后，时序安全）。
+     */
+    private fun seedAndMigrateDefaultCustom(context: Context, targetDir: File) {
+        val target = File(targetDir, ASSETS_DEFAULT_CUSTOM)
+        try {
+            if (!target.exists()) {
+                copyAssetFile(context, ASSETS_DEFAULT_CUSTOM, target)
+            }
+        } catch (e: IOException) {
+            FileLogger.e(TAG, "Failed to seed $ASSETS_DEFAULT_CUSTOM", e)
         }
-        return copied
+        SchemaManager.migrateDefaultCustomSchemaList(context)
     }
 
     /**
@@ -267,7 +374,48 @@ object RimeConfigHelper {
         copyAssetFile(context, "$ASSETS_RIME_DIR/default.yaml", defaultYaml)
     }
     
-    private fun copyAssetsRecursively(context: Context, assetPath: String, targetDir: File): Boolean {
+    /** 补齐缺失/空的内置共享文件（不覆盖已有内容），返回补齐数。 */
+    fun ensureBuiltinBaseFiles(context: Context): Int {
+        val rimeDir = File(context.filesDir, "rime")
+        if (!rimeDir.exists()) rimeDir.mkdirs()
+        var restored = 0
+        for (name in RimeSharedFiles.names(context)) {
+            val target = File(rimeDir, name)
+            if (target.isFile && target.length() > 0L) continue
+            copyAssetFile(context, "$ASSETS_RIME_DIR/$name", target)
+            if (target.isFile && target.length() > 0L) {
+                restored++
+                FileLogger.w(TAG, "Restored missing builtin file: $name")
+            }
+        }
+        return restored
+    }
+
+    /**
+     * 已启用方案引用、但缺 `build/<dict>.table.bin` 的反查词典：librime 只编译方案的
+     * 主词典，反查词典要它自己的方案被部署才生成产物。返回 方案 id → 缺失词典名。
+     */
+    fun missingReverseLookupTables(context: Context): List<Pair<String, String>> {
+        val rimeDir = File(context.filesDir, "rime")
+        val buildDir = File(rimeDir, "build")
+        val missing = mutableListOf<Pair<String, String>>()
+        for (schemaId in SchemaManager.getEnabledSchemas(context)) {
+            val schemaFile = File(rimeDir, "$schemaId.schema.yaml")
+            if (!schemaFile.isFile) continue
+            val refs = try {
+                RimeDependencyResolver.scanSchemaRefs(schemaFile.readText(), null)
+            } catch (e: IOException) {
+                continue
+            }
+            for (dict in refs.reverseDicts) {
+                if (!File(buildDir, "$dict.table.bin").exists()) missing.add(schemaId to dict)
+            }
+        }
+        return missing
+    }
+
+
+    internal fun copyAssetsRecursively(context: Context, assetPath: String, targetDir: File): Boolean {
         val files = context.assets.list(assetPath)
         
         if (files.isNullOrEmpty()) {
@@ -306,7 +454,7 @@ object RimeConfigHelper {
                     }
                 }
             } catch (e: IOException) {
-                Log.e(TAG, "Failed to process: $fullAssetPath", e)
+                FileLogger.e(TAG, "Failed to process: $fullAssetPath", e)
             }
         }
         
@@ -326,7 +474,7 @@ object RimeConfigHelper {
                 }
             }
         } catch (e: IOException) {
-            Log.e(TAG, "Failed to copy: $assetPath", e)
+            FileLogger.e(TAG, "Failed to copy: $assetPath", e)
         }
     }
 
@@ -378,7 +526,7 @@ object RimeConfigHelper {
             if (oldMarket.renameTo(newMarket)) {
                 Log.i(TAG, "Migrated rime/market/ -> market/")
             } else {
-                Log.w(TAG, "Failed to rename rime/market/ to market/")
+                FileLogger.w(TAG, "Failed to rename rime/market/ to market/")
             }
         } else {
             // 新位置已存在，逐项合并

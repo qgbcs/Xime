@@ -1,11 +1,9 @@
 package com.kingzcheung.xime.settings
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Pure helpers used by the sha256-verified install path. */
+/** SchemaManager 里保留的纯解析函数：sha256 与归档壳目录剥离。 */
 class SchemaManagerImportTest {
 
     @Test
@@ -24,35 +22,8 @@ class SchemaManagerImportTest {
         )
     }
 
-    @Test
-    fun `protects default_yaml from import`() {
-        assertTrue(SchemaManager.isProtectedImportName("default.yaml"))
-        assertTrue(SchemaManager.isProtectedImportName("sub/dir/default.yaml"))
-    }
 
-    @Test
-    fun `allows normal schema, dict and custom files`() {
-        assertFalse(SchemaManager.isProtectedImportName("cangjie5.schema.yaml"))
-        assertFalse(SchemaManager.isProtectedImportName("cangjie5.dict.yaml"))
-        assertFalse(SchemaManager.isProtectedImportName("essay.txt"))
-        assertFalse(SchemaManager.isProtectedImportName("wubi86.custom.yaml"))
-    }
-
-    @Test
-    fun `protects xime yaml and metadata from import`() {
-        assertTrue(SchemaManager.isProtectedImportName("xime.yaml"))
-        assertFalse(SchemaManager.isProtectedImportName("default.custom.yaml"))
-        assertFalse(SchemaManager.isProtectedImportName("xime.custom.yaml"))
-        assertTrue(SchemaManager.isProtectedImportName(".registry.json"))
-        assertFalse(SchemaManager.isProtectedImportName(".manifests/my_scheme.json"))
-    }
-
-    @Test
-    fun `protects custom_phrase dot txt from import`() {
-        assertTrue(SchemaManager.isProtectedImportName("custom_phrase.txt"))
-        assertTrue(SchemaManager.isProtectedImportName("sub/dir/custom_phrase.txt"))
-    }
-
+    // ── findSchemaBaseDir：剥 GitHub 归档壳目录（essay.txt 不能落进 rime-essay-master/） ──
     // ── findSchemaBaseDir：剥 GitHub 归档壳目录(修 essay.txt 落进 rime-essay-master/ 子目录) ──
 
     @Test

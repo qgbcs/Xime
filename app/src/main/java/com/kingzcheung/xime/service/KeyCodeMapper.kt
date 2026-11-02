@@ -2,6 +2,67 @@ package com.kingzcheung.xime.service
 
 import android.view.KeyEvent
 
+/** 物理键码是否为左右 Shift（修饰键，不产生字符，单击语义由调用方定义）。 */
+internal fun isShiftKeyCode(keyCode: Int): Boolean =
+    keyCode == KeyEvent.KEYCODE_SHIFT_LEFT || keyCode == KeyEvent.KEYCODE_SHIFT_RIGHT
+
+/**
+ * Shift+符号键的转换表（硬件键盘符号键被 keyCodeToKey 消费，系统 keyCharacterMap 不再生效）。
+ * 字母键返回 null 走大写逻辑；无表项返回 null 由调用方兜底。
+ */
+internal fun shiftedSymbol(key: String, chineseMode: Boolean): String? {
+    if (chineseMode) {
+        return when (key) {
+            "1" -> "！"
+            "2" -> "@"
+            "3" -> "#"
+            "4" -> "$"
+            "5" -> "%"
+            "6" -> "^"
+            "7" -> "&"
+            "8" -> "*"
+            "9" -> "（"
+            "0" -> "）"
+            "-" -> "——"
+            "=" -> "+"
+            "[" -> "「"
+            "]" -> "」"
+            "\\" -> "、"
+            ";" -> "："
+            "'" -> "\""
+            "," -> "《"
+            "." -> "》"
+            "/" -> "？"
+            "`" -> "～"
+            else -> null
+        }
+    }
+    return when (key) {
+        "`" -> "~"
+        "1" -> "!"
+        "2" -> "@"
+        "3" -> "#"
+        "4" -> "$"
+        "5" -> "%"
+        "6" -> "^"
+        "7" -> "&"
+        "8" -> "*"
+        "9" -> "("
+        "0" -> ")"
+        "-" -> "_"
+        "=" -> "+"
+        "[" -> "{"
+        "]" -> "}"
+        "\\" -> "|"
+        ";" -> ":"
+        "'" -> "\""
+        "," -> "<"
+        "." -> ">"
+        "/" -> "?"
+        else -> null
+    }
+}
+
 /** 物理键码 → 输入法按键名。 */
 internal fun keyCodeToKey(keyCode: Int, isShifted: Boolean): String? {
     return when (keyCode) {

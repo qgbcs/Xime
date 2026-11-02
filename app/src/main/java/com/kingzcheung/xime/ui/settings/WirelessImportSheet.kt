@@ -1,5 +1,9 @@
 package com.kingzcheung.xime.ui.settings
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -70,7 +74,7 @@ fun WirelessImportSheet(
                 serverUrl = url
                 qrBitmap = helper.generateQrCode(url)
             } else {
-                error = "无法获取 IP 地址，请确保已连接 WiFi"
+                error = tr(R.string.s_wufahuoqu_ip_dizhi_qingquebaoy_1a483)
             }
         }
     }
@@ -103,10 +107,10 @@ fun WirelessImportSheet(
                 tint = MaterialTheme.colorScheme.primary
             )
             Spacer(modifier = Modifier.height(12.dp))
-            Text("浏览器导入", style = MaterialTheme.typography.titleLarge)
+            Text(tr(R.string.s_liulanqidaoru), style = MaterialTheme.typography.titleLarge)
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "确保设备和手机在同一个 WiFi 网络下",
+                text = tr(R.string.s_quebaoshebeiheshoujizaitongyig_1690a),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -124,7 +128,7 @@ fun WirelessImportSheet(
                 if (qrBitmap != null) {
                     Image(
                         bitmap = qrBitmap!!.asImageBitmap(),
-                        contentDescription = "二维码",
+                        contentDescription = tr(R.string.s_erweima),
                         modifier = Modifier
                             .size(200.dp)
                             .clip(RoundedCornerShape(12.dp))
@@ -144,13 +148,13 @@ fun WirelessImportSheet(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "电脑浏览器打开上方网址，或在手机浏览器输入",
+                    text = tr(R.string.s_diannaoliulanqidakaishangfangw_0b91b),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
                 )
                 Text(
-                    text = "拖拽输入方案或插件文件到页面上传",
+                    text = tr(R.string.s_tuozhuaishurufanganhuochajianw_5164d),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
@@ -160,7 +164,7 @@ fun WirelessImportSheet(
             if (uploadResults.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
-                    text = "已导入 (${uploadResults.size})",
+                    text = tr(R.string.s_yidaoru_2, uploadResults.size),
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.fillMaxWidth()
                 )

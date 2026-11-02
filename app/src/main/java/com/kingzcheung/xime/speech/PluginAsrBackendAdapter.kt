@@ -67,8 +67,6 @@ class PluginAsrBackendAdapter(
         pluginBackend.release()
     }
 
-    override fun getState(): RecognitionState = pluginBackend.getState().toRecognitionState()
-
     override fun isAvailable(): Boolean = true
 
     private fun AsrPluginState.toRecognitionState(): RecognitionState = when (this) {

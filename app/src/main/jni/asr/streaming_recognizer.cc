@@ -299,10 +299,13 @@ std::string StreamingRecognizer::ConvertTokens() const {
     flush_bytes();
 
     std::string out = s;
-    // Strip BPE word-boundary marker '▁' (U+2581, 3 UTF-8 bytes).
+    // SentencePiece word-boundary marker '▁' (U+2581, 3 UTF-8 bytes) stands
+    // for a space. Keep it instead of dropping it, otherwise English words
+    // are glued together ("Howareyou"). Spaces between CJK characters are
+    // normalized away on the Kotlin side.
     for (size_t p = out.find("\xE2\x96\x81"); p != std::string::npos;
          p = out.find("\xE2\x96\x81")) {
-      out.erase(p, 3);
+      out.replace(p, 3, " ");
     }
     text += out;
   }

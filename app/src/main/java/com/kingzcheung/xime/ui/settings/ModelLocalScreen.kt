@@ -1,5 +1,9 @@
 package com.kingzcheung.xime.ui.settings
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -76,19 +80,19 @@ fun ModelLocalContent(
     pendingDelete?.let { model ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
-            title = { Text("删除模型") },
-            text = { Text("确定删除「${model.model.name}」？模型文件将被删除，此操作不可撤销。") },
+            title = { Text(tr(R.string.s_shanchumoxing)) },
+            text = { Text(tr(R.string.s_quedingshanchu_moxingwenjianji_9b0ff, model.model.name)) },
             confirmButton = {
                 TextButton(onClick = {
                     pendingDelete = null
                     viewModel.deleteModel(model.model.id)
                 }) {
-                    Text("删除", color = MaterialTheme.colorScheme.error)
+                    Text(tr(R.string.s_shanchu), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { pendingDelete = null }) {
-                    Text("取消")
+                    Text(tr(R.string.s_quxiao))
                 }
             },
         )
@@ -97,15 +101,15 @@ fun ModelLocalContent(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("本地模型") },
+                title = { Text(tr(R.string.s_bendimoxing)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr(R.string.s_fanhui))
                     }
                 },
                 actions = {
                     IconButton(onClick = { viewModel.refresh() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                        Icon(Icons.Default.Refresh, contentDescription = tr(R.string.s_shuaxin))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -125,7 +129,7 @@ fun ModelLocalContent(
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            if (uiState.isLoading) "加载中…" else "暂无本地模型",
+                            if (uiState.isLoading) tr(R.string.s_jiazaizhong_2) else tr(R.string.s_zanwubendimoxing),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -156,7 +160,7 @@ fun ModelLocalContent(
                                 )
                                 Spacer(Modifier.width(8.dp))
                                 Text(
-                                    "使用本地模型是有代价的：本地推理会占用 CPU、增加耗电并可能导致手机发热，请斟酌使用。",
+                                    tr(R.string.s_shiyongbendimoxingshiyoudaijia_feb93),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onErrorContainer,
                                 )
@@ -164,7 +168,7 @@ fun ModelLocalContent(
                         }
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "共 ${localModels.size} 个本地模型",
+                            tr(R.string.s_gong_gebendimoxing, localModels.size),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.outline,
                         )
@@ -212,7 +216,7 @@ private fun ModelLocalCard(
                 color = MaterialTheme.colorScheme.outline,
             )
             val detailLine = buildString {
-                item.installedVersion?.let { append("版本: $it") }
+                item.installedVersion?.let { append(tr(R.string.s_banben_3, it)) }
                 if (item.diskSize > 0) {
                     if (isNotEmpty()) append(" · ")
                     append(modelFormatSize(item.diskSize))
@@ -232,7 +236,7 @@ private fun ModelLocalCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "已下载",
+                    tr(R.string.s_yixiazai),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.outline,
                 )
@@ -251,7 +255,7 @@ private fun ModelLocalCard(
                         modifier = Modifier.size(16.dp),
                     )
                     Spacer(Modifier.width(4.dp))
-                    Text("删除", style = MaterialTheme.typography.labelSmall)
+                    Text(tr(R.string.s_shanchu), style = MaterialTheme.typography.labelSmall)
                 }
             }
         }

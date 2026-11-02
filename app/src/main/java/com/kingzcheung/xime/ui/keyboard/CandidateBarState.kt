@@ -1,5 +1,7 @@
 package com.kingzcheung.xime.ui.keyboard
 
+import com.kingzcheung.xime.clipboard.ClipboardItem
+
 sealed interface CandidateBarState {
 
     data object Idle : CandidateBarState
@@ -29,6 +31,11 @@ sealed interface CandidateBarState {
 
     data class ClipboardDisplay(
         val candidates: List<String> = emptyList(),
+        /**
+         * 与 [candidates] 等长（图片位为条目、非图片位为 null）：候选栏据此把图片候选渲染成
+         * Gboard 风格的"圆角卡片 + 圆形缩略图 + 图片"芯片。
+         */
+        val images: List<ClipboardItem?> = emptyList(),
     ) : CandidateBarState
 
     data class Calculator(
@@ -56,7 +63,7 @@ sealed interface CandidateBarState {
             val hasInput = inputText.isNotEmpty()
             return when {
                 isShowingRecentClipboard && hasCandidates ->
-                    ClipboardDisplay(candidates = candidates)
+                    ClipboardDisplay(candidates = candidates, images = clipboardImages)
                 isCalculatorActive && hasCandidates ->
                     Calculator(candidates = candidates, comments = candidateComments)
                 isComposing && (hasCandidates || hasInput) ->

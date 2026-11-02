@@ -1,50 +1,41 @@
 package com.kingzcheung.xime.plugin.core.api
 
 import android.content.Context
-import com.kingzcheung.xime.plugin.core.config.PluginConfigStore
-import com.kingzcheung.xime.plugin.core.config.PluginFieldType
+import com.kingzcheung.xime.plugin.core.config.IPluginConfigurable
+import com.kingzcheung.xime.plugin.core.config.UiNode
+import com.kingzcheung.xime.plugin.core.config.UiNodeType
+import com.kingzcheung.xime.plugin.core.model.PluginCapabilities
 import com.kingzcheung.xime.plugin.core.model.PluginContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class AsrPluginCapabilitiesTest {
+class SpeechCapabilitiesTest {
 
     @Test
-    fun `capabilities have correct defaults`() {
-        val caps = AsrPluginCapabilities()
+    fun `speech capabilities have correct defaults`() {
+        val caps = PluginCapabilities.SpeechCapabilities()
 
-        assertEquals(AsrInputMode.STREAMING, caps.inputMode)
+        assertEquals("streaming", caps.inputMode)
         assertTrue(caps.supportsPartialResults)
-        assertEquals(10 * 60 * 1000, caps.maxRecordDurationMillis)
         assertTrue(caps.requiresNetwork)
     }
 
     @Test
-    fun `capabilities can declare BATCH mode`() {
-        val caps = AsrPluginCapabilities(inputMode = AsrInputMode.BATCH, supportsPartialResults = false)
+    fun `speech capabilities can declare BATCH mode`() {
+        val caps = PluginCapabilities.SpeechCapabilities(inputMode = "batch", supportsPartialResults = false)
 
-        assertEquals(AsrInputMode.BATCH, caps.inputMode)
+        assertEquals("batch", caps.inputMode)
         assertFalse(caps.supportsPartialResults)
-    }
-
-    @Test
-    fun `audio format defaults to 16k mono pcm16le`() {
-        val format = AsrAudioFormat()
-
-        assertEquals(16000, format.sampleRate)
-        assertEquals(1, format.channels)
-        assertEquals("pcm16le", format.encoding)
     }
 }
 
 class AsrPluginDefaultImplTest {
 
     private open class FakeAsrPlugin : AsrPlugin {
-        override val providerId: String = "fake"
-        override fun getDisplayName(): String = "Fake"
-        override fun getCapabilities(): AsrPluginCapabilities = AsrPluginCapabilities()
+        override fun getCapabilities(): PluginCapabilities.SpeechCapabilities =
+            PluginCapabilities.SpeechCapabilities()
         override fun isConfigured(): Boolean = true
         override fun createBackend(context: Context): AsrPluginBackend = FakeBackend()
 
@@ -61,29 +52,13 @@ class AsrPluginDefaultImplTest {
         override fun stop() {}
         override fun cancel() {}
         override fun release() {}
-        override fun getState(): AsrPluginState = AsrPluginState.IDLE
-    }
-
-    @Test
-    fun `plugin default schema is empty`() {
-        val plugin = FakeAsrPlugin()
-        assertTrue(plugin.getSettingsSchema().isEmpty())
-    }
-
-    @Test
-    fun `plugin default audio format is host contract`() {
-        val plugin = FakeAsrPlugin()
-        val format = plugin.getAudioFormat()
-
-        assertEquals(16000, format.sampleRate)
-        assertEquals(1, format.channels)
     }
 
     @Test
     fun `plugin extends IPluginEntryClass and IPluginConfigurable`() {
         val plugin: IPluginEntryClass = FakeAsrPlugin()
-        val configurable: com.kingzcheung.xime.plugin.core.config.IPluginConfigurable = FakeAsrPlugin()
-        assertTrue(plugin is com.kingzcheung.xime.plugin.core.config.IPluginConfigurable)
+        val configurable: IPluginConfigurable = FakeAsrPlugin()
+        assertTrue(plugin is IPluginConfigurable)
         assertTrue(configurable is IPluginEntryClass)
     }
 
@@ -95,26 +70,24 @@ class AsrPluginDefaultImplTest {
         listener.onPartial("partial")
         listener.onError("error")
         listener.onStateChanged(AsrPluginState.LISTENING)
-        listener.onStopped()
-        listener.onAmplitude(0.5f)
     }
 
     @Test
     fun `schema can be overridden with SECRET apiKey field`() {
         val plugin = object : FakeAsrPlugin() {
-            override fun getSettingsSchema(): List<com.kingzcheung.xime.plugin.core.config.PluginSettingField> =
+            override fun getSettingsSchema(): List<UiNode> =
                 listOf(
-                    com.kingzcheung.xime.plugin.core.config.PluginSettingField(
+                    UiNode(
                         key = "apiKey",
                         label = "API Key",
-                        type = PluginFieldType.SECRET
+                        type = UiNodeType.SECRET,
                     )
                 )
         }
 
         val field = plugin.getSettingsSchema().first()
         assertEquals("apiKey", field.key)
-        assertEquals(PluginFieldType.SECRET, field.type)
+        assertEquals(UiNodeType.SECRET, field.type)
         assertTrue(plugin.getSettingsSchema().isNotEmpty())
     }
 

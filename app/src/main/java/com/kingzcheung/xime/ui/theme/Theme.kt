@@ -5,6 +5,8 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -15,10 +17,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
-import androidx.core.graphics.ColorUtils
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
+import androidx.core.graphics.ColorUtils
 import com.kingzcheung.xime.settings.KeysConfigHelper
 import com.kingzcheung.xime.settings.SettingsPreferences
 
@@ -77,7 +79,7 @@ private fun generateColorScheme(seed: Color, seedContainer: Color, dark: Boolean
             surfaceContainer = hclColor(hue, p * 5f, 22f),
             surfaceContainerHigh = hclColor(hue, p * 5f, 26f),
             surfaceContainerHighest = hclColor(hue, p * 5f, 30f),
-            onBackground = hclColor(hue, 0f, 10f),
+            onBackground = hclColor(hue, 0f, 90f),
             onSurface = hclColor(hue, 0f, 90f),
             surfaceVariant = hclColor(hue, p * 10f, 30f),
             onSurfaceVariant = hclColor(hue, 0f, 80f),
@@ -154,9 +156,14 @@ fun XimeTheme(
         currentThemeId
     }
     val scheme = KeyboardThemes.getThemeById(effectiveThemeId)
-    val seed = if (darkTheme) scheme.primaryDark else scheme.primaryLight
-    val container = if (darkTheme) scheme.primaryContainerDark else scheme.primaryContainerLight
-    val colorScheme = generateColorScheme(seed, container, darkTheme)
+    val colorScheme = if (scheme.isDynamic && DynamicThemes.isSupported()) {
+        // Material You 动态配色：由系统壁纸调色板生成（官方实现），随壁纸自动更新
+        if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    } else {
+        val seed = if (darkTheme) scheme.primaryDark else scheme.primaryLight
+        val container = if (darkTheme) scheme.primaryContainerDark else scheme.primaryContainerLight
+        generateColorScheme(seed, container, darkTheme)
+    }
 
     CompositionLocalProvider(
         LocalDensity provides Density(

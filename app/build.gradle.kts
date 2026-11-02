@@ -170,7 +170,15 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.kingzcheung.xime"
-    compileSdk = 36
+    compileSdk = 37
+    // 平台按小版本安装（SDK 里是 platforms;android-37.2），不写 minor 时 AGP 会去找 android-37.0
+    compileSdkMinor = 2
+
+    // JVM 单测中未 mock 的 Android 框架方法（如 android.util.Log）返回默认值而非抛异常，
+    // 使服务层状态机（如语音收尾流程）可直接实例化测试
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 
     defaultConfig {
         applicationId = configuredApplicationId
@@ -359,7 +367,7 @@ dependencies {
     implementation(libs.material)
 
     // Kotlin stdlib - CRITICAL for plugin compatibility
-    implementation("org.jetbrains.kotlin:kotlin-stdlib:2.4.10")
+    implementation("org.jetbrains.kotlin:kotlin-stdlib:2.4.21")
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.androidx.work.runtime.ktx)
 
@@ -391,7 +399,9 @@ dependencies {
     implementation(libs.coil)
 
     // OkHttp for WebSocket and model download
-    implementation("com.squareup.okhttp3:okhttp:5.4.0")
+    implementation("com.squareup.okhttp3:okhttp:5.5.1")
+    // okhttp-sse for SSE stream parsing (plugin streaming API)
+    implementation("com.squareup.okhttp3:okhttp-sse:5.5.1")
     // Apache Commons Compress for tar.bz2 extraction
     implementation("org.apache.commons:commons-compress:1.28.0")
 
@@ -408,8 +418,8 @@ dependencies {
     implementation("com.google.zxing:core:3.5.4")
 
     // Ktor embedded server for wireless import
-    implementation("io.ktor:ktor-server-core:3.5.2")
-    implementation("io.ktor:ktor-server-cio:3.5.2")
+    implementation("io.ktor:ktor-server-core:3.6.0")
+    implementation("io.ktor:ktor-server-cio:3.6.0")
     implementation(libs.kotlinx.serialization.json)
 
     // Room 3.0 (SQLite)
@@ -417,7 +427,7 @@ dependencies {
     ksp(libs.androidx.room3.compiler)
 
     // Sora Code Editor for YAML viewing/editing
-    implementation(platform("io.github.rosemoe:editor-bom:0.24.6"))
+    implementation(platform("io.github.rosemoe:editor-bom:0.24.7"))
     implementation("io.github.rosemoe:editor")
     implementation("io.github.rosemoe:language-textmate")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
@@ -427,16 +437,18 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.core)
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
-    testImplementation("org.mockito:mockito-core:5.23.0")
-    testImplementation("org.mockito.kotlin:mockito-kotlin:5.2.1")
+    testImplementation("org.mockito:mockito-core:5.24.0")
+    testImplementation("org.mockito.kotlin:mockito-kotlin:6.4.0")
+    // JVM 单测使用真实 org.json 实现（android.jar 内为抛异常的 stub）
+    testImplementation("org.json:json:20240303")
 
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
-    androidTestImplementation("androidx.test:runner:1.6.2")
-    androidTestImplementation("androidx.test:rules:1.6.1")
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test:rules:1.7.0")
     androidTestImplementation("androidx.concurrent:concurrent-futures:1.2.0")
 }
 

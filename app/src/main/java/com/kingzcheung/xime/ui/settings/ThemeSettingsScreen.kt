@@ -1,5 +1,9 @@
 package com.kingzcheung.xime.ui.settings
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -44,12 +48,12 @@ fun ThemeSettingsContent(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
             TopAppBar(
-                title = { Text("主题与定制") },
+                title = { Text(tr(R.string.s_zhutiyudingzhi)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "返回"
+                            contentDescription = tr(R.string.s_fanhui)
                         )
                     }
                 },
@@ -71,7 +75,7 @@ fun ThemeSettingsContent(
         ) {
             item {
                 Text(
-                    text = "显示模式",
+                    text = tr(R.string.s_xianshimoshi),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(bottom = 8.dp)
@@ -93,10 +97,10 @@ fun ThemeSettingsContent(
                             onThemeChanged()
                         },
                         modifier = Modifier.weight(1f),
-                        title = "跟随系统"
+                        title = tr(R.string.s_gensuixitong)
                     )
                     ThemeCard(
-                        title = "浅色",
+                        title = tr(R.string.s_qianse),
                         isSelected = uiState.darkMode == 0,
                         isDark = false,
                         accentColor = currentTheme.accentLight,
@@ -108,7 +112,7 @@ fun ThemeSettingsContent(
                         modifier = Modifier.weight(1f)
                     )
                     ThemeCard(
-                        title = "深色",
+                        title = tr(R.string.s_shense),
                         isSelected = uiState.darkMode == 1,
                         isDark = true,
                         accentColor = currentTheme.accentDark,
@@ -125,7 +129,7 @@ fun ThemeSettingsContent(
             item {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "配色方案",
+                    text = tr(R.string.s_peisefangan),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(bottom = 6.dp)
@@ -134,7 +138,7 @@ fun ThemeSettingsContent(
             
             item {
                 Text(
-                    text = "点击配色预览完整键盘效果",
+                    text = tr(R.string.s_dianjipeiseyulanwanzhengjianpa_7949f),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 6.dp)
@@ -171,7 +175,7 @@ fun ThemeSettingsContent(
             item {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "提示: 配色切换后设置页面立即生效，键盘需重启输入法",
+                    text = tr(R.string.s_tishi_peiseqiehuanhoushezhiyem_f78e8),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)

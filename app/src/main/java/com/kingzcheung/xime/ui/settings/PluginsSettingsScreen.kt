@@ -1,5 +1,11 @@
 package com.kingzcheung.xime.ui.settings
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -32,6 +38,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AddBox
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Face
@@ -57,6 +66,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -71,6 +81,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -83,19 +94,28 @@ import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.kingzcheung.xime.BuildConfig
+import com.kingzcheung.xime.plugin.ActivePluginSelection
+import com.kingzcheung.xime.plugin.ExtensionManager
+import com.kingzcheung.xime.plugin.core.api.EmojiPlugin
 import com.kingzcheung.xime.plugin.core.api.PluginIcon
+import com.kingzcheung.xime.plugin.core.config.IPluginConfigurable
 import com.kingzcheung.xime.plugin.core.model.Activation
 import com.kingzcheung.xime.plugin.core.model.PluginCategory
 import com.kingzcheung.xime.plugin.core.model.PluginSource
 import com.kingzcheung.xime.plugin.core.model.PluginInfo
 import com.kingzcheung.xime.plugin.core.model.TrustLevel
 import com.kingzcheung.xime.plugin.core.runtime.PluginManager
+import com.kingzcheung.xime.plugin.core.security.ErrorCategory
 import com.kingzcheung.xime.plugin.core.security.PluginErrorLog
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kingzcheung.xime.viewmodel.PluginsSettingsViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -104,7 +124,8 @@ fun PluginsSettingsContent(
     onNavigateToPluginSettings: (String) -> Unit = {},
     onNavigateToPluginMarketDetail: (String) -> Unit = {},
     onNavigateToSpeechToText: () -> Unit = {},
-    onNavigateToClipboardSync: () -> Unit = {}
+    onNavigateToClipboardSync: () -> Unit = {},
+    onNavigateToBackup: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val viewModel: PluginsSettingsViewModel = viewModel()
@@ -141,12 +162,12 @@ fun PluginsSettingsContent(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
             TopAppBar(
-                title = { Text("插件管理") },
+                title = { Text(tr(R.string.s_chajianguanli)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "返回"
+                            contentDescription = tr(R.string.s_fanhui)
                         )
                     }
                 },
@@ -154,12 +175,12 @@ fun PluginsSettingsContent(
                     IconButton(onClick = { viewModel.refreshPlugins() }) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
-                            contentDescription = "刷新"
+                            contentDescription = tr(R.string.s_shuaxin)
                         )
                     }
                     Box {
                         IconButton(onClick = { showMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "更多")
+                            Icon(Icons.Default.MoreVert, contentDescription = tr(R.string.s_gengduo))
                         }
                         DropdownMenu(
                             expanded = showMenu,
@@ -168,7 +189,7 @@ fun PluginsSettingsContent(
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             DropdownMenuItem(
-                                text = { Text("从文件安装插件") },
+                                text = { Text(tr(R.string.s_congwenjiananzhuangchajian)) },
                                 onClick = {
                                     showMenu = false
                                     importLauncher.launch(arrayOf("*/*"))
@@ -180,7 +201,7 @@ fun PluginsSettingsContent(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("浏览器导入") },
+                                text = { Text(tr(R.string.s_liulanqidaoru)) },
                                 onClick = {
                                     showMenu = false
                                     showWirelessSheet = true
@@ -221,7 +242,7 @@ fun PluginsSettingsContent(
             } else if (uiState.errorMsg != null) {
                 item {
                     Text(
-                        text = "加载失败: ${uiState.errorMsg}",
+                        text = tr(R.string.s_jiazaishibai_2, uiState.errorMsg),
                         color = MaterialTheme.colorScheme.error
                     )
                 }
@@ -245,12 +266,12 @@ fun PluginsSettingsContent(
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                                 )
                                 Text(
-                                    text = "暂无已安装的插件",
+                                    text = tr(R.string.s_zanwuyianzhuangdechajian),
                                     style = MaterialTheme.typography.bodyLarge,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 Text(
-                                    text = "安装插件后将在此显示",
+                                    text = tr(R.string.s_anzhuangchajianhoujiangzaicixi_e8aa0),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                 )
@@ -258,8 +279,21 @@ fun PluginsSettingsContent(
                         }
                     }
                 } else {
-                    val activeAsrPluginId = SettingsPreferences.getSttOnlinePluginId(context)
-                    val activeClipboardSyncPluginId = SettingsPreferences.getClipboardSyncPluginId(context)
+                    // 单选类插件的"当前使用中"必须与**引擎同一套规则**（ActivePluginSelection）：
+                    // 引擎在偏好为空/指向已卸载插件时会回退到"首个已启用插件"，
+                    // 页面若只比较持久化偏好，就会出现"同步在跑、这里却显示未使用"。
+                    val activeAsrPluginId = ActivePluginSelection.resolve(
+                        SettingsPreferences.getSttOnlinePluginId(context),
+                        ExtensionManager.getEnabledAsrPlugins(context).map { it.first }
+                    )
+                    val activeClipboardSyncPluginId = ActivePluginSelection.resolve(
+                        SettingsPreferences.getClipboardSyncPluginId(context),
+                        ExtensionManager.getEnabledClipboardSyncPlugins(context).map { it.first }
+                    )
+                    val activeBackupPluginId = ActivePluginSelection.resolve(
+                        SettingsPreferences.getBackupPluginId(context),
+                        ExtensionManager.getEnabledBackupPlugins(context).map { it.first }
+                    )
                     items(uiState.extensions, key = { it.id }) { extension ->
                         ExtensionItem(
                             extension = extension,
@@ -273,11 +307,14 @@ fun PluginsSettingsContent(
                                     extension.id == activeAsrPluginId
                                 PluginCategory.CLIPBOARD_SYNC ->
                                     extension.id == activeClipboardSyncPluginId
+                                PluginCategory.BACKUP ->
+                                    extension.id == activeBackupPluginId
                                 else -> false
                             },
                             onActivate = when (extension.category) {
                                 PluginCategory.ASR -> onNavigateToSpeechToText
                                 PluginCategory.CLIPBOARD_SYNC -> onNavigateToClipboardSync
+                                PluginCategory.BACKUP -> onNavigateToBackup
                                 else -> null
                             }
                         )
@@ -288,7 +325,7 @@ fun PluginsSettingsContent(
                     Spacer(modifier = Modifier.height(8.dp))
                     
                     Text(
-                        text = "提示: 安装插件后点击右上角刷新按钮生效",
+                        text = tr(R.string.s_tishi_anzhuangchajianhoudianji_f8547),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
@@ -320,6 +357,12 @@ private fun ExtensionItem(
     val errors = PluginErrorLog.getErrors(extension.id)
     val hasErrors = errors.isNotEmpty()
 
+    val pendingHosts = remember(extension.id) {
+        SettingsPreferences.getPluginPendingHosts(context, extension.id)
+    }
+    val hasPendingNetwork = pendingHosts.isNotEmpty() ||
+        (extension.declaredHosts - SettingsPreferences.getPluginAuthorizedHosts(context, extension.id)).isNotEmpty()
+
     val hostCompatible = remember(extension.id) { viewModel.isHostCompatible(extension) }
     val hostRange = remember(extension) {
         buildString {
@@ -331,11 +374,13 @@ private fun ExtensionItem(
         }
     }
     
-    val hasSettings = pluginInstance?.let {
-        (it as? com.kingzcheung.xime.plugin.core.config.IPluginConfigurable)
-            ?.getSettingsSchema()?.isNotEmpty() == true ||
-            (it as? com.kingzcheung.xime.plugin.core.api.EmojiPlugin)?.hasSettings() == true
-    } ?: false
+    // 设置项探测走 IO：旧实现在组合期同步调 getSettingsSchema()，每次重组都会进一次
+    // QuickJS（主线程被 JS 执行阻塞），且插件此刻若正被停用/重载（runtime.close()）会撞上
+    // "Already closed"，被记成"[脚本错误] 调用 settings.schema"（v3.1.0 真机 record）。
+    val configurable = pluginInstance as? IPluginConfigurable
+    val schemaState = rememberPluginSettingsSchema(configurable, extension.id)
+    val hasSettings = schemaState.schema.isNotEmpty() ||
+        (pluginInstance as? EmojiPlugin)?.hasSettings() == true
     
     if (showErrorDialog && hasErrors) {
         PluginErrorDialog(
@@ -390,9 +435,24 @@ private fun ExtensionItem(
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     if (hasErrors) {
+                        // 可点：打开该插件的错误日志（原先只是指示器，详情对话框没有任何入口）
+                        IconButton(
+                            onClick = { showErrorDialog = true },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Warning,
+                                contentDescription = tr(R.string.s_chakancuowurizhi_tiao, errors.size),
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+
+                    if (hasPendingNetwork) {
                         Icon(
-                            Icons.Default.Warning,
-                            contentDescription = "有错误",
+                            Icons.Default.Wifi,
+                            contentDescription = tr(R.string.s_wangluofangwendaishouquan),
                             tint = MaterialTheme.colorScheme.error,
                             modifier = Modifier.size(14.dp)
                         )
@@ -401,7 +461,7 @@ private fun ExtensionItem(
                     if (!hostCompatible) {
                         Icon(
                             Icons.Default.Warning,
-                            contentDescription = "与主应用版本不兼容",
+                            contentDescription = tr(R.string.s_yuzhuyingyongbanbenbujianrong),
                             tint = MaterialTheme.colorScheme.error,
                             modifier = Modifier.size(14.dp)
                         )
@@ -455,18 +515,55 @@ private fun ExtensionItem(
                     )
                 }
 
-                if (extension.declaredHosts.isNotEmpty()) {
+                // 错误入口：整行可点（右上角 14dp 指示器太小，这里给出明确文案与"查看"）
+                if (hasErrors) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { showErrorDialog = true }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = pluginErrorSummary(errors.size),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            text = tr(R.string.s_chakan),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+
+                val networkHosts = remember(extension.id) {
+                    (extension.declaredHosts +
+                        ExtensionManager.getConfiguredNetworkHosts(context, extension.id) +
+                        SettingsPreferences.getPluginPendingHosts(context, extension.id))
+                        .distinct()
+                }
+                if (networkHosts.isNotEmpty()) {
                     NetworkAccessSection(
                         pluginId = extension.id,
                         pluginName = extension.name,
-                        hosts = extension.declaredHosts
+                        hosts = networkHosts
                     )
                 }
 
                 if (!hostCompatible) {
                     Text(
-                        text = "该插件不支持当前主应用版本，已跳过加载" +
-                            if (hostRange.isNotEmpty()) "（要求 $hostRange）" else "。请更新主应用后重试。",
+                        text = tr(R.string.s_gaichajianbuzhichidangqianzhuy_81343) +
+                            if (hostRange.isNotEmpty()) tr(R.string.s_yaoqiu, hostRange) else tr(R.string.s_qinggengxinzhuyingyonghouzhongshi),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
                     )
@@ -482,13 +579,13 @@ private fun ExtensionItem(
                         // 单选分类：激活在对应功能设置页完成，插件中心不显示启用开关
                         if (!hostCompatible) {
                             Text(
-                                text = "与主应用版本不兼容",
+                                text = tr(R.string.s_yuzhuyingyongbanbenbujianrong),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.error
                             )
                         } else {
                             Text(
-                                text = if (isActive) "当前使用中" else "未使用",
+                                text = if (isActive) tr(R.string.s_dangqianshiyongzhong) else tr(R.string.s_weishiyong),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = if (isActive) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurfaceVariant
@@ -499,7 +596,7 @@ private fun ExtensionItem(
 
                         if (!hostCompatible && hostRange.isNotEmpty()) {
                             Text(
-                                text = "要求 $hostRange",
+                                text = tr(R.string.s_yaoqiu_2, hostRange),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                             )
@@ -515,16 +612,16 @@ private fun ExtensionItem(
                                 },
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                             ) {
-                                Text("去选择", style = MaterialTheme.typography.labelMedium)
+                                Text(tr(R.string.s_quxuanze), style = MaterialTheme.typography.labelMedium)
                             }
                         }
                     } else {
                         // 多选分类：插件管理不提供启用开关，启用/停用在使用处进行（如表情面板）
                         Text(
                             text = when {
-                                !hostCompatible -> "不兼容"
-                                isEnabled -> "已启用"
-                                else -> "未启用"
+                                !hostCompatible -> tr(R.string.s_bujianrong)
+                                isEnabled -> tr(R.string.s_yiqiyong)
+                                else -> tr(R.string.s_weiqiyong)
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             color = if (!hostCompatible)
@@ -546,7 +643,7 @@ private fun ExtensionItem(
                         ) {
                             Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("设置", style = MaterialTheme.typography.labelMedium)
+                            Text(tr(R.string.s_shezhi), style = MaterialTheme.typography.labelMedium)
                         }
                     }
 
@@ -558,20 +655,20 @@ private fun ExtensionItem(
                                     val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
                                     intent.data = Uri.parse("package:${extension.id}")
                                     context.startActivity(intent)
-                                    Toast.makeText(context, "请在应用信息页面卸载", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, tr(R.string.s_qingzaiyingyongxinxiyemianxiezai), Toast.LENGTH_SHORT).show()
                                 } catch (e: Exception) {
-                                    Toast.makeText(context, "无法打开: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, tr(R.string.s_wufadakai, e.message), Toast.LENGTH_SHORT).show()
                                 }
                             }
                         ) {
-                            Icon(Icons.Default.Delete, contentDescription = "卸载",
+                            Icon(Icons.Default.Delete, contentDescription = tr(R.string.s_xiezai),
                                  tint = MaterialTheme.colorScheme.error)
                         }
                     } else {
                         IconButton(
                             onClick = { showDeleteConfirm = true }
                         ) {
-                            Icon(Icons.Default.Delete, contentDescription = "卸载",
+                            Icon(Icons.Default.Delete, contentDescription = tr(R.string.s_xiezai),
                                  tint = MaterialTheme.colorScheme.error)
                         }
                     }
@@ -583,8 +680,8 @@ private fun ExtensionItem(
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("卸载插件") },
-            text = { Text("确定要卸载「${extension.name}」吗？\n插件文件和配置将被删除，此操作不可恢复。") },
+            title = { Text(tr(R.string.s_xiezaichajian)) },
+            text = { Text(tr(R.string.s_quedingyaoxiezai_ma_nchajianwe_4f200, extension.name)) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -592,12 +689,12 @@ private fun ExtensionItem(
                         viewModel.uninstallPlugin(extension.id)
                     }
                 ) {
-                    Text("卸载", color = MaterialTheme.colorScheme.error)
+                    Text(tr(R.string.s_xiezai), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirm = false }) {
-                    Text("取消")
+                    Text(tr(R.string.s_quxiao))
                 }
             }
         )
@@ -610,14 +707,14 @@ private fun ExtensionItem(
                 showTrustConfirm = false
                 trustConfirmAction = null
             },
-            title = { Text("启用非官方插件") },
+            title = { Text(tr(R.string.s_qiyongfeiguanfangchajian)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("插件「${extension.name}」未被标记为官方（${badge?.first ?: "未知来源"}）。")
-                    Text("非官方插件可能访问您输入的内容或网络，请确认来源可信后再启用。")
+                    Text(tr(R.string.s_chajian_weiguanfang, extension.name, badge?.first ?: tr(R.string.s_weizhilaiyuan)))
+                    Text(tr(R.string.s_feiguanfangchajiankenengfangwe_08b02))
                     if (extension.description.isNotEmpty()) {
                         Text(
-                            text = "描述：${extension.description}",
+                            text = tr(R.string.s_miaoshu, extension.description),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -633,7 +730,7 @@ private fun ExtensionItem(
                         action?.invoke()
                     }
                 ) {
-                    Text("继续启用")
+                    Text(tr(R.string.s_jixuqiyong))
                 }
             },
             dismissButton = {
@@ -641,14 +738,14 @@ private fun ExtensionItem(
                     showTrustConfirm = false
                     trustConfirmAction = null
                 }) {
-                    Text("取消")
+                    Text(tr(R.string.s_quxiao))
                 }
             }
         )
     }
 }
 
-// 插件网络访问授权：展示声明域名，未授权可授权，已授权可撤销
+// 插件网络访问授权：展示声明/待授权域名，未授权可授权，已授权可撤销
 @Composable
 fun NetworkAccessSection(
     pluginId: String,
@@ -660,28 +757,62 @@ fun NetworkAccessSection(
     var authorized by remember(pluginId) {
         mutableStateOf(SettingsPreferences.getPluginAuthorizedHosts(context, pluginId))
     }
+    var pending by remember(pluginId) {
+        mutableStateOf(SettingsPreferences.getPluginPendingHosts(context, pluginId))
+    }
     var pendingHost by remember { mutableStateOf<String?>(null) }
 
+    val unauthorized = hosts.filter { it !in authorized }
+
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            text = "网络访问",
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = tr(R.string.s_wangluofangwen),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            if (unauthorized.isNotEmpty()) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.padding(start = 8.dp)
+                ) {
+                    Text(
+                        text = tr(R.string.s_geyumingdaishouquan, unauthorized.size),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+        }
         hosts.forEach { host ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = host,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = host,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (host in pending) {
+                        Text(
+                            text = tr(R.string.s_fangwenbeiju_dengdaishouquan),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
                 if (host in authorized) {
                     Text(
-                        text = "已授权",
+                        text = tr(R.string.s_yishouquan),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -689,12 +820,17 @@ fun NetworkAccessSection(
                         SettingsPreferences.revokePluginHost(context, pluginId, host)
                         authorized = authorized - host
                     }) {
-                        Text("撤销", style = MaterialTheme.typography.bodySmall)
+                        Text(tr(R.string.s_chexiao), style = MaterialTheme.typography.bodySmall)
                     }
                 } else {
+                    Text(
+                        text = tr(R.string.s_weishouquan),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
                     TextButton(onClick = { pendingHost = host }) {
                         Text(
-                            text = "授权",
+                            text = tr(R.string.s_shouquan),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -707,20 +843,21 @@ fun NetworkAccessSection(
     pendingHost?.let { host ->
         AlertDialog(
             onDismissRequest = { pendingHost = null },
-            title = { Text("授权网络访问") },
-            text = { Text("允许插件「$pluginName」连接 $host 并发送数据？\n\n数据将发送到该域名，请确认信任此插件。") },
+            title = { Text(tr(R.string.s_shouquanwangluofangwen)) },
+            text = { Text(tr(R.string.s_yunxuchajian_lianjie_bingfason_8adc0, pluginName, host)) },
             confirmButton = {
                 TextButton(onClick = {
                     SettingsPreferences.authorizePluginHost(context, pluginId, host)
                     authorized = authorized + host
+                    pending = pending - host
                     pendingHost = null
                 }) {
-                    Text("允许", color = MaterialTheme.colorScheme.primary)
+                    Text(tr(R.string.s_yunxu), color = MaterialTheme.colorScheme.primary)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { pendingHost = null }) {
-                    Text("取消")
+                    Text(tr(R.string.s_quxiao))
                 }
             }
         )
@@ -730,9 +867,9 @@ fun NetworkAccessSection(
 // 信任徽标：返回 (标签, 颜色)
 private fun trustBadge(level: TrustLevel): Pair<String, Color> {
     return when (level) {
-        TrustLevel.TRUSTED -> Pair("官方", Color(0xFF4CAF50))
-        TrustLevel.THIRD_PARTY -> Pair("第三方", Color(0xFFF57C00))
-        TrustLevel.UNKNOWN -> Pair("未知来源", Color(0xFFE53935))
+        TrustLevel.TRUSTED -> Pair(tr(R.string.s_guanfang), Color(0xFF4CAF50))
+        TrustLevel.THIRD_PARTY -> Pair(tr(R.string.s_disanfang), Color(0xFFF57C00))
+        TrustLevel.UNKNOWN -> Pair(tr(R.string.s_weizhilaiyuan), Color(0xFFE53935))
     }
 }
 
@@ -804,6 +941,8 @@ private fun getCategoryIcon(category: PluginCategory): ImageVector = when (categ
     PluginCategory.ASR -> Icons.Default.Mic
     PluginCategory.PREDICTION -> Icons.Default.AutoAwesome
     PluginCategory.CLIPBOARD_SYNC -> Icons.Default.Sync
+    PluginCategory.BACKUP -> Icons.Default.Backup
+    PluginCategory.TOOL -> Icons.Default.AutoFixHigh
     PluginCategory.UNKNOWN -> Icons.Default.Extension
 }
 
@@ -815,9 +954,23 @@ private fun PluginErrorDialog(
     onDismiss: () -> Unit,
     onClear: () -> Unit
 ) {
+    val context = LocalContext.current
+    val pluginInfo = remember(pluginId) {
+        PluginManager.getAllInstallPlugins().firstOrNull { it.id == pluginId }
+    }
+    val diagnosticText = remember(pluginId, errors) {
+        buildPluginDiagnosticText(
+            hostVersionName = BuildConfig.VERSION_NAME,
+            pluginName = pluginName,
+            pluginId = pluginId,
+            pluginVersion = pluginInfo?.versionName ?: "?",
+            enabled = pluginInfo?.enabled ?: true,
+            errors = errors
+        )
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { 
+        title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     Icons.Default.Warning,
@@ -826,56 +979,169 @@ private fun PluginErrorDialog(
                     modifier = Modifier.size(24.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("$pluginName 错误日志")
+                Text(tr(R.string.s_cuowurizhi, pluginName))
             }
         },
         text = {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(300.dp)
-                    .verticalScroll(rememberScrollState())
+                    .height(320.dp)
             ) {
-                errors.forEachIndexed { index, error ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
-                        )
+                if (errors.isEmpty()) {
+                    Text(
+                        tr(R.string.s_zanwucuowujilu),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text(
+                        tr(R.string.s_dianji_fuzhizhenduanxinxi_houz_55721),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState())
                     ) {
-                        Column(modifier = Modifier.padding(8.dp)) {
-                            Text(
-                                text = "#${index + 1} ${error.operation}",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                            Text(
-                                text = error.message,
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            val stackTraceText = error.stackTrace
-                            if (stackTraceText != null && stackTraceText.isNotEmpty()) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = stackTraceText.take(200) + "...",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                )
-                            }
+                        errors.forEachIndexed { index, error ->
+                            PluginErrorCard(index = index, error = error)
                         }
                     }
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = onClear) {
-                Text("清除日志", color = MaterialTheme.colorScheme.error)
+            TextButton(
+                onClick = {
+                    val clipboard = context.getSystemService(ClipboardManager::class.java)
+                    clipboard?.setPrimaryClip(ClipData.newPlainText(tr(R.string.s_xime_chajianzhenduanxinxi), diagnosticText))
+                    Toast.makeText(context, tr(R.string.s_zhenduanxinxiyifuzhi_kezhantie_6d373), Toast.LENGTH_SHORT).show()
+                }
+            ) {
+                Icon(
+                    Icons.Default.ContentCopy,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(tr(R.string.s_fuzhizhenduanxinxi))
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("关闭")
+            Row {
+                TextButton(onClick = onClear) {
+                    Text(tr(R.string.s_qingchurizhi), color = MaterialTheme.colorScheme.error)
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(tr(R.string.s_guanbi))
+                }
             }
         }
     )
+}
+
+@Composable
+private fun PluginErrorCard(index: Int, error: PluginErrorLog.PluginError) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "#${index + 1} · ${formatErrorTime(error.timestamp)} · ${categoryLabel(error.category)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = PluginErrorLog.userMessage(error),
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = PluginErrorLog.userHint(error),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = error.message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
+            val stackTraceText = error.stackTrace
+            if (stackTraceText != null && stackTraceText.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = stackTraceText.take(200) + "...",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+            }
+        }
+    }
+}
+
+/** 分类徽章短名（用户可读）。 */
+internal fun categoryLabel(category: ErrorCategory): String = when (category) {
+    ErrorCategory.SCRIPT_ERROR -> tr(R.string.s_jiaobencuowu)
+    ErrorCategory.NETWORK_DENIED -> tr(R.string.s_fangwenbeijujue)
+    ErrorCategory.HTTP_ERROR -> tr(R.string.s_wangluoshibai)
+    ErrorCategory.TIMEOUT_POISONED -> tr(R.string.s_yitingyong)
+    ErrorCategory.STREAM_ERROR -> tr(R.string.s_lianjiezhongduan)
+    ErrorCategory.OTHER -> tr(R.string.s_qita)
+}
+
+/** 插件错误入口文案（纯函数，可单测）。 */
+internal fun pluginErrorSummary(count: Int): String = when {
+    count <= 0 -> tr(R.string.s_zanwucuowujilu)
+    else -> tr(R.string.s_you_tiaocuowujilu, count)
+}
+
+private fun formatErrorTime(timestamp: Long): String =
+    SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
+
+/**
+ * 组装一键反馈作者的诊断文本（含宿主/插件版本与全部错误详情）。
+ * 纯函数，可单测。
+ */
+internal fun buildPluginDiagnosticText(
+    hostVersionName: String,
+    pluginName: String,
+    pluginId: String,
+    pluginVersion: String,
+    enabled: Boolean,
+    errors: List<PluginErrorLog.PluginError>
+): String = buildString {
+    appendLine("Xime v$hostVersionName")
+    appendLine(tr(R.string.s_chajian_xinxi, pluginName, pluginId, pluginVersion, if (enabled) tr(R.string.s_yiqiyong) else tr(R.string.s_yijinyong)))
+    appendLine()
+    appendLine(tr(R.string.s_cuowujilu_tiao, errors.size))
+    if (errors.isEmpty()) {
+        appendLine(tr(R.string.s_wu))
+    }
+    errors.forEachIndexed { index, error ->
+        appendLine("${index + 1}. ${formatErrorTime(error.timestamp)} [${categoryLabel(error.category)}]")
+        appendLine("   ${PluginErrorLog.userMessage(error)}")
+        appendLine("   ${PluginErrorLog.userHint(error)}")
+        appendLine(tr(R.string.s_xiangqing_2, error.message))
+        error.stackTrace?.let { stack ->
+            appendLine(tr(R.string.s_duizhan))
+            stack.lineSequence().take(60).forEach { line ->
+                appendLine("     $line")
+            }
+        }
+        appendLine()
+    }
 }

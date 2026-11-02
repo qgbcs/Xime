@@ -1,5 +1,9 @@
 package com.kingzcheung.xime.ui.keyboard
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -113,7 +117,7 @@ fun SpaceKeyButton(
         if (isVoiceMode) {
             Icon(
                 imageVector = Icons.Default.Mic,
-                contentDescription = "语音输入",
+                contentDescription = tr(R.string.s_yuyinshuru),
                 tint = textColor,
                 modifier = Modifier.size(24.dp)
             )
@@ -124,11 +128,12 @@ fun SpaceKeyButton(
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Normal,
                 textAlign = TextAlign.Center,
-                maxLines = 1
+                maxLines = 1,
+                fontFamily = AppFonts.keyFontFamily
             )
             
             Text(
-                text = "空格",
+                text = tr(R.string.s_kongge),
                 color = textColor.copy(alpha = 0.3f),
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Normal,
@@ -136,7 +141,8 @@ fun SpaceKeyButton(
                 maxLines = 1,
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(start = 6.dp, bottom = 2.dp)
+                    .padding(start = 6.dp, bottom = 2.dp),
+                fontFamily = AppFonts.keyFontFamily
             )
         }
     }

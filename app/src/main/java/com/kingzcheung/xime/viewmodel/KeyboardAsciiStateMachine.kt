@@ -3,7 +3,7 @@ package com.kingzcheung.xime.viewmodel
 import com.kingzcheung.xime.ui.keyboard.AsciiKeyboardContext
 
 /**
- * 键盘 ascii 状态机 — 每个键盘上下文（主键盘/数字面板/符号面板）持有独立的 ascii 记忆。
+ * 键盘 ascii 状态机 — 每个键盘上下文（主键盘/数字面板）持有独立的 ascii 记忆。
  *
  * 引擎状态是权威源，本状态机只在键盘切换时（attach/detach）同步引擎：
  * - detach（离开键盘）：把引擎当前状态保存为该键盘的记忆
@@ -12,40 +12,50 @@ import com.kingzcheung.xime.ui.keyboard.AsciiKeyboardContext
  * 语义：
  * - 面板内的中英切换只影响该面板的记忆，退出面板后主键盘恢复自己的记忆
  * - 面板记忆持久，再次进入面板恢复上次的状态
- * - 符号面板首次进入默认英文
+ * - 符号面板不参与（中英共用一套布局，不再有该上下文）
  */
 class KeyboardAsciiStateMachine {
 
     private var mainAsciiMode: Boolean? = null
     private var numberAsciiMode: Boolean? = null
-    private var symbolAsciiMode: Boolean? = null
 
     /** detach：保存当前键盘的引擎状态为该键盘的记忆 */
     fun saveMemory(context: AsciiKeyboardContext, engineAscii: Boolean) {
         when (context) {
             AsciiKeyboardContext.MAIN -> mainAsciiMode = engineAscii
             AsciiKeyboardContext.NUMBER_PANEL -> numberAsciiMode = engineAscii
-            AsciiKeyboardContext.SYMBOL_PANEL -> symbolAsciiMode = engineAscii
         }
     }
 
     /**
      * attach：返回目标引擎模式；与引擎一致时返回 null（无需切换）。
-     * 尚未记录记忆的上下文以引擎当前状态为目标（符号面板首次进入默认英文）。
+     *
+     * fallback 语义（记忆缺失时）：
+     * - MAIN → 默认中文：与「英文态不跨收起存活」的全局决策一致（onStartInput 的
+     *   ascii 确定性决策同为默认中文）。记忆缺失时引擎可能仍停留在面板态
+     *   （符号面板首入默认英文），不能拿它当主键盘的应有状态。
+     * - NUMBER_PANEL → 引擎当前状态。
      */
     fun targetFor(context: AsciiKeyboardContext, engineAscii: Boolean): Boolean? {
         val target = when (context) {
-            AsciiKeyboardContext.MAIN -> mainAsciiMode ?: engineAscii
+            AsciiKeyboardContext.MAIN -> mainAsciiMode ?: false
             AsciiKeyboardContext.NUMBER_PANEL -> numberAsciiMode ?: engineAscii
-            AsciiKeyboardContext.SYMBOL_PANEL -> symbolAsciiMode ?: true
         }
         return if (target != engineAscii) target else null
     }
+
+    /**
+     * 返回主键盘时推导布局用的 ascii：优先主键盘记忆，记忆缺失时才跟随引擎。
+     *
+     * 与 [targetFor] 的区别在 fallback：主键盘布局不能沿用「记忆缺失默认中文」，
+     * 否则英文主键盘从数字面板返回时会先渲染中文/九宫布局，再被 ascii 同步纠正，
+     * 表现为闪一下九宫拼音界面。
+     */
+    fun mainAsciiForLayout(engineAscii: Boolean): Boolean = mainAsciiMode ?: engineAscii
 
     /** 新输入会话：清空全部记忆，从引擎当前状态重新开始 */
     fun reset() {
         mainAsciiMode = null
         numberAsciiMode = null
-        symbolAsciiMode = null
     }
 }

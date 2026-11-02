@@ -1,9 +1,6 @@
 package com.kingzcheung.xime.plugin.core.security.crash
 
 import android.app.Application
-import android.content.Intent
-import android.content.res.Resources
-import android.os.Process
 import android.util.Log
 import com.kingzcheung.xime.plugin.core.model.PluginCrashInfo
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -45,47 +42,25 @@ object PluginCrashHandler : Thread.UncaughtExceptionHandler {
         }
     }
 
+    /**
+     * Lua 插件在沙箱内执行，脚本错误不会传播到宿主进程；且无法通过栈帧类名归属
+     * （Lua 无 class），故统一视为非插件异常，交给默认处理器。保留本方法以便未来
+     * 扩展按调用方注册的 callback 处理插件相关崩溃。
+     */
     private fun handlePluginRelatedException(throwable: Throwable): Boolean {
         val culpritPluginId = findCulpritPluginId(throwable)
-        val pluginCallback = culpritPluginId?.let { pluginCallbacks[it] }
-
+        if (culpritPluginId == null) return false
         val crashInfo = PluginCrashInfo(
             throwable = throwable,
             culpritPluginId = culpritPluginId,
             defaultMessage = buildDefaultMessage(throwable, culpritPluginId)
         )
-
-        findCause<ClassCastException>(throwable)?.let {
-            if (pluginCallback?.onClassCastException(crashInfo) == true) return true
-            if (globalCallback?.onClassCastException(crashInfo) == true) return true
-            showCrashActivity(crashInfo)
-            return true
+        pluginCallbacks[culpritPluginId]?.let { callback ->
+            if (callback.onOtherPluginException(crashInfo) == true) return true
         }
-
-        findCause<Resources.NotFoundException>(throwable)?.let {
-            if (pluginCallback?.onResourceNotFoundException(crashInfo) == true) return true
-            if (globalCallback?.onResourceNotFoundException(crashInfo) == true) return true
-            showCrashActivity(crashInfo)
-            return true
+        globalCallback?.let { callback ->
+            if (callback.onOtherPluginException(crashInfo) == true) return true
         }
-
-        if (throwable is NoSuchMethodError || throwable is NoSuchFieldError || throwable is AbstractMethodError) {
-            if (culpritPluginId != null) {
-                val apiCrashInfo = PluginCrashInfo(throwable, culpritPluginId, "Plugin version incompatible with app")
-                if (pluginCallback?.onApiIncompatibleException(apiCrashInfo) == true) return true
-                if (globalCallback?.onApiIncompatibleException(apiCrashInfo) == true) return true
-                showCrashActivity(apiCrashInfo)
-                return true
-            }
-        }
-
-        if (culpritPluginId != null) {
-            if (pluginCallback?.onOtherPluginException(crashInfo) == true) return true
-            if (globalCallback?.onOtherPluginException(crashInfo) == true) return true
-            showCrashActivity(crashInfo)
-            return true
-        }
-
         return false
     }
 
@@ -95,41 +70,8 @@ object PluginCrashHandler : Thread.UncaughtExceptionHandler {
      */
     private fun findCulpritPluginId(throwable: Throwable?): String? = null
 
-    private inline fun <reified T : Throwable> findCause(throwable: Throwable): T? {
-        var current: Throwable? = throwable
-        while (current != null) {
-            if (current is T) return current
-            current = current.cause
-        }
-        return null
-    }
-
-    private fun buildDefaultMessage(throwable: Throwable, pluginId: String?): String {
-        return if (pluginId != null) {
-            "Plugin '$pluginId' crashed: ${throwable.message}"
-        } else {
-            "Unknown error: ${throwable.message}"
-        }
-    }
-
-    private fun showCrashActivity(crashInfo: PluginCrashInfo) {
-        try {
-            val intent = Intent(context, CrashActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-                putExtra(EXTRA_CRASH_INFO, crashInfo)
-            }
-            context.startActivity(intent)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to launch CrashActivity", e)
-        }
-        killProcess()
-    }
-
-    private fun killProcess() {
-        android.os.Handler(context.mainLooper).postDelayed({
-            Process.killProcess(Process.myPid())
-        }, 500)
-    }
+    private fun buildDefaultMessage(throwable: Throwable, pluginId: String): String =
+        "Plugin '$pluginId' crashed: ${throwable.message}"
 
     @OptIn(DelicateCoroutinesApi::class)
     fun setGlobalCrashCallback(callback: IPluginCrashCallback?) {

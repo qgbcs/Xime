@@ -1,11 +1,16 @@
 package com.kingzcheung.xime.ui.keyboard
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -44,7 +49,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -114,8 +118,6 @@ fun SplitWordsView(
     val textColor = MaterialTheme.colorScheme.onSurface
     val accentColor = MaterialTheme.colorScheme.primary
     val chipBgColor = MaterialTheme.colorScheme.surfaceContainerLow
-    val configuration = LocalConfiguration.current
-    val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
     val splitParts = remember(text) { splitText(text) }
     val selectedIndices = remember { mutableStateListOf<Int>() }
@@ -134,9 +136,13 @@ fun SplitWordsView(
         committedText = newText
     }
 
+    // 底部留白按父容器真实宽度分档（宽容器=横屏全屏形态），不读屏幕方向
+    BoxWithConstraints(modifier = modifier) {
+        val isWide = maxWidth >= WIDE_CONTAINER_WIDTH
+
     Column(
-        modifier = modifier
-            .fillMaxWidth()
+        modifier = Modifier
+            .fillMaxSize()
             .background(backgroundColor)
     ) {
         // 导航区
@@ -157,7 +163,7 @@ fun SplitWordsView(
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                    contentDescription = "返回",
+                    contentDescription = tr(R.string.s_fanhui),
                     tint = accentColor,
                     modifier = Modifier.size(24.dp)
                 )
@@ -166,7 +172,7 @@ fun SplitWordsView(
             Spacer(modifier = Modifier.width(12.dp))
 
             Text(
-                text = "拆词",
+                text = tr(R.string.s_chaici),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = textColor,
@@ -189,7 +195,7 @@ fun SplitWordsView(
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
-                Text("添加到快捷发送", color = accentColor, fontSize = 13.sp)
+                Text(tr(R.string.s_tianjiadaokuaijiefasong), color = accentColor, fontSize = 13.sp)
             }
         }
 
@@ -305,6 +311,7 @@ fun SplitWordsView(
         }
 
         // 底部留空
-        Spacer(modifier = Modifier.height(if (isLandscape) 15.dp else bottomPaddingDp.dp))
+        Spacer(modifier = Modifier.height(if (isWide) 15.dp else bottomPaddingDp.dp))
+    }
     }
 }

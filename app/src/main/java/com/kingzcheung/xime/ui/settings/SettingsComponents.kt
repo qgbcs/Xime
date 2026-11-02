@@ -1,8 +1,14 @@
 package com.kingzcheung.xime.ui.settings
 
+
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,7 +23,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
@@ -38,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -55,9 +64,10 @@ import com.kingzcheung.xime.ui.theme.keyboardBackground
 @Composable
 fun SettingsSection(
     title: String,
+    modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    Column {
+    Column(modifier = modifier) {
         Text(
             text = title,
             style = MaterialTheme.typography.labelLarge,
@@ -81,7 +91,9 @@ fun SettingsItem(
     title: String,
     subtitle: String,
     onClick: () -> Unit,
-    showArrow: Boolean = false
+    showArrow: Boolean = false,
+    /** 行尾更新角标文案（如 "2 项可更新"）：非空时以高亮胶囊展示，优先于箭头前。 */
+    badgeText: String? = null
 ) {
     Row(
         modifier = Modifier
@@ -117,6 +129,20 @@ fun SettingsItem(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+        if (badgeText != null) {
+            Spacer(modifier = Modifier.width(8.dp))
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = MaterialTheme.colorScheme.errorContainer
+            ) {
+                Text(
+                    text = badgeText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                )
+            }
         }
         if (showArrow) {
             Icon(
@@ -196,6 +222,109 @@ fun SettingsToggleItem(
     }
 }
 
+/**
+ * 单选列表项（Material 3 单选语义）。
+ *
+ * 用于"多个插件里挑一个生效"这类设置：右侧是 [RadioButton] 而不是 Switch——Switch 表达
+ * 的是"开/关某样东西"，拨动即切换插件会让用户误以为是开关（此前剪贴板同步/备份页就是这样）。
+ * 整行是点击目标（`selectable` + role=RadioButton），RadioButton 自身 onClick 置 null，
+ * 避免出现两个语义重叠的可点击区域（TalkBack 只报一个单选节点）。
+ *
+ * `icon` 可为 null（对话框里的紧凑列表用不上图标时省略，避免一排重复图标）：
+ * 插件各自的图标请用 `PluginIconView` 渲染，而不是这里的 ImageVector。
+ */
+@Composable
+fun SettingsRadioItem(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    onSelect: () -> Unit,
+    icon: ImageVector? = null,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect)
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (icon != null) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                color = if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        RadioButton(selected = selected, onClick = null)
+    }
+}
+
+/** 单选弹窗的一项（[SettingsSingleChoiceDialog]）。 */
+data class SettingsChoiceOption(
+    val id: String,
+    val title: String,
+    val subtitle: String = "",
+)
+
+/**
+ * 单选弹窗：把"多个服务/插件里挑一个"从页面列表收进弹窗——页面长度不随候选数量增长。
+ *
+ * 点某项即回调并关闭（不设确认按钮，与 RadioButton 语义一致）；候选多时内容可滚动。
+ */
+@Composable
+fun SettingsSingleChoiceDialog(
+    title: String,
+    options: List<SettingsChoiceOption>,
+    selectedId: String?,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                options.forEach { option ->
+                    SettingsRadioItem(
+                        title = option.title,
+                        subtitle = option.subtitle,
+                        selected = option.id == selectedId,
+                        onSelect = { onSelect(option.id) }
+                    )
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(tr(R.string.s_quxiao)) }
+        }
+    )
+}
+
 @Composable
 fun SchemaItem(
     schema: SchemaInfo,
@@ -235,21 +364,21 @@ fun SchemaItem(
             ) {
                 if (schema.version.isNotEmpty()) {
                     Text(
-                        text = "版本: ${schema.version}",
+                        text = tr(R.string.s_banben_3, schema.version),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.outline
                     )
                 }
                 if (schema.author.isNotEmpty()) {
                     Text(
-                        text = "作者: ${schema.author}",
+                        text = tr(R.string.s_zuozhe_3, schema.author),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.outline
                     )
                 }
                 if (!isDownloaded) {
                     Text(
-                        text = "未下载",
+                        text = tr(R.string.s_weixiazai),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -271,13 +400,13 @@ fun SchemaItem(
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                 }
-                Text(if (isLoading) "下载中" else "下载")
+                Text(if (isLoading) tr(R.string.s_xiazaizhong) else tr(R.string.s_xiazai))
             }
         } else {
             if (isSelected) {
                 Icon(
                     imageVector = Icons.Default.Check,
-                    contentDescription = "已选择",
+                    contentDescription = tr(R.string.s_yixuanze),
                     tint = MaterialTheme.colorScheme.primary
                 )
                 Spacer(modifier = Modifier.width(8.dp))
@@ -295,7 +424,7 @@ fun SchemaItem(
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                 }
-                Text(if (isLoading) "更新中" else "更新")
+                Text(if (isLoading) tr(R.string.s_gengxinzhong) else tr(R.string.s_gengxin))
             }
         }
     }
@@ -310,7 +439,7 @@ fun SchemaSelectDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("选择输入方案") },
+        title = { Text(tr(R.string.s_xuanzeshurufangan)) },
         text = {
             Column {
                 schemas.forEach { schema ->
@@ -354,7 +483,7 @@ fun SchemaSelectDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("确定")
+                Text(tr(R.string.s_queding))
             }
         }
     )
@@ -670,7 +799,7 @@ fun CodeDisplayCard(
                                             .padding(horizontal = 4.dp, vertical = 2.dp)
                                     ) {
                                         Text(
-                                            text = "输入法",
+                                            text = tr(R.string.s_shurufa),
                                             fontSize = 13.sp,
                                             color = primary,
                                             fontWeight = FontWeight.Medium,
@@ -679,7 +808,7 @@ fun CodeDisplayCard(
                                     }
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
-                                        text = "力学",
+                                        text = tr(R.string.s_lixue),
                                         fontSize = 13.sp,
                                         color = onSurface,
                                         maxLines = 1
@@ -796,7 +925,7 @@ fun CommentDisplayCard(
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
-                                        text = "输入法",
+                                        text = tr(R.string.s_shurufa),
                                         fontSize = 14.sp,
                                         color = primary,
                                         fontWeight = FontWeight.Medium,
@@ -815,7 +944,7 @@ fun CommentDisplayCard(
                             }
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "力学",
+                                text = tr(R.string.s_lixue),
                                 fontSize = 14.sp,
                                 color = onSurface,
                                 maxLines = 1
@@ -855,7 +984,7 @@ fun CommentDisplayCard(
 fun CommentDisplayCardPreview_Show() {
     XimeTheme {
         CommentDisplayCard(
-            title = "显示",
+            title = tr(R.string.s_xianshi),
             isSelected = true,
             showComment = true,
             onClick = {},
@@ -872,7 +1001,7 @@ fun CommentDisplayCardPreview_Show() {
 fun CommentDisplayCardPreview_Hide() {
     XimeTheme {
         CommentDisplayCard(
-            title = "隐藏",
+            title = tr(R.string.s_yincang),
             isSelected = false,
             showComment = false,
             onClick = {},
@@ -1093,7 +1222,7 @@ fun CandidateTextSizeCard(
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
                         Text(
-                            text = "输入法",
+                            text = tr(R.string.s_shurufa),
                             fontSize = candidateTextSize.sp,
                             color = primary,
                             fontWeight = FontWeight.Medium,
@@ -1102,7 +1231,7 @@ fun CandidateTextSizeCard(
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "力学",
+                        text = tr(R.string.s_lixue),
                         fontSize = candidateTextSize.sp,
                         color = onSurface,
                         maxLines = 1

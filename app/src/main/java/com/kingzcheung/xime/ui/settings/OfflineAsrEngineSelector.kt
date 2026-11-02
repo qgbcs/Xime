@@ -1,5 +1,9 @@
 package com.kingzcheung.xime.ui.settings
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -43,12 +47,12 @@ internal fun OfflineAsrEngineSelector(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "使用本地模型",
+                    text = tr(R.string.s_shiyongbendimoxing),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = if (useLocal) "离线运行，无需网络" else "使用在线语音识别插件",
+                    text = if (useLocal) tr(R.string.s_lixianyunxing_wuxuwangluo) else tr(R.string.s_shiyongzaixianyuyinshibiechajian),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
                 )

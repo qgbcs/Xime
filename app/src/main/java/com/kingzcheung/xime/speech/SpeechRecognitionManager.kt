@@ -1,5 +1,9 @@
 package com.kingzcheung.xime.speech
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import android.Manifest
 import android.content.Context
 import android.media.AudioFormat
@@ -12,6 +16,7 @@ import android.os.Looper
 import android.util.Log
 
 import androidx.annotation.RequiresPermission
+import com.kingzcheung.xime.plugin.ActivePluginSelection
 import com.kingzcheung.xime.plugin.ExtensionManager
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kingzcheung.xime.util.FileLogger
@@ -45,6 +50,24 @@ class SpeechRecognitionManager(private val context: Context) {
 
     // 会话序号：用于区分连续语音会话，防止旧会话的回收线程误释放新会话的后端
     private var sessionId = 0
+    // 待执行的延迟释放所对应的会话序号（-1 表示无待释放）
+    @Volatile
+    private var pendingReleaseSession = -1
+    private val pendingBackendRelease = Runnable {
+        val session = pendingReleaseSession
+        pendingReleaseSession = -1
+        // 主线程只取引用；release() 含跨进程 IPC/断连，放后台线程执行
+        val b = synchronized(preloadLock) {
+            if (session != -1 && sessionId == session) {
+                val tmp = backend
+                backend = null
+                tmp
+            } else null
+        }
+        if (b != null) {
+            Thread { b.release() }.start()
+        }
+    }
     // 后台加载 ASR 模型的进行中标记与取消标记
     @Volatile
     private var loadingInProgress = false
@@ -54,6 +77,8 @@ class SpeechRecognitionManager(private val context: Context) {
     private var resultCallback: ((String) -> Unit)? = null
     private var partialResultCallback: ((String) -> Unit)? = null
     private var stateCallback: ((RecognitionState) -> Unit)? = null
+    @Volatile
+    private var currentState: RecognitionState = RecognitionState.IDLE
     private var errorCallback: ((String, Boolean) -> Unit)? = null
     private var amplitudeCallback: ((Float) -> Unit)? = null
     private var spectrumCallback: ((FloatArray) -> Unit)? = null
@@ -218,6 +243,21 @@ class SpeechRecognitionManager(private val context: Context) {
         }, "AsrBackendLoad").start()
     }
 
+    /**
+     * 延迟释放后端：给在线插件的异步最终结果留出送达窗口。窗口内新会话开始
+     * （startRecording）会取消释放并复用后端；释放前校验会话序号，避免误释放
+     * 新会话正在使用的后端。
+     * "引擎常驻"开启时不安排释放——后端跨会话保留，闲置后再用免重建
+     * （重新加载模型/重建 Lua 后端与连接正是"闲置后首次使用慢"的根源）；
+     * 关闭设置后自然回退为延迟释放，无需主动清理。
+     */
+    private fun scheduleBackendRelease(session: Int) {
+        if (SettingsPreferences.isSttKeepEngineAlive(context)) return
+        pendingReleaseSession = session
+        mainHandler.removeCallbacks(pendingBackendRelease)
+        mainHandler.postDelayed(pendingBackendRelease, BACKEND_RELEASE_DELAY_MS)
+    }
+
     fun stopRecognition() {
         Log.d(TAG, "Stopping recognition")
         val thread = recordingThread
@@ -228,13 +268,16 @@ class SpeechRecognitionManager(private val context: Context) {
             return
         }
         recordingThread = null
+        thread.stopRequested = true
         val session = synchronized(preloadLock) { sessionId }
         // 手指抬起：完成识别。模型仍在加载时也不取消，录音线程会有界等待
         // 加载完成并识别缓存的整段语音（用户可立即继续其它操作，结果迟到上屏）
         thread.requestFinish()
         Thread({
             try {
-                thread.join()
+                // join 超时兜底：录音线程若卡在 Lua 调用中（最坏 CALL_TIMEOUT_MS=180s），
+                // 不能让后端释放无限期阻塞（否则 WebSocket 与麦克风一直占着）
+                thread.join(JOIN_TIMEOUT_MS)
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
             }
@@ -250,7 +293,7 @@ class SpeechRecognitionManager(private val context: Context) {
             b?.release()
             releaseAudioFocus()
             mainHandler.post {
-                stateCallback?.invoke(RecognitionState.IDLE)
+                setState(RecognitionState.IDLE)
             }
             scheduleAudioFallback()
         }, "AsrStop").start()
@@ -265,18 +308,19 @@ class SpeechRecognitionManager(private val context: Context) {
                 loadingCancelled = true
                 releaseAudioFocus()
                 mainHandler.post {
-                    stateCallback?.invoke(RecognitionState.IDLE)
+                    setState(RecognitionState.IDLE)
                 }
             }
             return
         }
         recordingThread = null
+        thread.stopRequested = true
         val session = synchronized(preloadLock) { sessionId }
         // 放弃本会话：立即丢弃缓存语音，不等待模型加载
         thread.requestDiscard()
         Thread({
             try {
-                thread.join()
+                thread.join(JOIN_TIMEOUT_MS)
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
             }
@@ -290,7 +334,7 @@ class SpeechRecognitionManager(private val context: Context) {
             b?.release()
             releaseAudioFocus()
             mainHandler.post {
-                stateCallback?.invoke(RecognitionState.IDLE)
+                setState(RecognitionState.IDLE)
             }
             scheduleAudioFallback()
         }, "AsrCancel").start()
@@ -310,6 +354,13 @@ class SpeechRecognitionManager(private val context: Context) {
             current
         } ?: return
         archive.renameWithText(text)
+    }
+
+    fun getState(): RecognitionState = currentState
+
+    private fun setState(state: RecognitionState) {
+        currentState = state
+        stateCallback?.invoke(state)
     }
 
     fun setCallbacks(
@@ -354,6 +405,8 @@ class SpeechRecognitionManager(private val context: Context) {
     fun release() {
         Log.d(TAG, "Releasing speech recognition")
         cancelPreStart()
+        mainHandler.removeCallbacks(pendingBackendRelease)
+        pendingReleaseSession = -1
         cancelRecognition()
         val b = synchronized(preloadLock) {
             val tmp = backend
@@ -370,10 +423,6 @@ class SpeechRecognitionManager(private val context: Context) {
 
     private var isPreloading = false
     private val preloadLock = Object()
-
-    fun getState(): RecognitionState {
-        return backend?.getState() ?: RecognitionState.IDLE
-    }
 
     fun preload(): Boolean {
         synchronized(preloadLock) {
@@ -393,7 +442,7 @@ class SpeechRecognitionManager(private val context: Context) {
         newBackend.setCallbacks(
             onResult = { text -> handleResult(text) },
             onPartialResult = { text -> handlePartialResult(text) },
-            onStateChange = { state -> stateCallback?.invoke(state) },
+            onStateChange = { state -> setState(state) },
             onError = { error -> handleError(error) }
         )
 
@@ -429,12 +478,18 @@ class SpeechRecognitionManager(private val context: Context) {
         if (enabledPlugins.isEmpty()) return null
 
         val selectedId = SettingsPreferences.getSttOnlinePluginId(context)
-        val selected = enabledPlugins.firstOrNull { it.first == selectedId }
+        // 与插件管理页共用同一判定规则（ActivePluginSelection）：偏好不可用时回退首个已启用插件，
+        // 并回填偏好，避免"识别在跑、插件页显示未使用"
+        val resolvedId = ActivePluginSelection.resolve(selectedId, enabledPlugins.map { it.first })
+        if (resolvedId != selectedId) SettingsPreferences.setSttOnlinePluginId(context, resolvedId)
+        val selected = enabledPlugins.firstOrNull { it.first == resolvedId }
             ?: enabledPlugins.firstOrNull()
         val (_, plugin) = selected ?: return null
 
         val backend = plugin.createBackend(context.applicationContext)
-        return PluginAsrBackendAdapter(plugin.getDisplayName(), backend)
+        val pluginName = ExtensionManager.getAllInstalledPlugins()
+            .firstOrNull { it.id == selected?.first }?.name ?: selected?.first ?: tr(R.string.s_yuyinshibie)
+        return PluginAsrBackendAdapter(pluginName, backend)
     }
 
     private fun createAudioRecord(bufferSecs: Float = 2.0f): AudioRecord? {
@@ -519,18 +574,19 @@ class SpeechRecognitionManager(private val context: Context) {
         override fun run() {
             val audioRecord = preStarted ?: (createAudioRecord() ?: run {
                 mainHandler.post {
-                    errorCallback?.invoke("无法启动录音", false)
-                    stateCallback?.invoke(RecognitionState.ERROR)
+                    errorCallback?.invoke(tr(R.string.s_wufaqidongluyin), false)
+                    setState(RecognitionState.ERROR)
                 }
                 return
             })
+            this.audioRecord = audioRecord
 
             // 麦克风立即开启：不等模型加载，UI 立刻进入聆听态、频谱即时响应
             if (audioRecord.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
                 audioRecord.startRecording()
             }
             mainHandler.post {
-                stateCallback?.invoke(RecognitionState.LISTENING)
+                setState(RecognitionState.LISTENING)
             }
 
             val audioArchive = AudioArchive.create()
@@ -786,6 +842,14 @@ class SpeechRecognitionManager(private val context: Context) {
                     }
                 }
                 return backend
+            }
+        }
+
+        /** 从外部强制停止录音：录音线程阻塞在 read() 等不可中断调用时，释放 AudioRecord 使其立即返回错误并退出。 */
+        fun forceStopAudio() {
+            audioRecord?.let { record ->
+                try { record.stop() } catch (_: Exception) { }
+                try { record.release() } catch (_: Exception) { }
             }
         }
 

@@ -34,18 +34,26 @@ class VoiceRecognitionHandlerTest {
     }
 
     @Test
-    fun `test text preprocessing removes spaces`() {
-        // Test that ASR text with spaces is properly cleaned
+    fun `test text preprocessing keeps English word spaces`() {
+        // 中文去掉字符间空格；英文保留词间空格并补齐标点后空格
         val testCases = listOf(
+            "How are you" to "How are you",
+            "Hello,how are you" to "Hello, how are you",
+            "How are you?I am fine." to "How are you? I am fine.",
+            "3.14" to "3.14",
             "你好 世界" to "你好世界",
             "  前面有空格" to "前面有空格",
             "中间 有 空格" to "中间有空格",
-            "正常文本" to "正常文本"
+            "你好 ， 世界" to "你好，世界",
+            "正常文本" to "正常文本",
+            // 汉字与西文之间的空格保留（中西文混排惯例）
+            "我用 iPhone 手机" to "我用 iPhone 手机",
+            "I love 中国 food" to "I love 中国 food",
+            "     " to ""
         )
 
         for ((input, expected) in testCases) {
-            val result = input.replace(" ", "")
-            assertEquals("Space removal failed for '$input'", expected, result)
+            assertEquals("Text normalization failed for '$input'", expected, handler.normalizeAsrText(input))
         }
     }
 

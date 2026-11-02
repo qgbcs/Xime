@@ -1,6 +1,11 @@
 package com.kingzcheung.xime.ui.settings
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import android.util.Log
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,6 +30,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -44,15 +50,19 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.kingzcheung.xime.plugin.core.security.PluginErrorLog
 import com.kingzcheung.xime.viewmodel.LogViewerEvent
 import com.kingzcheung.xime.viewmodel.LogViewerViewModel
 import java.io.File
@@ -80,11 +90,11 @@ fun LogViewerScreen(
                         addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         clipData = android.content.ClipData.newRawUri(null, event.uri)
                     }
-                    val chooser = android.content.Intent.createChooser(shareIntent, "分享日志")
+                    val chooser = android.content.Intent.createChooser(shareIntent, tr(R.string.s_fenxiangrizhi))
                     context.startActivity(chooser)
                 }
                 is LogViewerEvent.SavedToDownloads -> {
-                    snackbarHostState.showSnackbar("已保存到 ${event.path}")
+                    snackbarHostState.showSnackbar(tr(R.string.s_yibaocundao, event.path))
                 }
                 is LogViewerEvent.ShowError -> {
                     snackbarHostState.showSnackbar(event.message)
@@ -98,12 +108,18 @@ fun LogViewerScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("日志查看器") },
+                title = {
+                    Text(
+                        tr(R.string.s_rizhichakanqi),
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "返回"
+                            contentDescription = tr(R.string.s_fanhui)
                         )
                     }
                 },
@@ -111,27 +127,21 @@ fun LogViewerScreen(
                     val targetFile = uiState.selectedLogFile
                         ?: uiState.logFiles.firstOrNull()
                     if (targetFile != null) {
-                        IconButton(onClick = { viewModel.shareLogFile(targetFile) }) {
-                            Icon(
-                                imageVector = Icons.Default.Share,
-                                contentDescription = "分享日志"
-                            )
-                        }
                         TextButton(onClick = { viewModel.saveToDownloads(targetFile) }) {
-                            Text("保存")
+                            Text(tr(R.string.s_baocun))
                         }
                     }
                     IconButton(onClick = { viewModel.loadLogFiles() }) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
-                            contentDescription = "刷新"
+                            contentDescription = tr(R.string.s_shuaxin)
                         )
                     }
                     if (uiState.logFiles.isNotEmpty()) {
                         IconButton(onClick = { viewModel.clearAllLogs() }) {
                             Icon(
                                 imageVector = Icons.Default.Delete,
-                                contentDescription = "清空所有日志"
+                                contentDescription = tr(R.string.s_qingkongsuoyourizhi)
                             )
                         }
                     }
@@ -168,7 +178,7 @@ fun LogViewerScreen(
                         color = MaterialTheme.colorScheme.error
                     )
                     Button(onClick = { viewModel.loadLogFiles() }) {
-                        Text("重新加载")
+                        Text(tr(R.string.s_zhongxinjiazai))
                     }
                 }
             }
@@ -182,8 +192,14 @@ fun LogViewerScreen(
                 onSave = { viewModel.saveToDownloads(uiState.selectedLogFile!!) }
             )
         } else {
+            // 插件错误来自 PluginErrorLog 持久化快照（getAllErrors 已含启动恢复的历史），
+            // 随刷新联动重取（logFiles 为 key）
+            val pluginErrors = remember(uiState.logFiles) {
+                com.kingzcheung.xime.plugin.core.security.PluginErrorLog.getAllErrors()
+            }
             LogFilesList(
                 logFiles = uiState.logFiles,
+                pluginErrors = pluginErrors,
                 onSelect = { viewModel.selectLogFile(it) },
                 onShare = { viewModel.shareLogFile(it) },
                 onSave = { viewModel.saveToDownloads(it) },
@@ -220,22 +236,22 @@ private fun LogContentSection(
             )
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 TextButton(onClick = onBackToList) {
-                    Text("返回列表")
+                    Text(tr(R.string.s_fanhuiliebiao))
                 }
                 TextButton(onClick = onSave) {
-                    Text("保存")
+                    Text(tr(R.string.s_baocun))
                 }
                 IconButton(onClick = onShare) {
                     Icon(
                         Icons.Default.Share,
-                        contentDescription = "分享",
+                        contentDescription = tr(R.string.s_fenxiang),
                         tint = MaterialTheme.colorScheme.primary
                     )
                 }
                 IconButton(onClick = onDelete) {
                     Icon(
                         Icons.Default.Delete,
-                        contentDescription = "删除此日志",
+                        contentDescription = tr(R.string.s_shanchucirizhi),
                         tint = MaterialTheme.colorScheme.error
                     )
                 }
@@ -249,7 +265,7 @@ private fun LogContentSection(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
-                Text("日志文件为空")
+                Text(tr(R.string.s_rizhiwenjianweikong))
             }
         } else {
             val lines = logContent.lines()
@@ -278,6 +294,7 @@ private fun LogContentSection(
 @Composable
 private fun LogFilesList(
     logFiles: List<File>,
+    pluginErrors: Map<String, List<com.kingzcheung.xime.plugin.core.security.PluginErrorLog.PluginError>>,
     onSelect: (File) -> Unit,
     onShare: (File) -> Unit,
     onSave: (File) -> Unit,
@@ -285,6 +302,10 @@ private fun LogFilesList(
     context: android.content.Context,
     modifier: Modifier = Modifier
 ) {
+    val pluginNames = remember(pluginErrors) {
+        com.kingzcheung.xime.plugin.core.runtime.PluginManager.getAllInstallPlugins()
+            .associate { it.id to it.name }
+    }
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -307,17 +328,17 @@ private fun LogFilesList(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                         )
                         Text(
-                            text = "暂无日志文件",
+                            text = tr(R.string.s_zanwurizhiwenjian),
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "应用运行正常，没有 WARNING 或 ERROR 日志",
+                            text = tr(R.string.s_yingyongyunxingzhengchang_meiy_cb24c),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                         )
                         Text(
-                            text = "日志目录: ${context.filesDir.absolutePath}/logs/",
+                            text = tr(R.string.s_rizhimulu_logs, context.filesDir.absolutePath),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                         )
@@ -327,7 +348,7 @@ private fun LogFilesList(
         } else {
             item {
                 Text(
-                    text = "日志文件 (${logFiles.size})",
+                    text = tr(R.string.s_rizhiwenjian, logFiles.size),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -346,10 +367,30 @@ private fun LogFilesList(
             item {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "日志位置: ${context.filesDir.absolutePath}/logs/",
+                    text = tr(R.string.s_rizhiweizhi_logs, context.filesDir.absolutePath),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                 )
+            }
+        }
+        
+        if (pluginErrors.isNotEmpty()) {
+            item {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = tr(R.string.s_chajiancuowu, pluginErrors.values.sumOf { it.size }),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            pluginErrors.toList().forEach { (pluginId, errors) ->
+                item(key = "plugin-error-$pluginId") {
+                    PluginErrorsCard(
+                        pluginId = pluginId,
+                        pluginName = pluginNames[pluginId] ?: pluginId,
+                        errors = errors
+                    )
+                }
             }
         }
     }
@@ -407,8 +448,8 @@ private fun LogFileItem(
                     file.name.contains("WARNING") -> "WARNING"
                     file.name.contains("ERROR") -> "ERROR"
                     file.name.contains("FATAL") -> "FATAL"
-                    file.name.startsWith("kime_") -> "APP日志"
-                    file.name.contains("rime.kime") -> "RIME日志"
+                    file.name.startsWith("kime_") -> tr(R.string.s_apprizhi)
+                    file.name.contains("rime.kime") -> tr(R.string.s_rimerizhi)
                     else -> "LOG"
                 }
                 
@@ -419,8 +460,8 @@ private fun LogFileItem(
                         "ERROR" -> MaterialTheme.colorScheme.error
                         "WARNING" -> MaterialTheme.colorScheme.secondary
                         "FATAL" -> MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
-                        "APP日志" -> MaterialTheme.colorScheme.primary
-                        "RIME日志" -> MaterialTheme.colorScheme.tertiary
+                        tr(R.string.s_apprizhi) -> MaterialTheme.colorScheme.primary
+                        tr(R.string.s_rimerizhi) -> MaterialTheme.colorScheme.tertiary
                         else -> MaterialTheme.colorScheme.onSurfaceVariant
                     }
                 )
@@ -428,25 +469,197 @@ private fun LogFileItem(
             
             Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 TextButton(onClick = onSave) {
-                    Text("保存", style = MaterialTheme.typography.labelSmall)
+                    Text(tr(R.string.s_baocun), style = MaterialTheme.typography.labelSmall)
                 }
                 IconButton(onClick = onShare) {
                     Icon(
                         Icons.Default.Share,
-                        contentDescription = "分享",
+                        contentDescription = tr(R.string.s_fenxiang),
                         tint = MaterialTheme.colorScheme.primary
                     )
                 }
                 IconButton(onClick = onDelete) {
                     Icon(
                         Icons.Default.Delete,
-                        contentDescription = "删除",
+                        contentDescription = tr(R.string.s_shanchu),
                         tint = MaterialTheme.colorScheme.error
                     )
                 }
             }
         }
     }
+}
+
+@Composable
+private fun PluginErrorsCard(
+    pluginId: String,
+    pluginName: String,
+    errors: List<com.kingzcheung.xime.plugin.core.security.PluginErrorLog.PluginError>
+) {
+    val context = LocalContext.current
+    var showDetail by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = { showDetail = true },
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = pluginName,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp),
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+                Text(
+                    text = tr(R.string.s_tiao_2, errors.size),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+            errors.takeLast(2).reversed().forEach { error ->
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = "${formatTimestamp(error.timestamp)} · ${categoryLabel(error.category)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = com.kingzcheung.xime.plugin.core.security.PluginErrorLog.userMessage(error),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+            Text(
+                text = tr(R.string.s_dianjichakanxiangqing),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+
+    if (showDetail) {
+        PluginErrorsDetailDialog(
+            pluginId = pluginId,
+            pluginName = pluginName,
+            errors = errors,
+            onCopy = {
+                val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                val text = buildPluginDiagnosticText(
+                    hostVersionName = com.kingzcheung.xime.BuildConfig.VERSION_NAME,
+                    pluginName = pluginName,
+                    pluginId = pluginId,
+                    pluginVersion = com.kingzcheung.xime.plugin.core.runtime.PluginManager
+                        .getAllInstallPlugins().firstOrNull { it.id == pluginId }?.versionName ?: "?",
+                    enabled = true,
+                    errors = errors
+                )
+                clipboard?.setPrimaryClip(
+                    android.content.ClipData.newPlainText(tr(R.string.s_xime_chajianzhenduanxinxi), text)
+                )
+                Toast.makeText(context, tr(R.string.s_zhenduanxinxiyifuzhi), Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = { showDetail = false }
+        )
+    }
+}
+
+@Composable
+private fun PluginErrorsDetailDialog(
+    pluginId: String,
+    pluginName: String,
+    errors: List<com.kingzcheung.xime.plugin.core.security.PluginErrorLog.PluginError>,
+    onCopy: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(tr(R.string.s_cuowuxiangqing, pluginName)) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(340.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                errors.reversed().forEachIndexed { index, error ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Text(
+                                text = "${formatTimestamp(error.timestamp)} · ${categoryLabel(error.category)}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = com.kingzcheung.xime.plugin.core.security.PluginErrorLog.userMessage(error),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = com.kingzcheung.xime.plugin.core.security.PluginErrorLog.userHint(error),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = error.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            error.stackTrace?.let { stack ->
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = stack,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                )
+                            }
+                        }
+                    }
+                    if (index < errors.lastIndex) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
+                }
+                if (errors.isEmpty()) {
+                    Text(
+                        tr(R.string.s_zanwucuowujilu),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onCopy() }) {
+                Text(tr(R.string.s_fuzhizhenduanxinxi))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(tr(R.string.s_guanbi))
+            }
+        }
+    )
 }
 
 private fun formatFileSize(size: Long): String {

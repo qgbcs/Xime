@@ -1,9 +1,14 @@
 package com.kingzcheung.xime.viewmodel
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.kingzcheung.xime.plugin.core.runtime.PluginManager
+import com.kingzcheung.xime.settings.MarketUpdateChecker
 import com.kingzcheung.xime.settings.XimeIndexSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -88,8 +93,8 @@ class PluginMarketViewModel(application: Application) : AndroidViewModel(applica
                 _uiState.update {
                     it.copy(
                         isLoading = false,
-                        errorMessage = if (it.plugins.isEmpty()) (e.message ?: "加载插件市场失败") else it.errorMessage,
-                        toastMessage = if (it.plugins.isEmpty()) null else "刷新失败：${e.message}",
+                        errorMessage = if (it.plugins.isEmpty()) (e.message ?: tr(R.string.s_jiazaichajianshichangshibai)) else it.errorMessage,
+                        toastMessage = if (it.plugins.isEmpty()) null else tr(R.string.s_shuaxinshibai, e.message),
                     )
                 }
             }
@@ -134,12 +139,12 @@ class PluginMarketViewModel(application: Application) : AndroidViewModel(applica
     /** 下载并安装插件；完成后刷新已安装状态。 */
     fun downloadPlugin(pluginId: String, version: String? = null) {
         if (_uiState.value.downloadingId != null) {
-            showToast("有其他插件正在下载，请稍候")
+            showToast(tr(R.string.s_youqitachajianzhengzaixiazai_q_6304d))
             return
         }
         val item = _uiState.value.plugins.firstOrNull { it.plugin.id == pluginId } ?: return
         if (!item.compatible) {
-            showToast("需 App ≥ ${item.minAppVersion}")
+            showToast(tr(R.string.s_xu_app, item.minAppVersion))
             return
         }
         viewModelScope.launch {
@@ -170,10 +175,12 @@ class PluginMarketViewModel(application: Application) : AndroidViewModel(applica
                 )
             }
             val toast = when {
-                !result.success -> result.failureReason ?: "下载/安装失败"
-                else -> "插件「${item.plugin.name}」已安装"
+                !result.success -> result.failureReason ?: tr(R.string.s_xiazai_anzhuangshibai)
+                else -> tr(R.string.s_chajian_yianzhuang, item.plugin.name)
             }
             showToast(toast)
+            // 安装成功立即重算可更新计数（Tab 角标与设置主页角标实时刷新）
+            if (result.success) MarketUpdateChecker.refreshNow(context)
         }
     }
 

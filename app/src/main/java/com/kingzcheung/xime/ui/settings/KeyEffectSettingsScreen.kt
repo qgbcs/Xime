@@ -1,5 +1,9 @@
 package com.kingzcheung.xime.ui.settings
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -48,12 +52,12 @@ fun KeyEffectSettingsContent(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
             TopAppBar(
-                title = { Text("按键效果") },
+                title = { Text(tr(R.string.s_anjianxiaoguo)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "返回"
+                            contentDescription = tr(R.string.s_fanhui)
                         )
                     }
                 },
@@ -72,7 +76,7 @@ fun KeyEffectSettingsContent(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
-                SettingsSection(title = "按键音效", content = {
+                SettingsSection(title = tr(R.string.s_anjianyinxiao), content = {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -81,12 +85,12 @@ fun KeyEffectSettingsContent(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "启用按键音",
+                                text = tr(R.string.s_qiyonganjianyin),
                                 style = MaterialTheme.typography.bodyLarge,
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                text = "按键时播放音效",
+                                text = tr(R.string.s_anjianshibofangyinxiao),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -111,7 +115,7 @@ fun KeyEffectSettingsContent(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "音量大小",
+                                    text = tr(R.string.s_yinliangdaxiao),
                                     style = MaterialTheme.typography.bodyLarge,
                                     fontWeight = FontWeight.Medium
                                 )
@@ -135,15 +139,15 @@ fun KeyEffectSettingsContent(
             }
 
             item {
-                SettingsSection(title = "振动反馈", content = {
+                SettingsSection(title = tr(R.string.s_zhendongfankui), content = {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
-                            text = "触觉反馈模式",
+                            text = tr(R.string.s_chujuefankuimoshi),
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Medium
                         )
                         Text(
-                            text = "选择是否跟随系统设置",
+                            text = tr(R.string.s_xuanzeshifougensuixitongshezhi),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -153,9 +157,9 @@ fun KeyEffectSettingsContent(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             listOf(
-                                "following_system" to "跟随系统",
-                                "enabled" to "启用",
-                                "disabled" to "关闭"
+                                "following_system" to tr(R.string.s_gensuixitong),
+                                "enabled" to tr(R.string.s_qiyong),
+                                "disabled" to tr(R.string.s_guanbi)
                             ).forEach { (value, label) ->
                                 FilterChip(
                                     selected = uiState.hapticMode == value,
@@ -184,12 +188,12 @@ fun KeyEffectSettingsContent(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "按键抬起振动",
+                                    text = tr(R.string.s_anjiantaiqizhendong),
                                     style = MaterialTheme.typography.bodyLarge,
                                     fontWeight = FontWeight.Medium
                                 )
                                 Text(
-                                    text = "手指抬起时触发短振动",
+                                    text = tr(R.string.s_shouzhitaiqishichufaduanzhendong),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -213,13 +217,13 @@ fun KeyEffectSettingsContent(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "按键振动时长",
+                                    text = tr(R.string.s_anjianzhendongshizhang),
                                     style = MaterialTheme.typography.bodyLarge,
                                     fontWeight = FontWeight.Medium
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = if (uiState.pressDuration == 0) "系统默认" else "${uiState.pressDuration} ms",
+                                    text = if (uiState.pressDuration == 0) tr(R.string.s_xitongmoren) else "${uiState.pressDuration} ms",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.primary
                                 )
@@ -244,13 +248,13 @@ fun KeyEffectSettingsContent(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "长按振动时长",
+                                    text = tr(R.string.s_zhanganzhendongshizhang),
                                     style = MaterialTheme.typography.bodyLarge,
                                     fontWeight = FontWeight.Medium
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = if (uiState.longPressDuration == 0) "系统默认" else "${uiState.longPressDuration} ms",
+                                    text = if (uiState.longPressDuration == 0) tr(R.string.s_xitongmoren) else "${uiState.longPressDuration} ms",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.primary
                                 )
@@ -276,13 +280,13 @@ fun KeyEffectSettingsContent(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "按键振动振幅",
+                                        text = tr(R.string.s_anjianzhendongzhenfu),
                                         style = MaterialTheme.typography.bodyLarge,
                                         fontWeight = FontWeight.Medium
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = if (uiState.pressAmplitude == 0) "系统默认" else "${uiState.pressAmplitude}",
+                                        text = if (uiState.pressAmplitude == 0) tr(R.string.s_xitongmoren) else "${uiState.pressAmplitude}",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.primary
                                     )
@@ -307,13 +311,13 @@ fun KeyEffectSettingsContent(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "长按振动振幅",
+                                        text = tr(R.string.s_zhanganzhendongzhenfu),
                                         style = MaterialTheme.typography.bodyLarge,
                                         fontWeight = FontWeight.Medium
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = if (uiState.longPressAmplitude == 0) "系统默认" else "${uiState.longPressAmplitude}",
+                                        text = if (uiState.longPressAmplitude == 0) tr(R.string.s_xitongmoren) else "${uiState.longPressAmplitude}",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.primary
                                     )
@@ -329,7 +333,7 @@ fun KeyEffectSettingsContent(
                         }
 
                         Text(
-                            text = "当自定义时长和振幅均设为 0 时（即「系统默认」），将使用系统默认的触觉反馈效果。",
+                            text = tr(R.string.s_dangzidingyishizhanghezhenfuju_2bff0),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)

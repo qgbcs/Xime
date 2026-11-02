@@ -1,5 +1,9 @@
 package com.kingzcheung.xime.viewmodel
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import android.app.Application
 import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
@@ -82,13 +86,13 @@ class SmartPredictionSettingsViewModel(application: Application) : AndroidViewMo
         if (_uiState.value.isEnabled && !_uiState.value.hasModel) {
             _uiState.update { it.copy(isEnabled = false) }
             SettingsPreferences.setSmartPredictionEnabled(context, false)
-            _uiState.update { it.copy(toastMessage = "模型文件不存在，已自动关闭智能联想") }
+            _uiState.update { it.copy(toastMessage = tr(R.string.s_moxingwenjianbucunzai_yizidong_00a8e)) }
         }
     }
     
     fun setEnabled(enabled: Boolean) {
         if (enabled && !_uiState.value.hasModel) {
-            _uiState.update { it.copy(toastMessage = "请先下载模型文件") }
+            _uiState.update { it.copy(toastMessage = tr(R.string.s_qingxianxiazaimoxingwenjian)) }
             return
         }
         
@@ -120,7 +124,7 @@ class SmartPredictionSettingsViewModel(application: Application) : AndroidViewMo
             )}
             
             if (!success) {
-                _uiState.update { it.copy(toastMessage = "模型加载失败，请检查模型文件") }
+                _uiState.update { it.copy(toastMessage = tr(R.string.s_moxingjiazaishibai_qingjiancha_f290f)) }
             }
         }
     }
@@ -161,7 +165,7 @@ class SmartPredictionSettingsViewModel(application: Application) : AndroidViewMo
             _uiState.update { it.copy(
                 isDownloading = true,
                 downloadProgress = 0f,
-                downloadStatus = "准备下载..."
+                downloadStatus = tr(R.string.s_zhunbeixiazai)
             )}
             
             try {
@@ -182,7 +186,7 @@ class SmartPredictionSettingsViewModel(application: Application) : AndroidViewMo
                 
                 filesToDownload.forEachIndexed { index, (fileName, targetFile) ->
                     _uiState.update { it.copy(
-                        downloadStatus = "下载 $fileName (${index + 1}/$totalFiles)..."
+                        downloadStatus = tr(R.string.s_xiazai_2, fileName, index + 1, totalFiles)
                     )}
                     
                     withContext(Dispatchers.IO) {
@@ -210,9 +214,9 @@ class SmartPredictionSettingsViewModel(application: Application) : AndroidViewMo
                 }
                 
                 _uiState.update { it.copy(
-                    downloadStatus = "下载完成",
+                    downloadStatus = tr(R.string.s_xiazaiwancheng),
                     hasModel = true,
-                    toastMessage = "模型下载成功"
+                    toastMessage = tr(R.string.s_moxingxiazaichenggong)
                 )}
                 
                 if (_uiState.value.isInitialized) {
@@ -224,8 +228,8 @@ class SmartPredictionSettingsViewModel(application: Application) : AndroidViewMo
                 }
             } catch (e: Exception) {
                 _uiState.update { it.copy(
-                    downloadStatus = "下载失败: ${e.message}",
-                    toastMessage = "下载失败: ${e.message}"
+                    downloadStatus = tr(R.string.s_xiazaishibai, e.message),
+                    toastMessage = tr(R.string.s_xiazaishibai, e.message)
                 )}
             } finally {
                 _uiState.update { it.copy(
@@ -258,7 +262,7 @@ class SmartPredictionSettingsViewModel(application: Application) : AndroidViewMo
                 hasModel = false,
                 isEnabled = false,
                 isInitialized = false,
-                toastMessage = "模型已删除"
+                toastMessage = tr(R.string.s_moxingyishanchu)
             )}
         }
     }

@@ -1,5 +1,7 @@
 package com.kingzcheung.xime.service
 
+import com.kingzcheung.xime.rime.RimeCandidate
+
 data class CandidateState(
     val candidates: List<String> = emptyList(),
     val candidateComments: List<String> = emptyList(),

@@ -1,3 +1,9 @@
+# ── 内置配置基座（随 APK 分发，升级时被覆盖，勿直接修改）──
+# 用户自定义请写同目录 xime.custom.yaml：
+#   · 只写要改的键，未写的键自动回退本文件的值；列表（layout.rows / schemas / base_urls）需整段写出
+#   · 它不是 Rime 的 patch 层：直接写 keyboard: / style:，写 patch: 会被静默忽略
+# 完整合并规则见 docs/config-merge-rules.md
+
 metadata:
   app_name: Xime
   app_version: ">=2.5.0"
@@ -18,11 +24,26 @@ xime_index:
 
 style:
   # 浅色/深色模式的配色，deep 为降级后备
+  # 可选值：内置主题 id、color_schemes 中定义的 id、或 dynamic（Material You 动态配色，随壁纸取色，仅 Android 12+ 生效）
   color_scheme:
     light: ocean_blue
     dark: slate_gray
   # 显示模式：0=浅色, 1=深色, 2=跟随系统（默认）
   dark_mode: 2
+
+# ── 邻键误触纠错 ──
+# schemas 声明启用纠错的方案（schema_id），未声明的方案不参与纠错（按键/候选零影响）。
+# 语言侧证据（词频/词条）永远用方案自己的词典：五笔查五笔词典、拼音查拼音词典，
+# 不跨码制混用。第三方方案在 xime.custom.yaml 同路径追加即可，与内置列表取并集：
+#   correction:
+#     schemas: [wubi98, wanxiang]
+# 注意：①仅全拼/五笔这类「按键字母 = 编码」的方案可纠错；双拼（字母经拼写运算
+# 变换）、九键（数字键）会在按键-编码对齐检查处自动跳过，不会误纠。②纠错打分的
+# 词频区分度来自方案词典的 weight 列（有则用真值）；无 weight 的词典按
+# 「完整词条 / 合法前缀 / 非法码」三值判定（仍可纠错，词间区分度弱一些），
+# 任何时候都不会用其他方案的频次。
+correction:
+  schemas: [wubi86, wubi86_pinyin, pinyin_simp]
 
 # 配色方案可配置背景类型（纯色/渐变/图片），默认均为纯色。
 # 如需渐变/图片背景，在 xime.custom.yaml 的对应主题下覆盖 keyboard_background 即可：
@@ -54,13 +75,30 @@ style:
 #   candidate_bar_bg_color                     - 候选栏底色
 #   key_text_color / key_text_color_dark       - 按键文字色（亮/暗）
 #   candidate_text_color / _dark               - 候选文字色（亮/暗）
-#   candidate_selected_text_color / _dark      - 候选选中文字色（亮/暗），未设置时回退到
-#                                                 key_text_color（图片背景看不清时建议单独配置）
+#   candidate_selected_text_color / _dark      - 候选选中文字色（亮/暗），未设置时亮色回退
+#                                                 primary_color 原色、暗色回退 primary 提亮 45%
+#                                                 （灰色系 primary 提亮后仍偏暗时建议单独配置）
+#
+# ── 暗色配色约束（新增皮肤时请遵守，详见 docs/theme-dark-colors.md）──
+# 1. 暗色功能键不再默认取 primary_color：主色的 OKLCH 彩度普遍在 0.16~0.21，
+#    整块铺在深底上会"发光"。请显式写 special_key_bg_color_dark，彩度压到 C ≤ 0.13。
+# 2. 渐变皮肤（type: gradient）的 colors_dark 暗端请压到 OKLCH L ≤ 0.32 / C ≤ 0.10：
+#    该色占了整块键面，是暗环境里最大的亮度来源。
+# 3. 深底皮肤的功能键与普通键亮度比（vs 普通键）建议 ≥ 1.3，否则只剩色相差异，看不清。
 #
 color_schemes:
+  # 动态配色（Material You）：颜色由运行时从壁纸调色板派生，随壁纸变化，
+  # 仅 Android 12+（API 31+）生效，低版本不显示此方案。
+  # dynamic_color: true 时忽略静态颜色字段；style.color_scheme 可用 dynamic 引用。
+  dynamic:
+    name: "动态配色"
+    dynamic_color: true
+
   lavender_purple:
     name: "薰衣草紫"
     primary_color: 0x8F73E2
+    # 暗色功能键：主色 C=0.162 在 #1E1838 上偏艳，压到 C=0.13（明度不变，紫调仍可辨）。
+    special_key_bg_color_dark: 0x8d79d1
     keyboard_background:
       type: solid
       color: 0xE3E4E8
@@ -69,6 +107,8 @@ color_schemes:
   ocean_blue:
     name: "海洋蔚蓝"
     primary_color: 0x1A73E8
+    # 暗色功能键：主色 C=0.195（全表第二高）压在 #0D1B33 上荧光感强，压到 C=0.13。
+    special_key_bg_color_dark: 0x4478c4
     keyboard_background:
       type: solid
       color: 0xE3E4E8
@@ -77,14 +117,19 @@ color_schemes:
   sunset_orange:
     name: "落日橙光"
     primary_color: 0xE65100
+    # 深色功能键（确定/删除等）降饱和，避免暗光下刺眼；亮色仍回退 primary 派生
+    special_key_bg_color_dark: 0xD97757
     keyboard_background:
       type: solid
       color: 0xE3E4E8
       color_dark: 0x1A0D00
-  
+
   slate_gray:
     name: "沉稳石墨"
     primary_color: 0x424242
+    # 灰色系 primary 提亮后仍偏暗（≈0x979797），深色模式首选项单独提亮保证辨识度
+    # （非纯白，高对比在暗光下刺眼；普通候选为 0xE8EAED，靠字重+高亮底区分）
+    candidate_selected_text_color_dark: 0xF0F0F0
     keyboard_background:
       type: solid
       color: 0xE3E4E8
@@ -93,6 +138,10 @@ color_schemes:
   rose_pink:
     name: "浪漫玫瑰"
     primary_color: 0xAD1457
+    # 深色下功能键整块铺色：直接取主色是 79% 饱和的洋红，压在 #2D1020 上过于刺眼。
+    # 降饱和会变成藕灰粉（撞樱花粉黛的粉色观感），故改为压明度到 33%、保留 64% 饱和，
+    # 走深酒红：暗色块不刺眼，同时保住玫瑰的色彩身份。
+    special_key_bg_color_dark: 0x8B1E42
     keyboard_background:
       type: solid
       color: 0xE3E4E8
@@ -109,6 +158,9 @@ color_schemes:
   sakura_pink:
     name: "樱花粉黛"
     primary_color: 0xe91e63
+    # 该皮肤深色模式为浅色视觉，功能键深色也用浅粉（与亮色派生值一致），
+    # 避免饱和粉红大色块；文字色由宿主按背景亮度自适应取按键文字色
+    special_key_bg_color_dark: 0xFAD2E0
     keyboard_background:
       type: solid
       color: 0xfdf0f4
@@ -196,7 +248,8 @@ color_schemes:
     keyboard_background:
       type: gradient
       colors: [0xe0f7fa, 0xb2ebf2]
-      colors_dark: [0x00332e, 0x015c56]
+      # 暗端原为 0x015c56（L0.43）：功能键彩度本身不高（C0.118），主要问题是背景偏亮，压到 L0.32 以下即可。
+      colors_dark: [0x001915, 0x003d38]
       angle: 90
     key_bg_color: 0xe6ffffff
     key_bg_color_dark: 0x5affffff
@@ -208,10 +261,13 @@ color_schemes:
   sunset_gradient:
     name: "落日余晖"
     primary_color: 0xff7043
+    # 暗色功能键：主色 C=0.185 / L0.71，是全部主题里最亮的高彩度块。压到 C=0.13 / L0.66。
+    special_key_bg_color_dark: 0xd57355
     keyboard_background:
       type: gradient
       colors: [0xfff3e0, 0xffccbc]
-      colors_dark: [0x3e1a12, 0x8c2f1d]
+      # 暗端原为 0x8c2f1d（L0.44 / C0.13）：锈红大面积铺色在暗环境偏亮，压到 L0.32 以下。
+      colors_dark: [0x260703, 0x5a170a]
       angle: 90
     key_bg_color: 0xe6ffffff
     key_bg_color_dark: 0x5affffff
@@ -223,10 +279,13 @@ color_schemes:
   ocean_gradient:
     name: "深海渐变"
     primary_color: 0x1e88e5
+    # 暗色功能键：主色 C=0.167，且与普通键亮度几乎同层（1.1:1）唯一区别就是"很蓝"，故压到 C=0.13。
+    special_key_bg_color_dark: 0x4f96df
     keyboard_background:
       type: gradient
       colors: [0xe3f2fd, 0x90caf9]
-      colors_dark: [0x0b2d52, 0x0d47a1]
+      # 暗端原为 0x0d47a1（L0.42 / C0.16）：压到 L0.32 以下，避免整块键面发亮。
+      colors_dark: [0x01132a, 0x0f2f63]
       angle: 90
     key_bg_color: 0xe6ffffff
     key_bg_color_dark: 0x5affffff
@@ -238,10 +297,13 @@ color_schemes:
   purple_gradient:
     name: "紫梦渐变"
     primary_color: 0x7e57c2
+    # 暗色功能键：原与普通键亮度几乎相同（1.17:1），只靠紫色区分；压彩度到 C=0.13 并提亮到 L0.66 拉开层次。
+    special_key_bg_color_dark: 0x9c7fd7
     keyboard_background:
       type: gradient
       colors: [0xede7f6, 0xd1c4e9]
-      colors_dark: [0x271852, 0x4527a0]
+      # 暗端原为 0x4527a0（C=0.181 是全表最高彩度），压到 C0.10 / L0.31。
+      colors_dark: [0x130d29, 0x2f2661]
       angle: 90
     key_bg_color: 0xe6ffffff
     key_bg_color_dark: 0x5affffff
@@ -253,10 +315,14 @@ color_schemes:
   rose_gradient:
     name: "玫瑰渐变"
     primary_color: 0xec407a
+    # 暗色功能键压彩度：主色 OKLCH C=0.21 是全部主题最高，压在深底上像荧光块。
+    # 压到 C=0.13（与默认主题 #6750A4 同档），保留色相与明度，与普通键拉开 1.4:1 亮度层次。
+    special_key_bg_color_dark: 0xd36d87
     keyboard_background:
       type: gradient
       colors: [0xfce4ec, 0xf8bbd0]
-      colors_dark: [0x3b0a22, 0x8c1356]
+      # 暗端原为 0x8c1356（L0.43 / C0.16）：整块键面在暗环境下像发光板，压到 L0.32 以下。
+      colors_dark: [0x240614, 0x551535]
       angle: 90
     key_bg_color: 0xe6ffffff
     key_bg_color_dark: 0x5affffff
@@ -268,10 +334,13 @@ color_schemes:
   forest_gradient:
     name: "森林迷雾"
     primary_color: 0x43a047
+    # 暗色功能键：主色 C=0.154 且与普通键亮度同层（1.19:1），压到 C=0.13 / L0.66。
+    special_key_bg_color_dark: 0x5ca75d
     keyboard_background:
       type: gradient
       colors: [0xe8f5e9, 0xc8e6c9]
-      colors_dark: [0x0f3016, 0x1b5e20]
+      # 暗端原为 0x1b5e20（L0.43 / C0.12）：压到 L0.32 以下，避免整块键面发亮。
+      colors_dark: [0x001904, 0x013e09]
       angle: 90
     key_bg_color: 0xe6ffffff
     key_bg_color_dark: 0x5affffff
@@ -330,26 +399,55 @@ color_schemes:
     candidate_text_color_dark: 0xE4C656
 
 # ── 26 键全键盘手势配置 ──
-# 每个按键可定义 4 个手势：
-#   tap:        点按
-#   swipe_up:   上滑
-#   swipe_down: 下滑
-#   long_press: 长按（数组，弹出气泡后左右滑动选择）
+# 每个按键可定义以下手势：
+#   tap:         点按
+#   double_tap:  双击
+#   swipe_up:    上滑
+#   swipe_down:  下滑
+#   swipe_left:  左滑
+#   swipe_right: 右滑
+#   long_press:  长按（数组，弹出气泡后左右滑动选择）
+#
+# 左右滑与整片键盘滑动移动光标的关系：
+#   在键盘区域横向滑动默认用于移动光标；若某键配置了 swipe_left / swipe_right，
+#   该键上的横向滑动即由按键接管（执行配置动作），不再移动光标；未配置左右滑的键
+#   横向滑动仍用于移动光标。
 #
 # 每个手势的值格式：
-#   - 字符串 "a" → 上屏该文本，显示也是它
+#   - 字符串 "a" → 按槽位默认动作（tap 为 send_rime：走按键路由进 rime，与手敲
+#     该键一致；swipe/长按为 commit：输出 value 直接上屏），显示也是它。
+#     本文件已显式写出 action: commit 的是真·直接上屏的手势：长按气泡候选、
+#     九键/笔画键上滑输数字；全键盘字母区的上滑保持简写——槽位默认 commit，
+#     但执行时沿用按键路由（与手敲该键一致，非绕过引擎直出）
 #   - { label, action, value }
+#     （对象形式省略 action 时取槽位默认）
 #     label:  按键上显示的文字
-#     action: commit（上屏）, command（内置命令，value 为命令名）, select_all, copy, cut,
-#             paste, line_start, line_end, undo, none, repeat
-#     command 可用命令：
+#     action: send_rime（走按键路由进 rime 组合，tap 的默认，与手敲该键同一路由）,
+#             commit（输出 value 直接上屏，swipe/长按的默认）,
+#             command（内置命令，value 为命令名）,
+#             select_all, copy, cut, paste, line_start, line_end, undo, none, repeat,
+#             功能键：delete, enter, newline（固定换行，无视编辑器回车动作）, space, repeat_space（value 为次数，默认 5），
+#                     clear_all, undo_clear, toggle_ascii, toggle_symbols, toggle_shift,
+#                     voice（进入语音输入）, switch_route（value: emoji|symbol|clipboard）
+#     command 可用命令（会走键盘按键路由，与"点击对应按键"等价）：
 #       clear_composition - 清空当前输入编码和候选词
+#       show_ime_picker   - 显示系统输入法选择器
+#       mode_change       - 切换符号 / 数字面板（与 ?123 同）
+#       mode_change_number         - 切到数字面板
+#       mode_change_common_symbol  - 切到常用符号面板
+#       shift_single      - 单击 Shift 语义
+#       shift_caps        - 双击 Shift 语义（锁定大写）
+#       emoji / symbol    - 打开表情 / 符号面板
 #     value:  上屏时的输出文本（不指定则用 label）
+#   - 键级可选 width：列宽比例（数字）。字母键默认等宽（1），功能键有内置默认；
+#     设置后仅改变该键宽度占比，不显示为文字。
 #
 # long_press 示例（弹出多个选项供滑动选择）：
 #   long_press: { display: "bubble", values: [ { label: "大写", action: "commit", value: "A" }, { label: "Ä", action: "commit", value: "ä" } ] }
 #   # 也支持字符串简写：
 #   long_press: { display: "bubble", values: ["q", "Q"] }
+#   # 单个动作可直写（不写 values，等价于只含这一项的列表）；bubble: false 时不弹气泡、长按直接执行：
+#   long_press: { label: "语音", action: "voice", bubble: false }
 keyboard:
   # ── 键盘颜色配置（可选，不设置则使用内置默认值）──
   # 背景色已由 color_schemes.*.keyboard_background 接管
@@ -373,8 +471,30 @@ keyboard:
   
   # ── 按键配置（可选，不设置则使用默认值）──
   # corner_radius:      按键圆角半径（dp，默认 8），独立于 shadow.shape_radius
+  # spacing_x:          按键横向间距（dp，默认 2），未设置时各键盘使用自身默认值
+  # spacing_y:          按键竖向间距（dp，默认 4.25；横屏默认 2），未设置时各键盘使用自身默认值
+  # 各键盘可单独覆盖圆角与间距（可选），键盘名：qwerty / t9 / number / stroke / symbol
+  # （handwriting 手写键盘的键面尺寸写在代码里，圆角同样认 handwriting 这个名字）；
+  # 平板设备档另可写 <键盘名>_tablet（平板上覆盖同名基础覆盖，见下方示例）。
+  # 例如：t9: { corner_radius: 8, spacing_x: 1, spacing_y: 2 }
   key:
     corner_radius: 8
+    spacing_x: 2
+    spacing_y: 4.25
+    t9: { spacing_x: 2, spacing_y: 2 }
+    number: { spacing_x: 2, spacing_y: 2 }
+    stroke: { spacing_x: 2, spacing_y: 2 }
+    symbol: { spacing_x: 2, spacing_y: 4 }
+    # 平板设备档：面板与平板 26 键同档——键面内衬 4/6dp（相邻键面横 8dp / 竖 12dp），
+    # 配合键盘区两侧 16dp 外围留白，键面距屏幕边同为 20dp（手机不受影响）。
+    # 圆角：这里没写覆盖时按设备档——平板所有键盘（26 键 / 数字 · 常用符号面板 / 九键 / 笔画 /
+    # 手写）统一用大键面档（不小于 14dp），手机用上面的全局 corner_radius；
+    # 要单独调就写键盘名，例如
+    #   qwerty_tablet: { corner_radius: 12 } / symbol: { corner_radius: 10 }
+    t9_tablet: { spacing_x: 4, spacing_y: 6 }
+    stroke_tablet: { spacing_x: 4, spacing_y: 6 }
+    number_tablet: { spacing_x: 4, spacing_y: 6 }
+    symbol_tablet: { spacing_x: 4, spacing_y: 6 }
 
   # ── 按键阴影（可选，不设置则使用默认值）──
   # enabled:            是否启用阴影
@@ -382,16 +502,38 @@ keyboard:
   shadow:
     enabled: true
     elevation: 0.5
+
+  # ── 字体配置（可选，配置为空时使用系统默认字体）──
+  # 字体路径查找规则：
+  #   - 绝对路径（以 / 开头）：从根目录找起，如 /fonts/myfont.ttf
+  #   - 相对路径（包含 /）：相对于 rime/ 目录，如 fonts/myfont.ttf
+  #   - 仅文件名：相对于 rime/ 目录查找，如 myfont.ttf
+  fonts:
+    key_font: ""
+    key_label_font: ""
+    candidate_font: ""
+    comment_font: ""
+
   qwerty:
-    # ── 按键布局模式 ──
+    # ── 按键布局模式（仅 26 键键盘支持；九键/笔画等其余键盘固定 standard，配置不生效）──
     # standard: 默认布局（主文字居中，下滑提示在底部）
     # compact: 紧凑布局（主文字在左上，下滑提示占满键帽中部）
     button_layout: standard
     layout:
+      # ── 行宽与对齐（均可选，写在 layout 下作用于整段键盘）──
+      # columns:   参考列数，缺省取首行键数；uniform 下决定行宽与键宽
+      # row_align: uniform（默认）= 键宽按列对齐、行居中；stretch = 行内均分铺满
+      # 行可写成数组（继承键盘级策略），或对象形式做行级覆盖：
+      #   - { keys: [a, s, d, f, g, h, j, k, l], align: stretch }   # 该行满宽均分
+      #   - { keys: [z, x, c, v, b, n, m], width: 0.7 }             # 该行占 70% 宽（居中）
+      # columns: 10
+      # row_align: uniform
       rows:
         - [q, w, e, r, t, y, u, i, o, p]
         - [a, s, d, f, g, h, j, k, l]
-        - [z, x, c, v, b, n, m]
+        - [shift, z, x, c, v, b, n, m, delete]
+        # 第四行（控制行）：位置/是否出现由本 rows 决定，行为在下方 keys.<id> 配置
+        - [mode_change, comma, space, earth, enter]
     keys:
       # ── 第一行 ──
       # long_press 顺序：swipe_up 值 → 小写 → 大写 → 带变音符号的相似字母
@@ -439,10 +581,20 @@ keyboard:
     # compact: 紧凑布局（主文字在左上，下滑提示占满键帽中部）
     button_layout: standard
     layout:
+      # ── 行宽与对齐（均可选，写在 layout 下作用于整段键盘）──
+      # columns:   参考列数，缺省取首行键数；uniform 下决定行宽与键宽
+      # row_align: uniform（默认）= 键宽按列对齐、行居中；stretch = 行内均分铺满
+      # 行可写成数组（继承键盘级策略），或对象形式做行级覆盖：
+      #   - { keys: [a, s, d, f, g, h, j, k, l], align: stretch }   # 该行满宽均分
+      #   - { keys: [z, x, c, v, b, n, m], width: 0.7 }             # 该行占 70% 宽（居中）
+      # columns: 10
+      # row_align: uniform
       rows:
         - [q, w, e, r, t, y, u, i, o, p]
         - [a, s, d, f, g, h, j, k, l]
-        - [z, x, c, v, b, n, m]
+        - [shift, z, x, c, v, b, n, m, delete]
+        # 第四行（控制行）：位置/是否出现由本 rows 决定，行为在下方 keys.<id> 配置
+        - [mode_change, comma, space, earth, enter]
     keys:
       # ── 第一行 ──
       q: { tap: "q", swipe_up: "1", long_press: { display: "bubble", values: ["1", "q", "Q"] } }

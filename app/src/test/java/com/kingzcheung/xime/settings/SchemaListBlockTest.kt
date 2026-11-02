@@ -46,8 +46,7 @@ class SchemaListBlockTest {
     }
 
     @Test
-    fun `replaces existing block with a single enabled schema`() {
-        val result = SchemaManager.replaceSchemaListBlock(defaultYaml, listOf("quick5"))
+    fun `replaces existing block with a single enabled schema`() {        val result = SchemaManager.replaceSchemaListBlock(defaultYaml, listOf("quick5"))
         assertEquals(listOf("quick5"), extractSchemaList(result))
         assertFalse("old schemas must be gone", result.contains("wubi86"))
     }
@@ -84,9 +83,36 @@ class SchemaListBlockTest {
     }
 
     @Test
-    fun `empty enabled list leaves text unchanged`() {
+    fun `empty enabled list clears schema_list`() {
         val result = SchemaManager.replaceSchemaListBlock(defaultYaml, emptyList())
-        assertEquals(defaultYaml, result)
+        assertEquals(emptyList<String>(), extractSchemaList(result))
+        assertTrue(result.contains("schema_list: []"))
+        assertTrue(result.contains("config_version"))
+    }
+
+    @Test
+    fun `empty then non-empty keeps a single schema_list block`() {
+        val cleared = SchemaManager.replaceSchemaListBlock(defaultYaml, emptyList())
+        val result = SchemaManager.replaceSchemaListBlock(cleared, listOf("wubi86"))
+        assertEquals(1, Regex("(?m)^schema_list:").findAll(result).count())
+        assertEquals(listOf("wubi86"), extractSchemaList(result))
+    }
+
+    @Test
+    fun `writing empty twice stays a single empty block`() {
+        val once = SchemaManager.replaceSchemaListBlock(defaultYaml, emptyList())
+        val twice = SchemaManager.replaceSchemaListBlock(once, emptyList())
+        assertEquals(1, Regex("(?m)^schema_list:").findAll(twice).count())
+        assertEquals(emptyList<String>(), extractSchemaList(twice))
+    }
+
+    @Test
+    fun `dedupes duplicate schema_list blocks from earlier writes`() {
+        val duplicated = defaultYaml + "\n\nschema_list:\n  - schema: quick5\n"
+        val result = SchemaManager.replaceSchemaListBlock(duplicated, listOf("wubi86"))
+        assertEquals(1, Regex("(?m)^schema_list:").findAll(result).count())
+        assertEquals(listOf("wubi86"), extractSchemaList(result))
+        assertTrue(result.contains("switcher:"))
     }
 
     @Test
@@ -105,5 +131,42 @@ class SchemaListBlockTest {
         val result = SchemaManager.replaceSchemaListBlock(noBlock, listOf("quick5"))
         assertEquals(listOf("quick5"), extractSchemaList(result))
         assertTrue(result.contains("switcher:"))
+    }
+
+    // ---- parseSchemaListBlock：读取方案包 default.yaml 的开箱启用集 ----
+
+    @Test
+    fun `解析白霜包 default_yaml 的 schema_list`() {
+        val text = """
+            schema_list:
+              - schema: rime_frost             # 白霜拼音（全拼）
+              - schema: rime_frost_double_pinyin_mspy
+              - schema: rime_frost_t9
+              # - schema: rime_frost_double_pinyin_abc
+              - schema: rime_frost_wubi86
+
+            menu:
+              page_size: 8
+        """.trimIndent()
+        assertEquals(
+            listOf(
+                "rime_frost",
+                "rime_frost_double_pinyin_mspy",
+                "rime_frost_t9",
+                "rime_frost_wubi86",
+            ),
+            SchemaManager.parseSchemaListBlock(text),
+        )
+    }
+
+    @Test
+    fun `解析时忽略注释与引号`() {
+        val text = "schema_list:\n  - schema: \"a\" # x\n  - schema: 'b'\n"
+        assertEquals(listOf("a", "b"), SchemaManager.parseSchemaListBlock(text))
+    }
+
+    @Test
+    fun `没有 schema_list 时返回空`() {
+        assertTrue(SchemaManager.parseSchemaListBlock("menu:\n  page_size: 8\n").isEmpty())
     }
 }

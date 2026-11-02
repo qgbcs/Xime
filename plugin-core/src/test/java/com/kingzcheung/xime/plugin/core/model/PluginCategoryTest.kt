@@ -22,6 +22,12 @@ class PluginCategoryTest {
     }
 
     @Test
+    fun `fromId maps tool`() {
+        assertEquals(PluginCategory.TOOL, PluginCategory.fromId("tool"))
+        assertEquals(PluginCategory.TOOL, PluginCategory.fromId("  Tool "))
+    }
+
+    @Test
     fun `fromId is case-insensitive and trims`() {
         assertEquals(PluginCategory.EMOJI, PluginCategory.fromId("  Emoji "))
     }
@@ -39,6 +45,8 @@ class PluginCategoryTest {
         assertEquals(Activation.MULTI, PluginCategory.EMOJI.activation)
         assertEquals(Activation.SINGLE, PluginCategory.ASR.activation)
         assertEquals(Activation.MULTI, PluginCategory.PREDICTION.activation)
+        assertEquals(Activation.SINGLE, PluginCategory.CLIPBOARD_SYNC.activation)
+        assertEquals(Activation.MULTI, PluginCategory.TOOL.activation)
         assertEquals(Activation.NONE, PluginCategory.UNKNOWN.activation)
     }
 

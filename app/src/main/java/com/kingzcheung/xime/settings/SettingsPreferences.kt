@@ -2,6 +2,7 @@ package com.kingzcheung.xime.settings
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.kingzcheung.xime.clipboard.ClipboardImageStore
 import com.kingzcheung.xime.plugin.core.runtime.PluginManager
 
 object SettingsPreferences {
@@ -9,9 +10,14 @@ object SettingsPreferences {
     private const val KEY_CURRENT_SCHEMA = "current_schema"
     /** 双写标记：仅新版本双写后置 true，本地值才可信（旧版本只写 rime，本地是过时迁移值） */
     private const val KEY_CURRENT_SCHEMA_DUAL = "current_schema_dual"
-    private const val KEY_DEPLOYMENT_DONE = "deployment_done"
-    private const val KEY_DEPLOYMENT_HASH = "deployment_hash"
-    private const val KEY_RIME_ASSETS_VERSION = "rime_assets_version"
+    /** 启用方案列表（有序，逗号连接；schema id 为 [a-z0-9_] 无逗号），持久真相。 */
+    private const val KEY_ENABLED_SCHEMAS = "enabled_schemas"
+    /** 当前活动方案包 id（单活动包模型）；null 表示用户主动卸载了所有包。 */
+    private const val KEY_ACTIVE_PACKAGE_ID = "active_package_id"
+    /** default.custom.yaml 的 schema_list 是否已迁移进 prefs（一次性）。 */
+    private const val KEY_DEFAULT_CUSTOM_MIGRATED = "default_custom_schema_list_migrated"
+    private const val KEY_SCHEME_SELECTION_MIGRATED = "scheme_selection_v2_migrated"
+    private const val KEY_PENDING_DICT_MERGE = "pending_dict_merge"
     private const val KEY_SETUP_COMPLETED = "setup_completed"
     private const val KEY_DARK_MODE = "dark_mode"
     private const val KEY_VERBOSE_LOGGING = "verbose_logging"
@@ -30,10 +36,13 @@ object SettingsPreferences {
     const val KEY_SMART_PREDICTION_ENABLED = "smart_prediction_enabled"
     private const val KEY_PREDICTION_MODEL_REPO = "prediction_model_repo"
     private const val KEY_PREDICTION_SELECTED_MODEL = "prediction_selected_model"
+    private const val KEY_SPACE_COMMIT_ASSOCIATION = "space_commit_association"
+    private const val KEY_ASSOCIATION_SINGLE_MODE = "association_single_mode"
     
     const val KEY_STT_ENABLED = "stt_enabled"
     const val KEY_STT_ONLINE_PLUGIN_ID = "stt_online_plugin_id"
     const val KEY_STT_USE_LOCAL = "stt_use_local"
+    const val KEY_STT_KEEP_ENGINE_ALIVE = "stt_keep_engine_alive"
     const val KEY_STT_DEBUG_RECORD = "stt_debug_record"
     const val KEY_STT_MUTE_OTHERS = "stt_mute_others"
     const val KEY_STT_FLOATING_LABEL = "stt_floating_label"
@@ -46,9 +55,17 @@ object SettingsPreferences {
     @JvmStatic
     var defaultDarkMode: Int = 2
     
-    const val KEY_SWIPE_UP_HINTS_ENABLED = "swipe_up_hints_enabled"
-    const val KEY_SWIPE_DOWN_HINTS_ENABLED = "swipe_down_hints_enabled"
-    const val KEY_SHOW_PRESS_BUBBLE = "show_press_bubble"
+    const val KEY_LANDSCAPE_SPLIT_KEYBOARD_ENABLED = "landscape_split_keyboard_enabled"
+    const val KEY_HARDWARE_KEYBOARD_DETECTION_ENABLED = "hardware_keyboard_detection_enabled"
+
+    private const val KEY_RIME_INSTALLATION_ID = "rime_installation_id"
+
+    private const val KEY_LAST_RIME_SYNC_AT = "last_rime_sync_at"
+    private const val KEY_LAST_BACKUP_AT = "last_backup_at"
+    private const val KEY_LAST_SYNC_ERROR = "last_sync_error"
+    private const val KEY_LAST_SYNC_ERROR_AT = "last_sync_error_at"
+    private const val KEY_LAST_BACKUP_ERROR = "last_backup_error"
+    private const val KEY_LAST_BACKUP_ERROR_AT = "last_backup_error_at"
 
     private const val KEY_MODE_CHANGE_TARGET = "mode_change_target"
 
@@ -59,13 +76,32 @@ object SettingsPreferences {
     fun setModeChangeTargetIsNumber(context: Context, isNumber: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_MODE_CHANGE_TARGET, isNumber).apply()
     }
+
+    private const val KEY_AUTO_NUMBER_KEYBOARD = "auto_number_keyboard_for_number_fields"
+
+    /** 进入纯数字输入框（号码/验证码等）时自动弹出数字键盘，默认开启。 */
+    fun isAutoNumberKeyboardEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_AUTO_NUMBER_KEYBOARD, true)
+    }
+
+    fun setAutoNumberKeyboardEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_AUTO_NUMBER_KEYBOARD, enabled).apply()
+    }
+
+    fun isHardwareKeyboardDetectionEnabled(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_HARDWARE_KEYBOARD_DETECTION_ENABLED, true)
+
+    fun setHardwareKeyboardDetectionEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_HARDWARE_KEYBOARD_DETECTION_ENABLED, enabled).apply()
+    }
     
     private const val KEY_LAYOUT_PREFIX = "layout_pref_"
     
     private const val KEY_KEYBOARD_HEIGHT_DP = "keyboard_height_dp"
     private const val KEY_KEYBOARD_HEIGHT_DP_LANDSCAPE = "keyboard_height_dp_landscape"
     const val DEFAULT_KEYBOARD_HEIGHT_PERCENT = 35
-    const val DEFAULT_KEYBOARD_HEIGHT_PERCENT_LANDSCAPE = 49
+    /** 横屏默认高度 = 竖屏高度（长边）× 此百分比。约等于旧值（横屏短边 × 49%），但基数稳定、与竖屏语义统一 */
+    const val DEFAULT_KEYBOARD_HEIGHT_PERCENT_LANDSCAPE = 25
 
     private const val KEY_TOOLBAR_BUTTONS = "toolbar_buttons"
     private val DEFAULT_TOOLBAR_BUTTONS = com.kingzcheung.xime.keyboard.ToolbarButton.DEFAULT_VISIBLE.joinToString(",") { it.id }
@@ -79,14 +115,9 @@ object SettingsPreferences {
         getPrefs(context).edit().putString(KEY_TOOLBAR_BUTTONS, buttons.joinToString(",")).apply()
     }
 
-    private const val KEY_WEBDAV_URL = "webdav_url"
-    private const val KEY_WEBDAV_USERNAME = "webdav_username"
-    private const val KEY_WEBDAV_PASSWORD = "webdav_password"
-    private const val KEY_WEBDAV_PATH = "webdav_path"
 
     private const val KEY_SCHEMA_IMPORT_WARNING_DISMISSED = "schema_import_warning_dismissed"
 
-    private const val KEY_INSTALLED_MARKET_IDS = "installed_market_ids"
     private const val KEY_COMPACT_MODE = "compact_mode"
     private const val KEY_SHOW_CANDIDATE_COMMENTS = "show_candidate_comments"
     private const val KEY_INPUT_TEXT_LOCATION = "input_text_location"
@@ -173,29 +204,55 @@ object SettingsPreferences {
         }
     }
     
-    fun isDeploymentDone(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_DEPLOYMENT_DONE, false)
-    }
-    
-    fun setDeploymentDone(context: Context, done: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_DEPLOYMENT_DONE, done).apply()
-    }
-
-    fun getDeploymentHash(context: Context): String {
-        return getPrefs(context).getString(KEY_DEPLOYMENT_HASH, "") ?: ""
+    /** 启用方案列表（有序，逗号连接；schema id 为 [a-z0-9_] 无逗号）。null = 从未写入。 */
+    fun getEnabledSchemaList(context: Context): List<String>? {
+        if (!getPrefs(context).contains(KEY_ENABLED_SCHEMAS)) return null
+        return getPrefs(context).getString(KEY_ENABLED_SCHEMAS, "")
+            ?.split(',')?.filter { it.isNotEmpty() }
     }
 
-    fun setDeploymentHash(context: Context, hash: String) {
-        getPrefs(context).edit().putString(KEY_DEPLOYMENT_HASH, hash).apply()
+    fun setEnabledSchemaList(context: Context, schemas: List<String>) {
+        getPrefs(context).edit().putString(KEY_ENABLED_SCHEMAS, schemas.joinToString(",")).apply()
     }
 
-    /** 上次完成 rime assets 同步的 versionCode（0 表示从未同步）。 */
-    fun getRimeAssetsVersion(context: Context): Int {
-        return getPrefs(context).getInt(KEY_RIME_ASSETS_VERSION, 0)
+    /** 当前活动方案包；null 表示没有活动包（用户主动卸载了所有包）。 */
+    fun getActivePackageId(context: Context): String? =
+        getPrefs(context).getString(KEY_ACTIVE_PACKAGE_ID, null)
+
+    fun setActivePackageId(context: Context, packageId: String?) {
+        getPrefs(context).edit().apply {
+            if (packageId == null) remove(KEY_ACTIVE_PACKAGE_ID)
+            else putString(KEY_ACTIVE_PACKAGE_ID, packageId)
+        }.apply()
     }
 
-    fun setRimeAssetsVersion(context: Context, version: Int) {
-        getPrefs(context).edit().putInt(KEY_RIME_ASSETS_VERSION, version).apply()
+    fun isDefaultCustomMigrated(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_DEFAULT_CUSTOM_MIGRATED, false)
+    }
+
+    fun setDefaultCustomMigrated(context: Context, migrated: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_DEFAULT_CUSTOM_MIGRATED, migrated).apply()
+    }
+
+    /** 旧版"无 schema_list 时猜第一个方案"的选择是否已作废（一次性迁移）。 */
+    fun isSchemeSelectionMigrated(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_SCHEME_SELECTION_MIGRATED, false)
+    }
+
+    fun setSchemeSelectionMigrated(context: Context, migrated: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_SCHEME_SELECTION_MIGRATED, migrated).apply()
+    }
+
+    /**
+     * 待合并的自造词快照标记：恢复备份时若引擎未就绪（冷启动直接进设置页），
+     * 快照已落盘但无法调 `syncUserData()` 合并——由 IME 服务在引擎就绪后补做。
+     */
+    fun isPendingDictMerge(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_PENDING_DICT_MERGE, false)
+    }
+
+    fun setPendingDictMerge(context: Context, pending: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_PENDING_DICT_MERGE, pending).apply()
     }
 
     /** 调试 verbose 日志总开关（仅 Debug 构建生效，Release 恒关闭）。 */
@@ -395,6 +452,27 @@ object SettingsPreferences {
     fun setPredictionSelectedModel(context: Context, modelId: String) {
         getPrefs(context).edit().putString(KEY_PREDICTION_SELECTED_MODEL, modelId).apply()
     }
+
+    /** 空格上屏联想候选：有联想候选时按空格键直接上屏第一个联想词（而非空格字符） */
+    fun isSpaceCommitAssociationEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_SPACE_COMMIT_ASSOCIATION, false)
+    }
+
+    fun setSpaceCommitAssociationEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_SPACE_COMMIT_ASSOCIATION, enabled).apply()
+    }
+
+    /**
+     * 联想模式：false = 连续联想（联想上屏后继续推理，可连续上屏），true = 单次联想（只推理一次）。
+     * 默认连续（保持历史行为）。
+     */
+    fun isSingleAssociationMode(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_ASSOCIATION_SINGLE_MODE, false)
+    }
+
+    fun setAssociationSingleMode(context: Context, single: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_ASSOCIATION_SINGLE_MODE, single).apply()
+    }
     
     fun isSttEnabled(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_STT_ENABLED, true)
@@ -459,8 +537,10 @@ object SettingsPreferences {
     /** 授权插件访问指定域名。 */
     fun authorizePluginHost(context: Context, pluginId: String, host: String) {
         val hosts = getPluginAuthorizedHosts(context, pluginId) + host
+        val pending = getPluginPendingHosts(context, pluginId) - host
         getPrefs(context).edit()
             .putString("plugin_net_auth_$pluginId", hosts.joinToString(","))
+            .putString("plugin_net_pending_$pluginId", pending.joinToString(","))
             .apply()
     }
 
@@ -471,29 +551,99 @@ object SettingsPreferences {
             .putString("plugin_net_auth_$pluginId", hosts.joinToString(","))
             .apply()
     }
-    
-    fun isSwipeUpHintsEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_SWIPE_UP_HINTS_ENABLED, true)
-    }
-    
-    fun setSwipeUpHintsEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_SWIPE_UP_HINTS_ENABLED, enabled).apply()
-    }
-    
-    fun isSwipeDownHintsEnabled(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_SWIPE_DOWN_HINTS_ENABLED, true)
+
+    /** 插件运行中被拒绝访问、待用户授权的域名集合（供 UI 显眼展示并引导授权）。 */
+    fun getPluginPendingHosts(context: Context, pluginId: String): Set<String> {
+        val raw = getPrefs(context).getString("plugin_net_pending_$pluginId", "") ?: ""
+        return raw.split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet()
     }
 
-    fun setSwipeDownHintsEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_SWIPE_DOWN_HINTS_ENABLED, enabled).apply()
+    /** 记录插件运行中被拒绝访问的域名（去重；返回 true 表示首次记录）。 */
+    fun addPluginPendingHost(context: Context, pluginId: String, host: String): Boolean {
+        val pending = getPluginPendingHosts(context, pluginId)
+        if (host in pending) return false
+        getPrefs(context).edit()
+            .putString("plugin_net_pending_$pluginId", (pending + host).joinToString(","))
+            .apply()
+        return true
     }
 
-    fun shouldShowPressBubble(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_SHOW_PRESS_BUBBLE, true)
+    /** 清除插件的全部待授权记录。 */
+    fun clearPluginPendingHosts(context: Context, pluginId: String) {
+        getPrefs(context).edit().putString("plugin_net_pending_$pluginId", "").apply()
+    }
+    
+    /** 横屏时是否使用分体键盘，默认关闭，由用户按需开启。 */
+    fun isLandscapeSplitKeyboardEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_LANDSCAPE_SPLIT_KEYBOARD_ENABLED, false)
     }
 
-    fun setShowPressBubble(context: Context, show: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_SHOW_PRESS_BUBBLE, show).apply()
+    fun setLandscapeSplitKeyboardEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_LANDSCAPE_SPLIT_KEYBOARD_ENABLED, enabled).apply()
+    }
+
+    /**
+     * rime installation.yaml 的稳定安装 id（宿主接管生成）：
+     * 部署会删除 installation.yaml，词库同步前以本 id 重建，保证同步快照
+     * 目录（sync/<installation_id>/）不随部署轮换。
+     */
+    fun getRimeInstallationId(context: Context): String {
+        val prefs = getPrefs(context)
+        prefs.getString(KEY_RIME_INSTALLATION_ID, null)?.let { return it }
+        val id = java.util.UUID.randomUUID().toString()
+        prefs.edit().putString(KEY_RIME_INSTALLATION_ID, id).apply()
+        return id
+    }
+
+    /** 上次词库同步完成时间（毫秒时间戳，0=从未同步）。 */
+    fun getLastRimeSyncAt(context: Context): Long =
+        getPrefs(context).getLong(KEY_LAST_RIME_SYNC_AT, 0L)
+
+    fun setLastRimeSyncAt(context: Context, at: Long) {
+        getPrefs(context).edit().putLong(KEY_LAST_RIME_SYNC_AT, at).apply()
+    }
+
+    /** 上次生成完整备份包的时间（云端立即备份或本地导出成功时更新；毫秒时间戳，0=从未）。 */
+    fun getLastBackupAt(context: Context): Long =
+        getPrefs(context).getLong(KEY_LAST_BACKUP_AT, 0L)
+
+    fun setLastBackupAt(context: Context, at: Long) {
+        getPrefs(context).edit().putLong(KEY_LAST_BACKUP_AT, at).apply()
+    }
+
+    /**
+     * 最近一次云端词条同步的失败原因（null=没有未消除的失败；成功后清空）。
+     *
+     * 目的：失败不再只是 snackbar 一闪而过——回到「同步与备份」页仍能看到"上次失败 + 重试"。
+     */
+    fun getLastSyncError(context: Context): String? =
+        getPrefs(context).getString(KEY_LAST_SYNC_ERROR, null)
+
+    /** 失败发生时间（毫秒；0=无）。 */
+    fun getLastSyncErrorAt(context: Context): Long =
+        getPrefs(context).getLong(KEY_LAST_SYNC_ERROR_AT, 0L)
+
+    fun setLastSyncError(context: Context, message: String?) =
+        setOpError(context, KEY_LAST_SYNC_ERROR, KEY_LAST_SYNC_ERROR_AT, message)
+
+    /** 最近一次云端完整备份的失败原因（语义同 [getLastSyncError]）。 */
+    fun getLastBackupError(context: Context): String? =
+        getPrefs(context).getString(KEY_LAST_BACKUP_ERROR, null)
+
+    fun getLastBackupErrorAt(context: Context): Long =
+        getPrefs(context).getLong(KEY_LAST_BACKUP_ERROR_AT, 0L)
+
+    fun setLastBackupError(context: Context, message: String?) =
+        setOpError(context, KEY_LAST_BACKUP_ERROR, KEY_LAST_BACKUP_ERROR_AT, message)
+
+    private fun setOpError(context: Context, key: String, atKey: String, message: String?) {
+        val editor = getPrefs(context).edit()
+        if (message.isNullOrBlank()) {
+            editor.remove(key).remove(atKey)
+        } else {
+            editor.putString(key, message).putLong(atKey, System.currentTimeMillis())
+        }
+        editor.apply()
     }
     
     /** 获取方案偏好的键盘布局，默认全键盘 */
@@ -505,6 +655,11 @@ object SettingsPreferences {
     fun setLayoutPreference(context: Context, schemaId: String, layout: String) {
         getPrefs(context).edit().putString("$KEY_LAYOUT_PREFIX$schemaId", layout).apply()
     }
+
+    /** 方案卸载时清除该方案的布局偏好，避免同名方案重装后继承旧布局。 */
+    fun removeLayoutPreference(context: Context, schemaId: String) {
+        getPrefs(context).edit().remove("$KEY_LAYOUT_PREFIX$schemaId").apply()
+    }
     
     fun getKeyboardHeightDp(context: Context): Int {
         return getKeyboardHeightDp(context, false)
@@ -512,11 +667,10 @@ object SettingsPreferences {
 
     fun getKeyboardHeightDp(context: Context, isLandscape: Boolean): Int {
         val key = if (isLandscape) KEY_KEYBOARD_HEIGHT_DP_LANDSCAPE else KEY_KEYBOARD_HEIGHT_DP
-        val alt = if (isLandscape) KEY_KEYBOARD_HEIGHT_DP else KEY_KEYBOARD_HEIGHT_DP_LANDSCAPE
         val stored = getPrefs(context).getInt(key, -1)
         if (stored > 0) return stored
-        val altStored = getPrefs(context).getInt(alt, -1)
-        if (altStored > 0) return altStored
+        // 不做跨方向回退：竖屏高度（可达屏高 60%）放到横屏短边上必然超出屏幕
+        // （曾表现为"横屏键盘高得离谱"），横竖屏各自用自己的键 + 自己的默认值
         return getDefaultKeyboardHeightDp(context, isLandscape)
     }
 
@@ -526,8 +680,12 @@ object SettingsPreferences {
     }
 
     fun getDefaultKeyboardHeightDp(context: Context, isLandscape: Boolean = false): Int {
-        val percent = if (isLandscape) DEFAULT_KEYBOARD_HEIGHT_PERCENT_LANDSCAPE else DEFAULT_KEYBOARD_HEIGHT_PERCENT
-        return context.resources.configuration.screenHeightDp * percent / 100
+        val config = context.resources.configuration
+        if (!isLandscape) return config.screenHeightDp * DEFAULT_KEYBOARD_HEIGHT_PERCENT / 100
+        // 横屏以竖屏高度（长边）为基数：横屏短边随宽高比/系统栏波动大，
+        // 长边是设备稳定值，且与悬浮模式 fallback（portraitScreenHeightDp × 百分比）语义一致
+        val portraitHeightDp = maxOf(config.screenWidthDp, config.screenHeightDp)
+        return portraitHeightDp * DEFAULT_KEYBOARD_HEIGHT_PERCENT_LANDSCAPE / 100
     }
 
     private const val KEY_KEYBOARD_BOTTOM_PADDING_DP = "keyboard_bottom_padding_dp"
@@ -541,36 +699,37 @@ object SettingsPreferences {
         getPrefs(context).edit().putInt(KEY_KEYBOARD_BOTTOM_PADDING_DP, paddingDp).apply()
     }
 
-    fun getWebDavUrl(context: Context): String {
-        return getPrefs(context).getString(KEY_WEBDAV_URL, "") ?: ""
+    /** 键盘贴底显示：忽略底部系统 inset，把键盘内容下移到屏幕底边（隐藏导航栏/手势条时使用）。 */
+    private const val KEY_KEYBOARD_FLUSH_BOTTOM = "keyboard_flush_bottom"
+
+    fun isKeyboardFlushBottom(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_KEYBOARD_FLUSH_BOTTOM, false)
     }
 
-    fun setWebDavUrl(context: Context, url: String) {
-        getPrefs(context).edit().putString(KEY_WEBDAV_URL, url).apply()
+    fun setKeyboardFlushBottom(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_KEYBOARD_FLUSH_BOTTOM, enabled).apply()
     }
 
-    fun getWebDavUsername(context: Context): String {
-        return getPrefs(context).getString(KEY_WEBDAV_USERNAME, "") ?: ""
+    /** 键盘左边距（dp）：>0 时键盘左缘内收（宽度调节；左右独立，可整体偏移）。 */
+    private const val KEY_KEYBOARD_MARGIN_START_DP = "keyboard_margin_start_dp"
+
+    /** 键盘右边距（dp）。 */
+    private const val KEY_KEYBOARD_MARGIN_END_DP = "keyboard_margin_end_dp"
+
+    fun getKeyboardMarginStartDp(context: Context): Int {
+        return getPrefs(context).getInt(KEY_KEYBOARD_MARGIN_START_DP, 0)
     }
 
-    fun setWebDavUsername(context: Context, username: String) {
-        getPrefs(context).edit().putString(KEY_WEBDAV_USERNAME, username).apply()
+    fun setKeyboardMarginStartDp(context: Context, marginDp: Int) {
+        getPrefs(context).edit().putInt(KEY_KEYBOARD_MARGIN_START_DP, marginDp).apply()
     }
 
-    fun getWebDavPassword(context: Context): String {
-        return getPrefs(context).getString(KEY_WEBDAV_PASSWORD, "") ?: ""
+    fun getKeyboardMarginEndDp(context: Context): Int {
+        return getPrefs(context).getInt(KEY_KEYBOARD_MARGIN_END_DP, 0)
     }
 
-    fun setWebDavPassword(context: Context, password: String) {
-        getPrefs(context).edit().putString(KEY_WEBDAV_PASSWORD, password).apply()
-    }
-
-    fun getWebDavPath(context: Context): String {
-        return getPrefs(context).getString(KEY_WEBDAV_PATH, "xime") ?: "xime"
-    }
-
-    fun setWebDavPath(context: Context, path: String) {
-        getPrefs(context).edit().putString(KEY_WEBDAV_PATH, path).apply()
+    fun setKeyboardMarginEndDp(context: Context, marginDp: Int) {
+        getPrefs(context).edit().putInt(KEY_KEYBOARD_MARGIN_END_DP, marginDp).apply()
     }
 
     fun isSchemaImportWarningDismissed(context: Context): Boolean {
@@ -638,26 +797,6 @@ object SettingsPreferences {
         getPrefs(context).edit().putInt(KEY_CANDIDATE_TEXT_SIZE, size).apply()
     }
 
-    // ── 方案市场「已安装」的持久记录 ──
-    // 记录用户通过市场主动安装过的方案 id；与本地文件存在性解耦（方案可能仅作为依赖落盘，
-    // 文件存在不代表用户装过它），且跨重启保持。
-    fun getInstalledMarketIds(context: Context): Set<String> =
-        getPrefs(context).getStringSet(KEY_INSTALLED_MARKET_IDS, emptySet())?.toSet() ?: emptySet()
-
-    fun addInstalledMarketId(context: Context, id: String) {
-        val cur = getInstalledMarketIds(context).toMutableSet()
-        if (cur.add(id)) {
-            getPrefs(context).edit().putStringSet(KEY_INSTALLED_MARKET_IDS, cur).apply()
-        }
-    }
-
-    fun removeInstalledMarketId(context: Context, id: String) {
-        val cur = getInstalledMarketIds(context).toMutableSet()
-        if (cur.remove(id)) {
-            getPrefs(context).edit().putStringSet(KEY_INSTALLED_MARKET_IDS, cur).apply()
-        }
-    }
-
     const val KEY_CLIPBOARD_SYNC_ENABLED = "clipboard_sync_enabled"
     const val KEY_CLIPBOARD_SYNC_PLUGIN_ID = "clipboard_sync_plugin_id"
     const val KEY_BACKGROUND_CAPTURE_ENABLED = "background_capture_enabled"
@@ -706,5 +845,98 @@ object SettingsPreferences {
 
     fun setClipboardSyncPluginId(context: Context, pluginId: String) {
         getPrefs(context).edit().putString(KEY_CLIPBOARD_SYNC_PLUGIN_ID, pluginId).apply()
+    }
+
+    // ── 剪贴板图片（Phase 2：采集开关 + 单张上限可配） ──────────────
+
+    /** 是否采集复制到剪贴板的图片（默认开，见 docs/clipboard-image-plan.md 决策 D1）。 */
+    const val KEY_CLIPBOARD_IMAGE_CAPTURE = "clipboard_image_capture"
+
+    private const val KEY_CLIPBOARD_IMAGE_MAX_MB = "clipboard_image_max_mb"
+
+    /** 单张上限可选项区间（设置页滑块与读取校验共用，避免脏值导致滑块越界）。 */
+    val CLIPBOARD_IMAGE_MAX_MB_RANGE = 1..20
+
+    fun isClipboardImageCaptureEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_CLIPBOARD_IMAGE_CAPTURE, true)
+    }
+
+    fun setClipboardImageCaptureEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_CLIPBOARD_IMAGE_CAPTURE, enabled).apply()
+    }
+
+    /**
+     * 单张图片上限（MB），默认 [ClipboardImageStore.MAX_IMAGE_BYTES]。
+     * 其余限制（最长边/保留数量/总容量）为内置常量，不提供设置项。
+     */
+    fun getClipboardImageMaxMb(context: Context): Int {
+        val default = (ClipboardImageStore.MAX_IMAGE_BYTES / 1024 / 1024).toInt()
+        return getPrefs(context).getInt(KEY_CLIPBOARD_IMAGE_MAX_MB, default)
+            .coerceIn(CLIPBOARD_IMAGE_MAX_MB_RANGE)
+    }
+
+    fun setClipboardImageMaxMb(context: Context, mb: Int) {
+        getPrefs(context).edit()
+            .putInt(KEY_CLIPBOARD_IMAGE_MAX_MB, mb.coerceIn(CLIPBOARD_IMAGE_MAX_MB_RANGE))
+            .apply()
+    }
+
+    // ── 敏感剪贴板（API 33+ EXTRA_IS_SENSITIVE，默认不入库） ──────────
+
+    /** 是否记录带敏感标记的剪贴板（密码、卡号等，默认关）。 */
+    private const val KEY_CLIPBOARD_SENSITIVE_CAPTURE = "clipboard_sensitive_capture"
+
+    fun isClipboardSensitiveCaptureEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_CLIPBOARD_SENSITIVE_CAPTURE, false)
+    }
+
+    fun setClipboardSensitiveCaptureEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_CLIPBOARD_SENSITIVE_CAPTURE, enabled).apply()
+    }
+
+    const val KEY_BACKUP_PLUGIN_ID = "backup_plugin_id"
+
+    fun getBackupPluginId(context: Context): String {
+        return getPrefs(context).getString(KEY_BACKUP_PLUGIN_ID, "") ?: ""
+    }
+
+    fun setBackupPluginId(context: Context, pluginId: String) {
+        getPrefs(context).edit().putString(KEY_BACKUP_PLUGIN_ID, pluginId).apply()
+    }
+
+    // ── 键盘布局市场：当前已应用的布局 ──────────────────────────
+
+    private const val KEY_APPLIED_LAYOUT_ID = "applied_layout_id"
+    private const val KEY_APPLIED_LAYOUT_VERSION = "applied_layout_version"
+    private const val KEY_APPLIED_LAYOUT_FILES = "applied_layout_files"
+
+    /** 已应用布局的 id（空表示未应用任何市场布局）。 */
+    fun getAppliedLayoutId(context: Context): String =
+        getPrefs(context).getString(KEY_APPLIED_LAYOUT_ID, "") ?: ""
+
+    /** 已应用布局的版本（用于「有更新」提示）。 */
+    fun getAppliedLayoutVersion(context: Context): String =
+        getPrefs(context).getString(KEY_APPLIED_LAYOUT_VERSION, "") ?: ""
+
+    /** 已应用布局释放到 rime 的相对文件清单（恢复默认时回收）。 */
+    fun getAppliedLayoutFiles(context: Context): List<String> {
+        val raw = getPrefs(context).getString(KEY_APPLIED_LAYOUT_FILES, "") ?: ""
+        return raw.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+    }
+
+    fun setAppliedLayout(context: Context, id: String, version: String, files: List<String>) {
+        getPrefs(context).edit()
+            .putString(KEY_APPLIED_LAYOUT_ID, id)
+            .putString(KEY_APPLIED_LAYOUT_VERSION, version)
+            .putString(KEY_APPLIED_LAYOUT_FILES, files.joinToString("\n"))
+            .apply()
+    }
+
+    fun clearAppliedLayout(context: Context) {
+        getPrefs(context).edit()
+            .remove(KEY_APPLIED_LAYOUT_ID)
+            .remove(KEY_APPLIED_LAYOUT_VERSION)
+            .remove(KEY_APPLIED_LAYOUT_FILES)
+            .apply()
     }
 }

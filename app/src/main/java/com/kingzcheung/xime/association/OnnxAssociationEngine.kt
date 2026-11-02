@@ -1,5 +1,9 @@
 package com.kingzcheung.xime.association
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import android.content.Context
 import com.kingzcheung.xime.model.ModelRuntime
 import com.kingzcheung.xime.model.ModelStorage
@@ -17,6 +21,7 @@ import java.io.File
 object OnnxAssociationEngine {
     private const val TAG = "OnnxAssociationEngine"
 
+    @Volatile
     private var isInitialized = false
     private var warmupStarted = false
     private val warmupScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -32,7 +37,7 @@ object OnnxAssociationEngine {
             id = "predictive_text",
             loader = { initialize(context) },
             releaser = { release() },
-            label = "智能联想模型"
+            label = tr(R.string.s_zhinenglianxiangmoxing)
         )
 
         try {
@@ -59,7 +64,18 @@ object OnnxAssociationEngine {
             FileLogger.d(TAG, "Using model: ${modelFile.name} (${modelFile.length()} bytes)")
 
             val client = InferenceClient(context)
+            // 先释放旧 client 的绑定，避免每次 initialize 泄漏一个 ServiceConnection
+            // （ServiceConnectionLeaked：切换预测设置时反复 initialize 累积泄漏）
+            inferenceClient?.unbind()
             inferenceClient = client
+            client.onDisconnected = {
+                // 服务进程被回收后 AUTO_CREATE 自动重启只恢复 binder，模型不会自己回来：
+                // 软重置本地状态（不 unbind，保留系统自动重启与连接），下次预测由
+                // AssociationManager.predict 的引擎状态守卫检测并重新 load，
+                // 避免"重启抢先→服务端空返回→联想静默失效"
+                isInitialized = false
+                ModelRuntime.markUnloaded("predictive_text")
+            }
 
             if (!client.ensureBound()) {
                 FileLogger.e(TAG, "Failed to bind to InferenceService")
@@ -86,13 +102,23 @@ object OnnxAssociationEngine {
     }
 
     suspend fun predict(inputText: String, topK: Int = 20): List<AssociationCandidate> = withContext(Dispatchers.Default) {
-        if (!isInitialized) {
+        val client = inferenceClient
+        if (!isInitialized || client == null) {
             FileLogger.e(TAG, "Engine not initialized")
             return@withContext emptyList()
         }
 
+        // 服务进程被系统回收（设计内行为）后 binder 失效：这里必须重置本地
+        // "已初始化"假象，否则联想将永远空转（无法重新 bind + loadModel）。
+        // 重置后由 AssociationManager.predict 的引擎状态守卫检测到并按需
+        // 重新加载（ModelRuntime.load → 本类 initialize），实现自愈。
+        if (!client.isBound()) {
+            FileLogger.w(TAG, "InferenceService not bound, resetting engine state for recovery")
+            release()
+            return@withContext emptyList()
+        }
+
         try {
-            val client = inferenceClient ?: return@withContext emptyList()
             client.predict(inputText, topK)
         } catch (e: Exception) {
             FileLogger.e(TAG, "Prediction failed: ${e.message}", e)

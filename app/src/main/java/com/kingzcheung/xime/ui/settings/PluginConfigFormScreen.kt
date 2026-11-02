@@ -1,5 +1,9 @@
 package com.kingzcheung.xime.ui.settings
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -56,8 +60,11 @@ import androidx.compose.ui.unit.dp
 import com.kingzcheung.xime.plugin.PluginConfigStoreImpl
 import com.kingzcheung.xime.plugin.core.config.IPluginConfigurable
 import com.kingzcheung.xime.plugin.core.config.PluginConfigStore
-import com.kingzcheung.xime.plugin.core.config.PluginFieldType
-import com.kingzcheung.xime.plugin.core.config.PluginSettingField
+import com.kingzcheung.xime.plugin.core.config.UiNode
+import com.kingzcheung.xime.plugin.core.config.UiNodeType
+import com.kingzcheung.xime.plugin.core.js.ws.NetworkPolicy
+import com.kingzcheung.xime.plugin.core.runtime.PluginManager
+import com.kingzcheung.xime.settings.SettingsPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -68,42 +75,50 @@ fun PluginConfigFormScreen(
     pluginId: String,
     plugin: IPluginConfigurable,
     pluginName: String,
+    schema: List<UiNode> = emptyList(),
     onBack: () -> Unit,
-    embedded: Boolean = false
+    embedded: Boolean = false,
+    /** 字段未声明 section 时的分组标题（默认「插件配置」）；嵌入到多插件页面时可带上插件名标明归属。 */
+    fallbackSectionTitle: String = tr(R.string.s_chajianpeizhi),
 ) {
     val context = LocalContext.current
     val configStore = remember(pluginId) {
         PluginConfigStoreImpl(context.applicationContext as android.app.Application, pluginId)
     }
-    val fields = plugin.getSettingsSchema()
+    // 调用方已带 schema（插件设置页已在 IO 读完）时直接用；否则本组件自己在 IO 读：
+    // 组合期不进插件运行时（旧的 remember 同步调用会阻塞主线程，并与插件卸载/重载竞态）。
+    val needLoad = schema.isEmpty()
+    val fallbackState = rememberPluginSettingsSchema(if (needLoad) plugin else null, pluginId)
+    val fields = if (needLoad) fallbackState.schema else schema
     val groupedFields = remember(fields) { fields.groupBy { it.section.orEmpty() } }
 
     val dynamicOptions = remember(plugin) { mutableStateMapOf<String, List<String>>() }
     LaunchedEffect(plugin, fields) {
-        fields.filter { it.type == PluginFieldType.SELECT || it.type == PluginFieldType.MULTI_SELECT }
+        fields.filter { it.type == UiNodeType.SELECT || it.type == UiNodeType.MULTI_SELECT }
+            .filter { it.key != null }
             .forEach { field ->
                 val opts = withContext(Dispatchers.IO) {
-                    runCatching { plugin.getOptions(field.key) }.getOrNull()
+                    runCatching { plugin.getOptions(field.key!!) }.getOrNull()
                 }
-                if (opts != null) dynamicOptions[field.key] = opts
+                if (opts != null) dynamicOptions[field.key!!] = opts
             }
     }
 
     @Composable
-    fun sectionContent(section: String, sectionFields: List<PluginSettingField>) {
+    fun sectionContent(section: String, sectionFields: List<UiNode>) {
         SettingsSection(
-            title = section.ifBlank { "插件配置" },
+            title = section.ifBlank { fallbackSectionTitle },
             content = {
                 Column(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     sectionFields.forEach { field ->
-                        PluginSettingFieldEditor(
+                        UiNodeEditor(
                             field = field,
                             configStore = configStore,
                             options = field.options.ifEmpty {
-                                dynamicOptions[field.key].orEmpty()
+                                field.key?.let { dynamicOptions[it].orEmpty() } ?: emptyList()
                             },
                             plugin = plugin
                         )
@@ -113,22 +128,39 @@ fun PluginConfigFormScreen(
         )
     }
 
+    // 插件声明 allowCustomHosts 时，配置中填写的 HTTP(S) 服务器域名自动获得联网授权，
+    // 兑现 manifest helpText「域名将自动获得联网授权」的承诺，无需用户再手动寻找授权入口。
+    fun autoAuthorizeConfiguredHosts() {
+        val allowCustom = PluginManager.getAllInstallPlugins()
+            .firstOrNull { it.id == pluginId }
+            ?.allowCustomHosts ?: false
+        if (!allowCustom) return
+        configStore.keys().forEach { key ->
+            configStore.get(key)?.let { value ->
+                NetworkPolicy.extractHttpHost(value)?.let { host ->
+                    SettingsPreferences.authorizePluginHost(context, pluginId, host)
+                }
+            }
+        }
+    }
+
     @Composable
     fun saveButton() {
         Button(
             onClick = {
                 var allValid = true
                 fields.forEach { field ->
-                    if (field.type == PluginFieldType.SECRET && field.required) {
-                        val current = configStore.get(field.key)
+                    if (field.type == UiNodeType.SECRET && field.required && field.key != null) {
+                        val current = configStore.get(field.key!!)
                         if (current.isNullOrBlank()) allValid = false
                     }
                 }
                 if (!allValid) {
-                    Toast.makeText(context, "请填写必填配置", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, tr(R.string.s_qingtianxiebitianpeizhi), Toast.LENGTH_SHORT).show()
                     return@Button
                 }
-                Toast.makeText(context, "配置已保存", Toast.LENGTH_SHORT).show()
+                autoAuthorizeConfiguredHosts()
+                Toast.makeText(context, tr(R.string.s_peizhiyibaocun), Toast.LENGTH_SHORT).show()
                 if (!embedded) onBack()
             },
             modifier = Modifier.fillMaxWidth(),
@@ -137,7 +169,7 @@ fun PluginConfigFormScreen(
                 contentColor = MaterialTheme.colorScheme.onPrimary
             )
         ) {
-            Text("保存")
+            Text(tr(R.string.s_baocun))
         }
     }
 
@@ -162,7 +194,7 @@ fun PluginConfigFormScreen(
                         IconButton(onClick = onBack) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "返回"
+                                contentDescription = tr(R.string.s_fanhui)
                             )
                         }
                     },
@@ -198,38 +230,63 @@ fun PluginConfigFormScreen(
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-private fun PluginSettingFieldEditor(
-    field: PluginSettingField,
+private fun UiNodeEditor(
+    field: UiNode,
     configStore: PluginConfigStore,
     options: List<String>,
     plugin: IPluginConfigurable
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var buttonBusy by remember(field.key) { mutableStateOf(false) }
-    var value by rememberSaveable(field.key) {
-        mutableStateOf(configStore.get(field.key) ?: field.defaultValue ?: "")
+    // 表单字段必须绑定 configStore key；无 key 的节点（展示型误入表单）不渲染
+    val key = field.key ?: return
+    var buttonBusy by remember(key) { mutableStateOf(false) }
+    var value by rememberSaveable(key) {
+        mutableStateOf(configStore.get(key) ?: field.defaultValue ?: "")
     }
-    var showSecret by rememberSaveable(field.key) { mutableStateOf(false) }
-    var expanded by rememberSaveable(field.key) { mutableStateOf(false) }
+    var showSecret by rememberSaveable(key) { mutableStateOf(false) }
+    var expanded by rememberSaveable(key) { mutableStateOf(false) }
 
     fun persist() {
-        configStore.set(field.key, value)
+        configStore.set(key, value)
     }
 
     when (field.type) {
-        PluginFieldType.TEXT,
-        PluginFieldType.NUMBER -> {
+        // 展示型节点（SECTION/METRIC/DIVIDER）在设置表单中忽略
+        UiNodeType.SECTION, UiNodeType.METRIC, UiNodeType.DIVIDER -> Unit
+        UiNodeType.TEXTAREA -> {
             OutlinedTextField(
                 value = value,
                 onValueChange = {
                     value = it
                     persist()
                 },
-                label = { Text(field.label) },
+                label = { Text(field.label ?: "") },
+                placeholder = field.placeholder?.let { { Text(it) } },
+                minLines = 4,
+                maxLines = 8,
+                supportingText = field.helpText?.let { { Text(it) } },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                )
+            )
+        }
+
+        UiNodeType.TEXT,
+        UiNodeType.NUMBER -> {
+            OutlinedTextField(
+                value = value,
+                onValueChange = {
+                    value = it
+                    persist()
+                },
+                label = { Text(field.label ?: "") },
                 placeholder = field.placeholder?.let { { Text(it) } },
                 singleLine = true,
-                keyboardOptions = if (field.type == PluginFieldType.NUMBER) {
+                keyboardOptions = if (field.type == UiNodeType.NUMBER) {
                     KeyboardOptions(keyboardType = KeyboardType.Number)
                 } else {
                     KeyboardOptions.Default
@@ -244,14 +301,14 @@ private fun PluginSettingFieldEditor(
             )
         }
 
-        PluginFieldType.SECRET -> {
+        UiNodeType.SECRET -> {
             OutlinedTextField(
                 value = value,
                 onValueChange = {
                     value = it
                     persist()
                 },
-                label = { Text(field.label) },
+                label = { Text(field.label ?: "") },
                 placeholder = field.placeholder?.let { { Text(it) } },
                 singleLine = true,
                 visualTransformation = if (showSecret) {
@@ -263,7 +320,7 @@ private fun PluginSettingFieldEditor(
                     IconButton(onClick = { showSecret = !showSecret }) {
                         Icon(
                             imageVector = if (showSecret) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                            contentDescription = if (showSecret) "隐藏" else "显示"
+                            contentDescription = if (showSecret) tr(R.string.s_yincang) else tr(R.string.s_xianshi)
                         )
                     }
                 },
@@ -278,14 +335,14 @@ private fun PluginSettingFieldEditor(
             )
         }
 
-        PluginFieldType.SWITCH -> {
+        UiNodeType.SWITCH -> {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = field.label,
+                        text = field.label ?: "",
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.Medium
                     )
@@ -311,7 +368,7 @@ private fun PluginSettingFieldEditor(
             }
         }
 
-        PluginFieldType.SELECT -> {
+        UiNodeType.SELECT -> {
             ExposedDropdownMenuBox(
                 expanded = expanded,
                 onExpandedChange = { expanded = it }
@@ -320,12 +377,12 @@ private fun PluginSettingFieldEditor(
                     value = value,
                     onValueChange = {},
                     readOnly = true,
-                    label = { Text(field.label) },
+                    label = { Text(field.label ?: "") },
                     trailingIcon = {
                         ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
                     },
                     supportingText = if (options.isEmpty() && field.options.isEmpty())
-                        { { Text("暂无可用选项") } }
+                        { { Text(tr(R.string.s_zanwukeyongxuanxiang)) } }
                     else
                         field.helpText?.let { { Text(it) } },
                     modifier = Modifier
@@ -355,11 +412,11 @@ private fun PluginSettingFieldEditor(
             }
         }
 
-        PluginFieldType.MULTI_SELECT -> {
+        UiNodeType.MULTI_SELECT -> {
             val selected = value.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = field.label,
+                    text = field.label ?: "",
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium
                 )
@@ -372,7 +429,7 @@ private fun PluginSettingFieldEditor(
                 }
                 if (options.isEmpty()) {
                     Text(
-                        text = "暂无可用选项",
+                        text = tr(R.string.s_zanwukeyongxuanxiang),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -400,22 +457,31 @@ private fun PluginSettingFieldEditor(
             }
         }
 
-        PluginFieldType.BUTTON -> {
+        UiNodeType.BUTTON -> {
             Button(
                 onClick = {
-                    val action = field.action
+                    val action = key
                     if (action.isNullOrBlank()) {
-                        Toast.makeText(context, "未配置动作", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, tr(R.string.s_weipeizhidongzuo), Toast.LENGTH_SHORT).show()
                         return@Button
                     }
                     buttonBusy = true
                     scope.launch {
-                        val error = withContext(Dispatchers.IO) {
-                            runCatching { plugin.onAction(action) }.getOrNull()
+                        // 结果语义：null/空 = 成功（动作无错误消息）；非空 = 失败原因。
+                        // 抛异常也必须报错——曾经 runCatching{}.getOrNull() 把异常吞成 null，
+                        // 于是动作报错也会提示"成功"（issue #1061 假成功的一半来源）。
+                        val outcome = withContext(Dispatchers.IO) {
+                            runCatching { plugin.onAction(action) }
                         }
                         buttonBusy = false
+                        val failure = outcome.exceptionOrNull()
+                        val error = if (failure != null) {
+                            tr(R.string.s_zhixingshibai, failure.message ?: failure.javaClass.simpleName)
+                        } else {
+                            outcome.getOrNull()
+                        }
                         if (error.isNullOrBlank()) {
-                            Toast.makeText(context, "成功", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, tr(R.string.s_chenggong), Toast.LENGTH_SHORT).show()
                         } else {
                             Toast.makeText(context, error, Toast.LENGTH_LONG).show()
                         }
@@ -428,7 +494,7 @@ private fun PluginSettingFieldEditor(
                     contentColor = MaterialTheme.colorScheme.onPrimary
                 )
             ) {
-                Text(if (buttonBusy) "处理中…" else field.label)
+                Text(if (buttonBusy) tr(R.string.s_chulizhong) else field.label ?: "")
             }
         }
     }

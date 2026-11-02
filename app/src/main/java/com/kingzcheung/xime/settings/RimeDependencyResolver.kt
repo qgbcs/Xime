@@ -156,7 +156,7 @@ object RimeDependencyResolver {
         val outcome = completeCore(
             topDeps = dependencies,
             resolveUrl = resolveUrl,
-            download = { url -> SchemaManager.importFromUrl(context, url) },
+            download = { url -> SchemaManager.importFromUrl(context, url).success },
             readPkgDeps = { id -> readSchemaDependencies(context, id) },
             // 本地优先：上游/app 已带（如 symbols、default）或先前已装的依赖不重复下载
             isLocallySatisfied = { id -> isDependencyLocallyPresent(rimeDir, id) },
@@ -197,7 +197,9 @@ object RimeDependencyResolver {
             val mainDict = scanSchemaRefs(schemaText, null).mainDicts.firstOrNull() ?: schemaId
             val dictFile = File(dir, "$mainDict.dict.yaml")
             val refs = scanSchemaRefs(schemaText, dictFile.takeIf { it.exists() }?.readText())
-            expectedFiles(refs).filter { !File(dir, it).exists() }
+            // app 内置共享文件（symbols/default 等）由 app 提供，部署前会自动补齐，不算缺依赖
+            val appProvided = RimeSharedFiles.names(context)
+            expectedFiles(refs).filter { it !in appProvided && !File(dir, it).exists() }
         } catch (e: Exception) {
             Log.e(TAG, "findMissingFiles($schemaId) failed", e)
             emptyList()

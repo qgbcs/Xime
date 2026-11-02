@@ -2,8 +2,14 @@ package com.kingzcheung.xime.ui.theme
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.core.graphics.ColorUtils
+import com.kingzcheung.xime.R
+import com.kingzcheung.xime.i18n.tr
 import com.kingzcheung.xime.settings.BackgroundConfig
 import com.kingzcheung.xime.settings.ColorSchemeEntry
 import com.kingzcheung.xime.settings.KeysConfigHelper
@@ -13,14 +19,35 @@ import java.io.InputStream
 import kotlin.math.max
 
 /**
+ * 解析主题图片路径为 File 对象。
+ * 支持四种格式（与字体配置一致）：
+ * - 绝对路径（以 / 开头）：相对于应用数据根目录，如 /themes/bg.png → files/themes/bg.png
+ * - rime/ 开头：相对于应用数据根目录，如 rime/themes/bg.png → files/rime/themes/bg.png
+ * - 其他相对路径（包含 / 但不以 / 开头）：相对于 rime/ 目录，如 themes/bg.png → files/rime/themes/bg.png
+ * - 仅文件名（不包含 /）：相对于 rime/ 目录（配置文件同目录）查找
+ */
+private fun resolveThemeImagePath(context: Context, src: String): File {
+    val filesBase = context.filesDir.canonicalFile
+    val rimeBase = File(filesBase, "rime").canonicalFile
+    return when {
+        src.startsWith("/") -> File(filesBase, src.removePrefix("/")).canonicalFile
+        src.startsWith("rime/") -> File(filesBase, src).canonicalFile
+        else -> File(rimeBase, src).canonicalFile
+    }
+}
+
+/**
  * 打开主题背景图片流。
- * 优先读取用户数据目录（context.filesDir/rime/<src>，用户可自行放入或通过分享导入），
+ * 优先读取用户数据目录（规则见 [resolveThemeImagePath]，用户可自行放入或通过分享导入），
  * 找不到再回退到内置 assets/<src>。
  */
 fun openThemeImageStream(context: Context, src: String): InputStream? {
+    val userFile = resolveThemeImagePath(context, src)
     val rimeBase = File(context.filesDir, "rime").canonicalFile
-    val userFile = File(rimeBase, src).canonicalFile
-    if (userFile.isFile && userFile.path.startsWith(rimeBase.path + File.separator)) {
+    val filesBase = context.filesDir.canonicalFile
+    val withinBase = userFile.path.startsWith(rimeBase.path + File.separator) ||
+        userFile.path.startsWith(filesBase.path + File.separator)
+    if (userFile.isFile && withinBase) {
         return FileInputStream(userFile)
     }
     return try {
@@ -68,21 +95,19 @@ data class KeyboardColorScheme(
     val keyboardBackground: BackgroundConfig? = null,
     val keyBackground: BackgroundConfig? = null,
     val candidateBarBackground: BackgroundConfig? = null,
+    /** Material You 动态配色：颜色来自壁纸调色板，随壁纸变化。 */
+    val isDynamic: Boolean = false,
 )
 
 object KeyboardThemes {
     /** 从 xime.yaml 加载的配置覆盖项。 */
     private var configOverrides: Map<String, ColorSchemeEntry> = emptyMap()
 
-    /** 预计算后的主题缓存（避免每次访问都重新计算颜色）。 */
-    private var themesCache: List<KeyboardColorScheme> = emptyList()
-    private var themesMapCache: Map<String, KeyboardColorScheme> = emptyMap()
-
     /** 硬编码的默认主题列表（兜底，其余主题由 xime.yaml color_schemes 提供）。 */
     private val defaultThemes = listOf(
         KeyboardColorScheme(
             id = "lavender_purple",
-            name = "薰衣草紫",
+            name = tr(R.string.s_xunyicaozi),
             specialKeyLight = Color(0xFFE8DEF8),
             specialKeyDark = Color(0xFF6750A4),
             accentLight = Color(0xFF8F73E2),
@@ -96,10 +121,13 @@ object KeyboardThemes {
         )
     )
 
-    init {
-        themesCache = defaultThemes
-        themesMapCache = defaultThemes.associateBy { it.id }
-    }
+    /**
+     * 预计算后的主题缓存（避免每次访问都重新计算颜色）。
+     * 用 Compose 状态包装：UI getter 在组合中读取时会建立订阅，缓存重建后
+     * 所有已取色的 Composable 自动重组——动态配色随壁纸变化实时刷新依赖此机制。
+     */
+    private var themesCache by mutableStateOf(defaultThemes)
+    private var themesMapCache: Map<String, KeyboardColorScheme> = defaultThemes.associateBy { it.id }
 
     /** 从配置文件加载主题覆盖项。应在 Application.onCreate 中调用。 */
     fun initFromConfig(context: Context) {
@@ -112,20 +140,52 @@ object KeyboardThemes {
         // 1) 对硬编码主题应用配置覆盖
         val overridden = defaultThemes.map { applyConfigOverrides(context, it) }
         // 2) 把配置中有但硬编码列表中没有的新主题也加入缓存
+        //    （dynamic_color: true 的条目由 DynamicThemes 运行时从壁纸调色板构建）
         val existingIds = overridden.map { it.id }.toSet()
         val newThemes = configOverrides
             .filterKeys { it !in existingIds }
             .map { (id, entry) -> buildSchemeFromConfig(context, id, entry) }
+            .filterNotNull()
         themesCache = overridden + newThemes
         themesMapCache = themesCache.associateBy { it.id }
     }
 
+    /**
+     * 刷新动态配色方案：对比缓存中动态主题的强调色与当前系统取色，
+     * 发生变化才重建（壁纸更换后下次打开键盘调用，实现生效）。
+     * 无动态主题或取色未变时直接返回 false，不触发任何重组。
+     *
+     * @return 是否发生了重建
+     */
+    fun refreshDynamicSchemes(context: Context): Boolean {
+        val dynamicScheme = themesCache.firstOrNull { it.isDynamic } ?: return false
+        val current = DynamicThemes.currentAccentColors(context) ?: return false
+        if (dynamicScheme.accentLight == current.first && dynamicScheme.accentDark == current.second) {
+            return false
+        }
+        var rebuilt = false
+        val refreshed = themesCache.map { scheme ->
+            if (scheme.isDynamic) {
+                DynamicThemes.create(context, scheme.id, scheme.name)?.also { rebuilt = true } ?: scheme
+            } else {
+                scheme
+            }
+        }
+        if (rebuilt) {
+            themesCache = refreshed
+            themesMapCache = refreshed.associateBy { it.id }
+        }
+        return rebuilt
+    }
 
 
-    /** 根据配置项创建全新的 KeyboardColorScheme。 */
-    private fun buildSchemeFromConfig(context: Context, id: String, entry: ColorSchemeEntry): KeyboardColorScheme {
-        val primary = if (entry.primaryColor != 0L) entry.primaryColor
-        else extractImageSeedColor(context, entry)
+
+    /** 根据配置项创建全新的 KeyboardColorScheme；动态配色条目构建失败（不支持）返回 null。 */
+    private fun buildSchemeFromConfig(context: Context, id: String, entry: ColorSchemeEntry): KeyboardColorScheme? {
+        if (entry.dynamicColor) {
+            return DynamicThemes.create(context, id, entry.name.ifEmpty { id })
+        }
+        val primary = entry.primaryColor ?: extractImageSeedColor(context, entry)
         val cfgColor = longToColor(primary)
         val lightened = lightenColor(cfgColor)
         val veryLight = lightenColor(cfgColor, 0.8f)
@@ -148,8 +208,8 @@ object KeyboardThemes {
         return KeyboardColorScheme(
             id = id,
             name = entry.name.ifEmpty { id },
-            specialKeyLight = veryLight,
-            specialKeyDark = cfgColor,
+            specialKeyLight = entry.specialKeyBgColor?.let { longToColor(it) } ?: veryLight,
+            specialKeyDark = entry.specialKeyBgColorDark?.let { longToColor(it) } ?: cfgColor,
             accentLight = cfgColor,
             accentDark = lightened,
             primaryLight = cfgColor,
@@ -243,7 +303,7 @@ object KeyboardThemes {
 
     /** 生成种子色缓存键：src + 文件大小/修改时间，文件变化后自动失效。 */
     private fun themeSeedCacheKey(context: Context, src: String): String {
-        val userFile = File(context.filesDir, "rime/$src")
+        val userFile = resolveThemeImagePath(context, src)
         val file = if (userFile.isFile) userFile else null
         val size = file?.length() ?: -1L
         val mtime = file?.lastModified() ?: -1L
@@ -334,16 +394,21 @@ object KeyboardThemes {
         return Color(r.coerceIn(0f, 1f), g.coerceIn(0f, 1f), b.coerceIn(0f, 1f))
     }
 
-    /** 应用配置覆盖，返回覆盖后的 KeyboardColorScheme。 */
+    /** 应用配置覆盖，返回覆盖后的 KeyboardColorScheme。声明 dynamic_color 的条目整体转为动态配色。 */
     private fun applyConfigOverrides(context: Context, scheme: KeyboardColorScheme): KeyboardColorScheme {
         val entry = configOverrides[scheme.id] ?: return scheme
-        val primary = if (entry.primaryColor != 0L) entry.primaryColor
-        else extractImageSeedColor(context, entry)
+        if (entry.dynamicColor) {
+            return DynamicThemes.create(context, scheme.id, entry.name.ifEmpty { scheme.name })
+                ?: scheme
+        }
+        val primary = entry.primaryColor ?: extractImageSeedColor(context, entry)
         val cfgColor = longToColor(primary)
         val lightened = lightenColor(cfgColor)
         val global = KeysConfigHelper.getKeyboardColors()
         return scheme.copy(
             name = entry.name.ifEmpty { scheme.name },
+            specialKeyLight = entry.specialKeyBgColor?.let { longToColor(it) } ?: scheme.specialKeyLight,
+            specialKeyDark = entry.specialKeyBgColorDark?.let { longToColor(it) } ?: scheme.specialKeyDark,
             accentLight = cfgColor,
             accentDark = lightened,
             primaryLight = cfgColor,
@@ -371,12 +436,14 @@ object KeyboardThemes {
         )
     }
 
-    /** 预计算后的主题列表。 */
+    /** 预计算后的主题列表（组合中读取会订阅缓存重建）。 */
     val themes: List<KeyboardColorScheme>
         get() = themesCache
 
     fun getThemeById(id: String): KeyboardColorScheme {
-        return themesMapCache[id] ?: themesCache[0]
+        // 先读一次状态化缓存建立 Compose 订阅，动态配色重建后 UI 自动重组
+        val cache = themesCache
+        return themesMapCache[id] ?: cache[0]
     }
 
     fun getSpecialKeyColor(themeId: String, isDark: Boolean): Color {
@@ -396,6 +463,14 @@ object KeyboardThemes {
             red = accent.red * 0.6f, green = accent.green * 0.6f, blue = accent.blue * 0.6f
         )
     }
+
+    /**
+     * 特殊键（确定/删除等）文字颜色：按功能键背景亮度自适应——
+     * 亮背景配 [onLightBgText]（通常为皮肤按键文字色），暗背景配柔和亮白
+     * （非纯白，高对比在暗光下刺眼）。实机各布局与主题预览共用此逻辑保证一致。
+     */
+    fun getSpecialKeyTextColorForBackground(bgColor: Color, onLightBgText: Color): Color =
+        if (bgColor.luminance() > 0.5f) onLightBgText else Color(0xFFE8EAED)
 
     fun getPrimaryColor(themeId: String, isDark: Boolean): Color {
         val theme = getThemeById(themeId)
@@ -448,14 +523,24 @@ object KeyboardThemes {
         return if (isDark) theme.dividerColorDark else theme.dividerColorLight
     }
 
+    /** 动态配色主题不走 color_schemes 静态覆盖，直接从主题缓存取色；其他主题返回 null 走原逻辑。 */
+    private inline fun dynamicThemeColor(themeId: String, selector: (KeyboardColorScheme) -> Color): Color? {
+        // 从状态化缓存查找以建立 Compose 订阅：缓存整体替换后 UI 自动重组
+        val theme = themesCache.firstOrNull { it.id == themeId } ?: return null
+        if (!theme.isDynamic) return null
+        return selector(theme)
+    }
+
     /** 返回 color_schemes 中显式定义的按键背景色，未定义返回 null。 */
     fun getKeyBgColorOverride(themeId: String, isDark: Boolean): Color? {
+        dynamicThemeColor(themeId) { if (isDark) it.keyBgDark else it.keyBgLight }?.let { return it }
         val entry = configOverrides[themeId] ?: return null
         return resolveKeyBgColor(entry, isDark)
     }
 
     /** 返回 color_schemes 中显式定义的按键文字色，未定义返回 null。 */
     fun getKeyTextColorOverride(themeId: String, isDark: Boolean): Color? {
+        dynamicThemeColor(themeId) { if (isDark) it.keyTextColorDark else it.keyTextColorLight }?.let { return it }
         val entry = configOverrides[themeId] ?: return null
         return if (isDark) {
             entry.keyTextColorDark?.let { longToColor(it) }
@@ -466,6 +551,7 @@ object KeyboardThemes {
 
     /** 返回 color_schemes 中显式定义的候选文字色，未定义返回 null。 */
     fun getCandidateTextColorOverride(themeId: String, isDark: Boolean): Color? {
+        dynamicThemeColor(themeId) { if (isDark) it.candidateTextColorDark else it.candidateTextColorLight }?.let { return it }
         val entry = configOverrides[themeId] ?: return null
         return if (isDark) {
             entry.candidateTextColorDark?.let { longToColor(it) }
@@ -476,6 +562,7 @@ object KeyboardThemes {
 
     /** 返回 color_schemes 中显式定义的候选选中文字色，未定义返回 null。 */
     fun getCandidateSelectedTextColorOverride(themeId: String, isDark: Boolean): Color? {
+        dynamicThemeColor(themeId) { if (isDark) it.candidateSelectedTextColorDark else it.candidateSelectedTextColorLight }?.let { return it }
         val entry = configOverrides[themeId] ?: return null
         return if (isDark) {
             entry.candidateSelectedTextColorDark?.let { longToColor(it) }

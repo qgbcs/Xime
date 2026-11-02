@@ -1,5 +1,8 @@
 package com.kingzcheung.xime
 
+import com.kingzcheung.xime.i18n.tr
+
+import android.content.Context
 import android.content.Intent
 import android.Manifest
 import android.os.Build
@@ -34,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowInsetsControllerCompat
 import com.kingzcheung.xime.rime.RimeConfigHelper
 import com.kingzcheung.xime.rime.RimeEngine
+import com.kingzcheung.xime.settings.AppLocale
 import com.kingzcheung.xime.settings.ImportManager
 import com.kingzcheung.xime.settings.KeysConfigHelper
 import com.kingzcheung.xime.settings.SchemaManager
@@ -54,6 +58,19 @@ class MainActivity : ComponentActivity() {
     
     companion object {
         private const val TAG = "MainActivity"
+
+        /** 构造跳转到指定插件网络授权页的 Intent（IME 等后台场景调用）。 */
+        fun buildPluginAuthIntent(context: android.content.Context, pluginId: String): Intent {
+            return Intent(context, MainActivity::class.java).apply {
+                putExtra("open_fragment", "plugins")
+                putExtra("open_plugin_id", pluginId)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        }
+    }
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLocale.wrap(newBase))
     }
 
     override fun onDestroy() {
@@ -65,9 +82,9 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            Toast.makeText(this, "麦克风权限已授权", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, tr(R.string.s_maikefengquanxianyishouquan), Toast.LENGTH_SHORT).show()
         } else {
-            Toast.makeText(this, "麦克风权限被拒绝，无法使用语音输入", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, tr(R.string.s_maikefengquanxianbeijujue_wufa_ac432), Toast.LENGTH_SHORT).show()
         }
         finish()
     }
@@ -100,13 +117,14 @@ class MainActivity : ComponentActivity() {
             if (!PermissionHelper.hasRecordAudioPermission(this)) {
                 permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             } else {
-                Toast.makeText(this, "麦克风权限已授权", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, tr(R.string.s_maikefengquanxianyishouquan), Toast.LENGTH_SHORT).show()
                 finish()
             }
             return
         }
         
         val openFragment = intent?.getStringExtra("open_fragment")
+        val openPluginId = intent?.getStringExtra("open_plugin_id")
 
         setContent {
             val context = this
@@ -164,6 +182,7 @@ class MainActivity : ComponentActivity() {
                     } else {
                         SettingsScreen(
                             initialRoute = openFragment,
+                            initialPluginId = openPluginId,
                             onThemeChanged = {
                                 darkMode = SettingsPreferences.getDarkMode(context)
                                 keyboardTheme = SettingsPreferences.getKeyboardTheme(context)
@@ -222,9 +241,9 @@ class MainActivity : ComponentActivity() {
                 is ImportManager.ImportResult.Content -> {
                     launch(Dispatchers.Main) {
                         val msg = when {
-                            !result.success -> "导入失败"
-                            result.installedDirect -> "导入成功，已放入 rime 目录"
-                            else -> "方案导入成功，请到「输入方案」页面部署"
+                            !result.success -> tr(R.string.s_daorushibai)
+                            result.installedDirect -> tr(R.string.s_daoruchenggong_yifangru_rime_mulu)
+                            else -> tr(R.string.s_fangandaoruchenggong_qingdao_s_3a7ee)
                         }
                         Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
                     }
@@ -234,19 +253,19 @@ class MainActivity : ComponentActivity() {
                     launch(Dispatchers.Main) {
                         Toast.makeText(
                             this@MainActivity,
-                            "插件「${result.pluginInfo?.name}」安装成功",
+                            tr(R.string.s_chajian_anzhuangchenggong, result.pluginInfo?.name),
                             Toast.LENGTH_LONG
                         ).show()
                     }
                 }
                 is ImportManager.ImportResult.Failed -> {
                     launch(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "导入失败：${result.reason}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, tr(R.string.s_daorushibai_2, result.reason), Toast.LENGTH_LONG).show()
                     }
                 }
                 is ImportManager.ImportResult.Unsupported -> {
                     launch(Dispatchers.Main) {
-                        Toast.makeText(this@MainActivity, "不支持的文件类型", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@MainActivity, tr(R.string.s_buzhichidewenjianleixing), Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -278,12 +297,12 @@ class MainActivity : ComponentActivity() {
             }
             launch(Dispatchers.Main) {
                 if (result == null) {
-                    Toast.makeText(this@MainActivity, "背景图导入失败", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, tr(R.string.s_beijingtudaorushibai), Toast.LENGTH_LONG).show()
                 } else {
                     copyThemeConfigTemplate(result)
                     Toast.makeText(
                         this@MainActivity,
-                        "背景图已导入 rime/themes/$result，配置模板已复制到剪贴板",
+                        tr(R.string.s_beijingtuyidaoru_rime_themes_p_634bd, result),
                         Toast.LENGTH_LONG,
                     ).show()
                 }
@@ -295,9 +314,11 @@ class MainActivity : ComponentActivity() {
     private fun copyThemeConfigTemplate(fileName: String) {
         val schemeId = fileName.substringBeforeLast('.')
         val template = """
+            # 粘贴到 xime.custom.yaml 顶层使用。该文件不是 Rime 的 patch 层：
+            # 直接写顶层键，不要用 patch: 包一层（写了会被静默忽略）。
             color_schemes:
               $schemeId:
-                name: "自定义背景 ${schemeId.removePrefix("custom_")}"
+                name: "${tr(R.string.s_zidingyibeijing)} ${schemeId.removePrefix("custom_")}"
                 keyboard_background:
                   type: image
                   src: "themes/$fileName"

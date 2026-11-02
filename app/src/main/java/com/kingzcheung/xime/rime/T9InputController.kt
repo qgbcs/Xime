@@ -41,8 +41,12 @@ import com.kingzcheung.xime.util.InputHistoryRecorder
 class T9InputController(
     private val context: Context,
     private val rimeEngine: RimeEngine = RimeEngine.getInstance(),
-    private val onCompositionRefresh: ((RimeComposition) -> Unit)? = null,
+    private val onCompositionRefresh: ((RimeComposition, List<com.kingzcheung.xime.service.T9CandidateInjection>) -> Unit)? = null,
     private val onRightCommitUndone: ((Int) -> Unit)? = null,
+    /** 候选词变换（hotPath 插件能力）：后台取数后、post 主线程前同步调用
+     *  （阻塞至多 15ms，主线程零等待）；返回带引擎锚点的插件候选注入列表
+     *  （text 追加项），引擎结果原样使用（T9 不支持引擎引用替换）。null = 不干预。 */
+    private val candidateTransform: ((RimeProcessResult) -> List<com.kingzcheung.xime.service.T9CandidateInjection>?)? = null,
 ) {
     companion object {
         private const val TAG = "T9InputController"
@@ -166,6 +170,15 @@ class T9InputController(
     }
 
     /**
+     * 候选词变换（hotPath 插件能力）：引擎结果原样 + 插件候选注入列表。
+     * t9Dispatcher 线程同步等插件至多 15ms；失败/不干预返回空注入。
+     */
+    private fun transformInjections(result: RimeProcessResult): Pair<RimeProcessResult, List<com.kingzcheung.xime.service.T9CandidateInjection>> {
+        val injections = candidateTransform?.invoke(result) ?: emptyList()
+        return result to injections
+    }
+
+    /**
      * 后台线程：flush 后一次取全量结果 + 左栏数据，经 [mainHandler] 投递到 Main
      * 更新 Compose 状态，并携带 composition 通知服务层刷新（避免其内部重复
      * getComposition）。post 为 fire-and-forget，任务完成不依赖 Main 线程；
@@ -173,12 +186,13 @@ class T9InputController(
      */
     private fun refreshOnBackground() {
         val data = fetchAll()
-        val composition = data.result.toComposition()
+        val (finalResult, injections) = transformInjections(data.result)
+        val composition = finalResult.toComposition()
         val gen = ++uiGeneration
         mainHandler.post {
             if (gen != uiGeneration) return@post
-            onCompositionRefresh?.invoke(composition)
-            applyCandidates(data.result, data.panel, data.options)
+            onCompositionRefresh?.invoke(composition, injections)
+            applyCandidates(finalResult, data.panel, data.options)
         }
     }
 
@@ -369,7 +383,8 @@ class T9InputController(
         rimeEngine.t9FlushRimeInput()
         val undoneCount = rimeEngine.t9GetAndConsumeUndoneRightCommitCount()
         val data = fetchAll()
-        val composition = data.result.toComposition()
+        val (finalResult, injections) = transformInjections(data.result)
+        val composition = finalResult.toComposition()
         val deleteResult = if (result) DeleteResult.DELETED else DeleteResult.NOT_CONSUMED
         val gen = ++uiGeneration
         mainHandler.post {
@@ -379,8 +394,8 @@ class T9InputController(
                 onRightCommitUndone?.invoke(undoneCount)
             }
             if (gen == uiGeneration) {
-                onCompositionRefresh?.invoke(composition)
-                applyCandidates(data.result, data.panel, data.options)
+                onCompositionRefresh?.invoke(composition, injections)
+                applyCandidates(finalResult, data.panel, data.options)
             }
             callback(deleteResult)
         }
@@ -402,7 +417,7 @@ class T9InputController(
             try {
                 processDelete(callback)
             } catch (t: Throwable) {
-                Log.e(TAG, "onDeleted drain failed", t)
+                FileLogger.e(TAG, "onDeleted drain failed", t)
             }
         }
     }

@@ -1,5 +1,9 @@
 package com.kingzcheung.xime.settings
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import android.content.Context
 import android.net.Uri
 import com.kingzcheung.xime.plugin.core.model.PluginInfo
@@ -25,7 +29,10 @@ object ImportManager {
 
     sealed class ImportResult {
         /** 方案 / 词典 / 背景图等，走 [SchemaManager.saveImportedFile] 的落地结果。 */
-        data class Content(val success: Boolean, val installedDirect: Boolean) : ImportResult()
+        data class Content(
+            val success: Boolean,
+            val installedDirect: Boolean,
+        ) : ImportResult()
 
         /** 插件（.xipk）安装结果。 */
         data class Plugin(val pluginInfo: PluginInfo?) : ImportResult()
@@ -41,7 +48,7 @@ object ImportManager {
     /** 从 URI 导入（文件选择器、分享等）。按文件名自动路由。 */
     suspend fun import(context: Context, uri: Uri): ImportResult = withContext(Dispatchers.IO) {
         val displayName = queryDisplayName(context, uri)
-            ?: return@withContext ImportResult.Failed("无法识别文件名")
+            ?: return@withContext ImportResult.Failed(tr(R.string.s_wufashibiewenjianming))
         val name = SchemaManager.sanitizeDisplayName(displayName)
 
         if (isPluginFile(name)) {
@@ -55,7 +62,7 @@ object ImportManager {
                 else -> context.contentResolver.openInputStream(uri)
             }
             if (stream == null) {
-                ImportResult.Failed("无法读取文件")
+                ImportResult.Failed(tr(R.string.s_wufaduquwenjian))
             } else {
                 val r = SchemaManager.saveImportedFile(context, name, stream)
                 ImportResult.Content(r.success, r.installedDirect)

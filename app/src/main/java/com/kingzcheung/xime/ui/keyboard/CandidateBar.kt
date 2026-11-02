@@ -3,7 +3,9 @@ package com.kingzcheung.xime.ui.keyboard
 import com.kingzcheung.xime.BuildConfig
 import com.kingzcheung.xime.service.PredictionManager
 import android.annotation.SuppressLint
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -24,12 +26,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.twotone.Image
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -46,8 +51,22 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.composed
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Fill
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
@@ -55,12 +74,14 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.PopupProperties
 import com.kingzcheung.xime.R
+import com.kingzcheung.xime.clipboard.ClipboardItem
 import com.kingzcheung.xime.keyboard.KeyboardPage
 import com.kingzcheung.xime.keyboard.OverlayRoute
 import com.kingzcheung.xime.keyboard.PanelType
@@ -78,6 +99,8 @@ data class CandidateBarVisuals(
     val accentColor: Color = Color(0xFF1A73E8),
     val selectedTextColor: Color = Color(0xFF1A73E8),
     val isDarkTheme: Boolean = false,
+    /** 按键底色：深色下圆形图标按钮与按键同材质（半透明白叠在键盘背景上）。 */
+    val keyBgColor: Color = Color.Unspecified,
 )
 
 data class CandidateBarCallbacks(
@@ -98,6 +121,7 @@ data class CandidateBarCallbacks(
 fun CandidateBar(
     state: CandidateBarState,
     page: KeyboardPage = KeyboardPage.Main(com.kingzcheung.xime.keyboard.MainType.FULL),
+    candidatePageExpanded: Boolean = false,
     toolbarActions: List<ToolbarAction> = emptyList(),
     visuals: CandidateBarVisuals,
     callbacks: CandidateBarCallbacks,
@@ -114,21 +138,30 @@ fun CandidateBar(
 ) {
     val configuration = LocalConfiguration.current
     val isLandscape = !isFloatingMode && configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-    val horizontalPadding = if (isLandscape) 50.dp else 8.dp
+    // 统一 8dp 靠边；横屏挖孔/导航栏的物理避让由服务层内容容器的边衬区 padding 统一处理，
+    // 不再叠加手机横屏专用的 50dp 缩进
+    val horizontalPadding = 8.dp
     val context = LocalContext.current
 
-    // M3 角色色：图标按钮背景用 surface 与 primary 的混合色调（带种子色但不过于强烈），
-    // 按压态用 onSurface 12% state layer
-    val iconButtonContainer = androidx.compose.ui.graphics.lerp(
-        MaterialTheme.colorScheme.surface,
-        MaterialTheme.colorScheme.primary,
-        0.15f
-    )
+    // 圆形图标按钮底色（logo / 返回 / 收起）：深色下与按键同材质——按键就是半透明白叠在
+    // 键盘背景上；若仍用 surface 与 primary 混色，surface 在深色下只有 6% 亮度，混出的圆底
+    // 与键盘背景几乎同色，圆底等于不存在。亮色下按键是纯白，图标按钮改用混合色更耐看。
+    val iconButtonContainer = if (visuals.isDarkTheme && visuals.keyBgColor != Color.Unspecified) {
+        visuals.keyBgColor
+    } else {
+        androidx.compose.ui.graphics.lerp(
+            MaterialTheme.colorScheme.surface,
+            MaterialTheme.colorScheme.primary,
+            0.15f
+        )
+    }
     val iconButtonTint = MaterialTheme.colorScheme.onSurfaceVariant
     val showComments = SettingsPreferences.showCandidateComments(context)
     val inputTextLocation = SettingsPreferences.getInputTextLocation(context)
     val showInputBoxStyle = inputTextLocation == SettingsPreferences.INPUT_TEXT_INPUT_BOX
     val candidateTextSize = SettingsPreferences.getCandidateTextSize(context)
+    val candidateFontFamily = AppFonts.candidateFontFamily
+    val commentFontFamily = AppFonts.commentFontFamily
 
     val density = LocalDensity.current
     // 长按自定义候选词弹出操作菜单：null=菜单关闭，否则为被长按的词条文本
@@ -146,10 +179,16 @@ fun CandidateBar(
         rowPaddingPx + maxOf(moreBtn, clearBtn) + hideBtn + 8.dp.toPx()
     }
 
+    // 候选行滚动状态：需在 state 分支前声明——ChineseCandidates 的 hasAnyMore
+    // 叠加 canScrollForward 判断（见分支内注释）
+    val candidateListState = rememberLazyListState()
+
     val displayCandidates: List<String>
     val candidateDisplayItems: List<CandidateDisplayItem>
     val displayAssociation: List<String>
     val displayComments: List<String>
+    /** 与 [displayCandidates] 等长：图片候选条目（非图片位为 null）。 */
+    val displayImages: List<ClipboardItem?>
     val hasAnyMore: Boolean
     val showInputTextRow: Boolean
     val showLeftIcon: Boolean
@@ -160,6 +199,7 @@ fun CandidateBar(
             candidateDisplayItems = emptyList()
             displayAssociation = emptyList()
             displayComments = emptyList()
+            displayImages = emptyList()
             hasAnyMore = false
             showLeftIcon = true
         }
@@ -189,15 +229,15 @@ fun CandidateBar(
                         measureText(item.displayText).toDouble() + itemPaddingPx
                     }.toFloat()
                     val dividerWidthPx = with(density) { 9.dp.toPx() }
-                    val availablePx = lazyRowWidthPx - regularWidthPx - dividerWidthPx
+                    val availablePx = rowWidthPx - regularWidthPx - dividerWidthPx
 
-                    var usedPx = 0f
+                    var used = 0f
                     val result = mutableListOf<String>()
                     for (c in s.associationCandidates) {
                         val w =
                             measureText(c) + itemPaddingPx + (if (result.isEmpty()) 0f else spacingPx)
-                        if (usedPx + w <= availablePx) {
-                            usedPx += w
+                        if (used + w <= availablePx) {
+                            used += w
                             result.add(c)
                         } else break
                     }
@@ -212,6 +252,7 @@ fun CandidateBar(
             hasAnyMore = s.hasMore
             showLeftIcon = false
             displayComments = s.comments
+            displayImages = emptyList()
         }
         is CandidateBarState.EnglishCandidates -> {
             displayCandidates = s.candidates.take(20)
@@ -222,8 +263,10 @@ fun CandidateBar(
             displayAssociation = emptyList()
             hasAnyMore = false
             showLeftIcon = false
+            displayImages = emptyList()
         }
         is CandidateBarState.ClipboardDisplay -> {
+            // images 与 candidates 由服务层按同一列表同序构造，take 必须同源同步，否则索引错位
             displayCandidates = s.candidates.take(20)
             candidateDisplayItems = displayCandidates.mapIndexed { index, candidate ->
                 CandidateDisplayItem(index, candidate, candidate)
@@ -242,6 +285,7 @@ fun CandidateBar(
             displayAssociation = emptyList()
             hasAnyMore = false
             showLeftIcon = false
+            displayImages = emptyList()
         }
     }
     showInputTextRow = when (page) {
@@ -254,20 +298,42 @@ fun CandidateBar(
         candidateListState.scrollToItem(0)
     }
 
+    // 编码气泡：候选栏内计算编码文本后回写此状态，供 Column 的 drawBehind 读取绘制。
+    // drawBehind 在下一帧读取最新值，无需同步；初始值取自当前 state 保证首帧即显示。
+    var preeditBubbleText by remember(state) {
+        mutableStateOf((state as? CandidateBarState.ChineseCandidates)?.preeditText
+            ?: (state as? CandidateBarState.ChineseCandidates)?.inputText ?: "")
+    }
+    var preeditBubbleCaret by remember(state) {
+        mutableStateOf((state as? CandidateBarState.ChineseCandidates)?.preeditCaretPos ?: -1)
+    }
+    val showPreeditBubble = showInputTextRow && preeditBubbleText.isNotEmpty() && !showInputBoxStyle
+
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .height(50.dp)
+            .height(IconButtonRowHeight)
+            .drawPreeditBubble(
+                text = preeditBubbleText,
+                caretOffset = preeditBubbleCaret,
+                enabled = showPreeditBubble,
+                bubbleColor = visuals.backgroundColor,
+                textColor = visuals.textColor
+            )
             .background(visuals.backgroundColor)
             .padding(horizontal = horizontalPadding),
         verticalArrangement = Arrangement.Center
     ) {
         if (isVoiceSticky) {
-            // 常驻语音模式：候选栏显示语音引擎名 + 频谱
+            // 常驻语音模式：候选栏显示语音引擎名 + 频谱。
+            // 整条候选栏可点：轻触频谱即结束识别，不必非去点空格。
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .fillMaxHeight(),
+                    .fillMaxHeight()
+                    .clickable(enabled = callbacks.onVoiceStop != null) {
+                        callbacks.onVoiceStop?.invoke()
+                    },
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -305,41 +371,10 @@ fun CandidateBar(
 
         val displayText = (state as? CandidateBarState.ChineseCandidates)?.preeditText
             ?: (state as? CandidateBarState.ChineseCandidates)?.inputText ?: ""
-        val showInputText = showInputTextRow && displayText.isNotEmpty() && !showInputBoxStyle
-
-        if (showInputText) {
-            val inputTextInteractionSource = remember { MutableInteractionSource() }
-            val isInputTextPressed by inputTextInteractionSource.collectIsPressedAsState()
-
-            Box(
-                modifier = Modifier
-                    .padding(vertical = 0.5.dp)
-                    .fillMaxWidth()
-                    .height(16.dp),
-                contentAlignment = Alignment.CenterStart,
-
-            ) {
-                Text(
-                    text = displayText,
-                    color = visuals.textColor.copy(alpha = 0.8f),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Normal,
-                    lineHeight = 16.sp,
-                    maxLines = 1,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(
-                            if (isInputTextPressed && callbacks.onInputTextClick != null)
-                                (if (visuals.isDarkTheme) Color.White.copy(alpha = 0.15f) else Color.Black.copy(
-                                    alpha = 0.1f
-                                ))
-                            else
-                                Color.Transparent
-                        )
-                        .padding(horizontal = 0.dp)
-                )
-            }
-        }
+        // 编码显示已改为候选栏顶部的悬浮气泡（drawBehind 绘制，见 drawPreeditBubble），
+        // 栏内不再为编码保留布局空间——打字态与联想态的候选行共用同一垂直位置。
+        preeditBubbleText = displayText
+        preeditBubbleCaret = (state as? CandidateBarState.ChineseCandidates)?.preeditCaretPos ?: -1
 
         Row(
             modifier = Modifier
@@ -352,17 +387,17 @@ fun CandidateBar(
                         if (page is KeyboardPage.Overlay && page.route is OverlayRoute.SchemaList && callbacks.onBack != null) {
                             Box(
                                 modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(RoundedCornerShape(16.dp))
+                                    .size(IconButtonSize)
+                                    .clip(CircleShape)
                                     .background(iconButtonContainer)
                                     .clickable { callbacks.onBack() },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                                    contentDescription = "返回菜单",
+                                    contentDescription = tr(R.string.s_fanhuicaidan),
                                     tint = visuals.accentColor,
-                                    modifier = Modifier.size(24.dp)
+                                    modifier = Modifier.size(IconButtonGlyphSize)
                                 )
                             }
                         } else {
@@ -399,7 +434,7 @@ fun CandidateBar(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.ContentCopy,
-                                contentDescription = "剪切板",
+                                contentDescription = tr(R.string.s_jianqieban),
                                 tint = visuals.accentColor,
                                 modifier = Modifier.size(16.dp)
                             )
@@ -410,30 +445,46 @@ fun CandidateBar(
             }
 
             if (inlineSuggestions.isNotEmpty()) {
-                inlineSuggestions.forEachIndexed { index, suggestion ->
-                    InlineSuggestionView(
-                        suggestion = suggestion,
+                BoxWithConstraints(modifier = Modifier.weight(1f)) {
+                    // 建议宽度不超过本行实际分到的栏宽（独占候选栏时仍为 180dp）：
+                    // 与候选/剪贴板同显时本行只有一半栏宽，固定 180dp 会越界——
+                    // InlineContentView 是独立 surface 渲染，clipToBounds 裁不住，
+                    // 越界部分会压到右侧候选上（issue #1136）。
+                    val suggestionWidth = minOf(maxWidth, 180.dp)
+                    LazyRow(
+                        // 占满配额：内容少时建议靠左、右侧留白到收起按钮（收起按钮
+                        // 因此固定最右）；内容超出配额时占满并可横向滑动查看后续建议；
+                        // clipToBounds：滑动时滑出边界的建议裁剪掉，避免与左侧 logo 重叠
                         modifier = Modifier
-                            .fillMaxHeight()
-                            .width(180.dp),
-                    )
-                    if (index < inlineSuggestions.lastIndex) {
-                        InlineSuggestionDivider(color = visuals.dividerColor)
+                            .fillMaxWidth()
+                            .clipToBounds(),
+                    ) {
+                        itemsIndexed(inlineSuggestions, key = { index, _ -> index }) { _, suggestion ->
+                            Box(modifier = Modifier.fillMaxHeight()) {
+                                InlineSuggestionView(
+                                    suggestion = suggestion,
+                                    modifier = Modifier
+                                        .fillMaxHeight()
+                                        .width(suggestionWidth),
+                                )
+                                // 每条尾部 1dp 分隔线：条目之间为间隔，最后一条的尾线
+                                // 同时充当与候选词区的分界（与旧平铺布局视觉一致）
+                                InlineSuggestionDivider(
+                                    modifier = Modifier.align(Alignment.CenterEnd),
+                                    color = visuals.dividerColor,
+                                )
+                            }
+                        }
                     }
                 }
-                Box(
-                    modifier = Modifier
-                        .width(1.dp)
-                        .fillMaxHeight()
-                        .padding(vertical = 6.dp)
-                        .background(visuals.dividerColor),
-                )
             }
 
             LazyRow(
                 modifier = if (state is CandidateBarState.Idle) Modifier else Modifier.weight(1f),
                 state = candidateListState,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                // 图片候选芯片比文字候选高：居中对齐，避免同排文字候选被顶到上沿
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 itemsIndexed(candidateDisplayItems, key = { _, item -> item.index }) { _, item ->
                     val candidate = item.candidate
@@ -515,7 +566,11 @@ fun CandidateBar(
                     }
                 }
 
-                if (displayAssociation.isNotEmpty()) {
+                // 仅当左侧存在打字候选时才需要分隔线；纯联想态（无打字候选）下
+                // 该竖线会孤悬列表最左缘，属多余元素。
+                // 注意：分隔线在条件内，联想词 items 必须在条件外——纯联想态
+                // displayCandidates 为空，若一并包进条件会导致联想词整个不渲染。
+                if (displayCandidates.isNotEmpty() && displayAssociation.isNotEmpty()) {
                     item(key = "divider") {
                         Box(
                             modifier = Modifier
@@ -525,6 +580,7 @@ fun CandidateBar(
                                 .padding(horizontal = 4.dp)
                         )
                     }
+                }
 
                     itemsIndexed(displayAssociation, key = { index, _ -> "assoc-$index" }) { index, candidate ->
                         val assocState = state as? CandidateBarState.AssociationOnly
@@ -593,7 +649,7 @@ fun CandidateBar(
 
                         Box(
                             modifier = Modifier
-                                .size(32.dp)
+                                .size(IconButtonSize)
                                 .clickable(
                                     interactionSource = hideKeyboardInteractionSource,
                                     indication = null,
@@ -603,28 +659,28 @@ fun CandidateBar(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.KeyboardArrowDown,
-                                contentDescription = "收起键盘",
+                                contentDescription = tr(R.string.s_shouqijianpan),
                                 tint = if (isHideKeyboardPressed) iconButtonTint.copy(alpha = 0.6f) else iconButtonTint,
-                                modifier = Modifier.size(22.dp)
+                                modifier = Modifier.size(IconButtonGlyphSize)
                             )
                         }
                     }
                 }
-                page is KeyboardPage.Overlay && page.route is OverlayRoute.CandidatePage -> {
+                candidatePageExpanded -> {
                     if (callbacks.onBack != null) {
                         Box(
                             modifier = Modifier
-                                .size(28.dp)
-                                .clip(RoundedCornerShape(14.dp))
+                                .size(IconButtonSize)
+                                .clip(CircleShape)
                                 .background(iconButtonContainer)
                                 .clickable { callbacks.onBack() },
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.KeyboardArrowUp,
-                                contentDescription = "返回键盘",
+                                contentDescription = tr(R.string.s_fanhuijianpan),
                                 tint = visuals.accentColor,
-                                modifier = Modifier.size(24.dp)
+                                modifier = Modifier.size(IconButtonGlyphSize)
                             )
                         }
                     }
@@ -644,7 +700,7 @@ fun CandidateBar(
                         modifier = Modifier
                             .width(30.dp)
                             .height(24.dp)
-                            .clip(RoundedCornerShape(6.dp))
+                            .clip(CircleShape)
                             .background(
                                 if (isClearPressed) (if (visuals.isDarkTheme) Color.White.copy(alpha = 0.15f) else Color.Black.copy(
                                     alpha = 0.1f
@@ -659,7 +715,7 @@ fun CandidateBar(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = "清空",
+                            text = tr(R.string.s_qingkong),
                             color = if (isClearPressed) visuals.textColor.copy(alpha = 0.6f) else visuals.textColor,
                             fontSize = 11.sp
                         )
@@ -674,7 +730,7 @@ fun CandidateBar(
                         modifier = Modifier
                             .width(30.dp)
                             .height(24.dp)
-                            .clip(RoundedCornerShape(6.dp))
+                            .clip(CircleShape)
                             .background(
                                 if (isMorePressed) (if (visuals.isDarkTheme) Color.White.copy(alpha = 0.15f) else Color.Black.copy(
                                     alpha = 0.1f
@@ -688,10 +744,11 @@ fun CandidateBar(
                             ),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = "更多",
-                            color = if (isMorePressed) visuals.textColor.copy(alpha = 0.6f) else visuals.textColor,
-                            fontSize = 11.sp
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            contentDescription = tr(R.string.s_gengduohouxuan),
+                            tint = if (isMorePressed) visuals.textColor.copy(alpha = 0.6f) else visuals.textColor,
+                            modifier = Modifier.size(22.dp)
                         )
                     }
                 }
@@ -731,7 +788,8 @@ fun CandidateItem(
             color = if (isSelected) selectedTextColor else textColor,
             fontSize = fontSize,
             fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal,
-            maxLines = 1
+            maxLines = 1,
+            fontFamily = candidateFontFamily
         )
         if (comment.isNotEmpty()) {
             Spacer(modifier = Modifier.width(3.dp))
@@ -740,8 +798,112 @@ fun CandidateItem(
                 color = if (isSelected) selectedTextColor.copy(alpha = 0.6f) else textColor.copy(alpha = 0.5f),
                 fontSize = (fontSize.value * 11f / 19f).sp,
                 fontWeight = FontWeight.Normal,
-                maxLines = 1
+                maxLines = 1,
+                fontFamily = commentFontFamily
             )
         }
     }
 }
+
+/**
+ * 编码悬浮气泡：在候选栏顶部之上（栏外）绘制一个圆角胶囊气泡显示当前拼音编码。
+ *
+ * 参考 SwipeBubble 的锚定方式，但为纯绘制实现：
+ * - 锚定宿主（候选栏 Column）左上角，气泡体向上悬浮于栏外空间；
+ * - drawBehind 绘制不参与布局、不拦截触摸事件——候选栏上方的快捷发送表单/
+ *   手写区等 UI 不受任何布局影响；
+ * - IME 窗口为 MATCH_PARENT 全屏（onConfigureWindow），栏外绘制不会被窗口裁剪。
+ *
+ * 视觉：浅色模式近白底/深色模式深灰底的圆角胶囊（92% 不透明），无边框无阴影；
+ * 编码文字在气泡内垂直居中；气泡与候选栏顶部之间留 2dp 间隙；宽度自适应，
+ * 超出宿主右缘时左移钳制。
+ *
+ * 注意：不能使用传入的主题背景色——CandidateBarVisuals.backgroundColor 为
+ * Color.Transparent（真实背景由外层绘制），以其合成会导致气泡无底色、
+ * 文字与 app 内容混叠不可读。此处以候选文字亮度推断深浅模式取对比底色。
+ */
+private fun Modifier.drawPreeditBubble(
+    text: String,
+    enabled: Boolean,
+    bubbleColor: Color,
+    textColor: Color,
+    caretOffset: Int = -1
+): Modifier = composed {
+    val density = LocalDensity.current
+    val cornerRadiusPx = with(density) { 4.dp.toPx() }
+    val horizontalPaddingPx = with(density) { 8.dp.toPx() }
+    val verticalPaddingPx = with(density) { 3.dp.toPx() }
+    val bubbleBottomGapPx = with(density) { 2.dp.toPx() }
+    val screenMarginPx = with(density) { 4.dp.toPx() }
+    val textSizePx = with(density) { 12.sp.toPx() }
+    val caretWidthPx = with(density) { 1.5.dp.toPx() }
+
+    // 气泡基色：优先用传入的主题背景色；其为全透明（CandidateBarVisuals 传
+    // Color.Transparent，真实背景由外层绘制）时按候选文字亮度推导，
+    // 保证浅色模式近白/深色模式深灰的可读对比。
+    val isDarkTheme = textColor.luminance() > 0.5f
+    val bubbleBaseColor = if (bubbleColor.alpha > 0.01f) {
+        bubbleColor
+    } else {
+        if (isDarkTheme) Color(0xFF2D2F31) else Color(0xFFFAFAFA)
+    }
+    // 半透明：62% 不透明度
+    val bubbleBgColor = bubbleBaseColor.copy(alpha = 0.62f)
+
+    // 文本画笔：与 SwipeBubble 同款 nativeCanvas 绘制方式
+    val bubbleTextPaint = remember(textColor, textSizePx) {
+        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = textSizePx
+            color = textColor.copy(alpha = 0.9f).toArgb()
+        }
+    }
+
+    drawBehind {
+        if (!enabled || text.isEmpty()) return@drawBehind
+
+        val fontMetrics = bubbleTextPaint.fontMetrics
+        val textWidth = bubbleTextPaint.measureText(text)
+        // 文本实际渲染高度以可见字形区间（ascent..descent）计，避免 lineHeight 参与导致偏移
+        val textHeight = fontMetrics.descent - fontMetrics.ascent
+        val bubbleWidth = textWidth + horizontalPaddingPx * 2
+        val bubbleHeight = textHeight + verticalPaddingPx * 2
+
+        // 气泡贴候选栏左缘，右向延伸；超出宿主右缘时整体左移钳制。
+        val clampedLeft = maxOf(
+            screenMarginPx,
+            minOf(0f, size.width - bubbleWidth - screenMarginPx).coerceAtLeast(screenMarginPx / 4f)
+        )
+        // 底部间隙：气泡底缘距候选栏顶缘 1dp
+        val top = -bubbleBottomGapPx - bubbleHeight
+
+        // 气泡主体
+        drawRoundRect(
+            color = bubbleBgColor,
+            topLeft = Offset(clampedLeft, top),
+            size = Size(bubbleWidth, bubbleHeight),
+            cornerRadius = CornerRadius(cornerRadiusPx)
+        )
+
+        // 文本垂直居中：基线 = 气泡顶 + (气泡高 - (ascent + descent)) / 2，
+        // ascent/descent 均为负/正相对基线的偏移，该式把字形区中点对准气泡中点。
+        drawIntoCanvas { composeCanvas ->
+            val baselineY = top + (bubbleHeight - (fontMetrics.ascent + fontMetrics.descent)) / 2f
+            composeCanvas.nativeCanvas.drawText(text, clampedLeft + horizontalPaddingPx, baselineY, bubbleTextPaint)
+        }
+
+        // 编码编辑光标：caret 在中间（offset < 文本长度）时在对应字符边界画竖线；
+        // 末尾/未知（-1）不画——默认打字态光标恒在编码末尾，保持观感不变
+        if (caretOffset in 0 until text.length) {
+            val caretCharIndex = caretOffset.coerceIn(0, text.length)
+            val caretX = clampedLeft + horizontalPaddingPx +
+                bubbleTextPaint.measureText(text, 0, caretCharIndex)
+            drawLine(
+                color = textColor,
+                start = Offset(caretX, top + verticalPaddingPx),
+                end = Offset(caretX, top + bubbleHeight - verticalPaddingPx),
+                strokeWidth = caretWidthPx
+            )
+        }
+    }
+}
+

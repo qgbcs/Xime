@@ -1,0 +1,8 @@
+<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
+    <!-- zh-MO 与 zh-HK 用词一致：整包走 values-zh-rHK，这里只补系统直接解析的名字类资源 -->
+    <string name="app_name">曦碼輸入法</string>
+    <string name="subtype_label_wubi">曦碼輸入法</string>
+    <string name="subtype_label_pinyin">拼音</string>
+    <string name="keyboard_name">曦碼輸入法</string>
+    <string name="ime_service_label">曦碼輸入法</string>
+</resources>

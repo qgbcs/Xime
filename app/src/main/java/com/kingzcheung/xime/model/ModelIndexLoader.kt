@@ -29,8 +29,7 @@ object ModelIndexLoader {
     private val yaml = Yaml(configuration = YamlConfiguration(strictMode = false))
 
     suspend fun loadFromRemote(context: Context): List<ModelInfo> = withContext(Dispatchers.IO) {
-        val cfg = KeysConfigHelper.loadXimeIndexConfig(context)
-        val baseUrls = cfg.baseUrls
+        val baseUrls = KeysConfigHelper.loadXimeIndexConfig(context).resolvedBaseUrls
 
         FileLogger.i(TAG, "Loading model index from ${baseUrls.size} mirrors")
 

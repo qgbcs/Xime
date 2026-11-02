@@ -1,5 +1,9 @@
 package com.kingzcheung.xime.settings
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -91,7 +95,10 @@ class WirelessImportHelper(private val context: Context) {
         val ip = getLocalIpAddress() ?: return null
         val url = "http://$ip:$port"
 
-        server = embeddedServer(CIO, port = port) {
+        // watchPaths 置空：ktor 的 stop() 会无条件 cleanupWatcher()，访问 lazy watcher 会在
+        // Android 上凭空创建再销毁一个平台 WatchService（自动重载并未启用），其 finalizer
+        // 随 GC 抛 ClosedWatchServiceException 刷日志；置空后该路径完全不触发。
+        server = embeddedServer(CIO, port = port, watchPaths = emptyList()) {
             routing {
                 // React 前端：index.html 与静态资源打包在 assets/www/
                 get("/") {
@@ -223,7 +230,9 @@ class WirelessImportHelper(private val context: Context) {
                     name.endsWith(".tgz", ignoreCase = true) ||
                     name.endsWith(".yaml") || name.endsWith(".schema.yaml") || name.endsWith(".dict.yaml") ||
                     name.endsWith(".jpg", ignoreCase = true) || name.endsWith(".jpeg", ignoreCase = true) ||
-                    name.endsWith(".png", ignoreCase = true) -> {
+                    name.endsWith(".png", ignoreCase = true) ||
+                    name.endsWith(".ttf", ignoreCase = true) || name.endsWith(".otf", ignoreCase = true) ||
+                    name.endsWith(".woff", ignoreCase = true) || name.endsWith(".woff2", ignoreCase = true) -> {
                         // 经临时文件传递给 ImportManager，避免大文件 ByteArray OOM
                         val partFile = File.createTempFile("part_", "_$name", context.cacheDir)
                         try {
@@ -242,12 +251,15 @@ class WirelessImportHelper(private val context: Context) {
                                     saved = result.success
                                     _uploadResults.trySend(
                                         if (result.success) UploadResult(fileName = name, success = true)
-                                        else UploadResult(fileName = name, success = false, error = "保存失败")
+                                        else UploadResult(
+                                            fileName = name, success = false,
+                                            error = tr(R.string.s_baocunshibai)
+                                        )
                                     )
                                 }
                                 else -> {
                                     _uploadResults.trySend(
-                                        UploadResult(fileName = name, success = false, error = "不支持的文件类型")
+                                        UploadResult(fileName = name, success = false, error = tr(R.string.s_buzhichidewenjianleixing))
                                     )
                                 }
                             }
@@ -256,7 +268,7 @@ class WirelessImportHelper(private val context: Context) {
                         }
                     }
                     else -> {
-                        _uploadResults.trySend(UploadResult(fileName = name, success = false, error = "不支持的文件类型"))
+                        _uploadResults.trySend(UploadResult(fileName = name, success = false, error = tr(R.string.s_buzhichidewenjianleixing)))
                     }
                 }
                                 pos = nextB + 2
@@ -266,7 +278,7 @@ class WirelessImportHelper(private val context: Context) {
                         if (saved) {
                             call.respondText("""{"success":true,"file":"$lastName"}""", ContentType.Application.Json)
                         } else {
-                            call.respondText("""{"success":false,"error":"No valid file (supported: .yaml, .zip, .tar.gz, .jpg/.png)"}""",
+                            call.respondText("""{"success":false,"error":"No valid file (supported: .yaml, .zip, .tar.gz, .jpg/.png, .ttf/.otf/.woff/.woff2)"}""",
                                 ContentType.Application.Json, HttpStatusCode.BadRequest)
                         }
                     } finally {

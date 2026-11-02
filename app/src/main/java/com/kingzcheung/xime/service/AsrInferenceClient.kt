@@ -28,7 +28,11 @@ class AsrInferenceClient(private val context: Context) {
 
     private var service: IInferenceAsrService? = null
     private var bound = false
-    private val connectLatch = CountDownLatch(1)
+
+    /** 连接等待锁：一次性 CountDownLatch，countDown 后即失效——
+     *  重绑前必须在 [ensureBound] 中重建，否则断线重连后会立即假醒。 */
+    @Volatile
+    private var connectLatch = CountDownLatch(1)
 
     private val asrCallbackStub = object : IInferenceAsrCallback.Stub() {
         private var callback: AsrCallback? = null
@@ -76,11 +80,17 @@ class AsrInferenceClient(private val context: Context) {
 
         // bindService 必须在主线程调用；等待结果放到 IO 线程避免阻塞 UI
         val boundOk = withContext(Dispatchers.Main) {
-            if (bound && service != null) {
-                true
-            } else {
-                val intent = Intent(context, AsrInferenceService::class.java)
-                context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+            synchronized(this@AsrInferenceClient) {
+                if (bound && service != null) {
+                    true
+                } else {
+                    // 服务进程可能崩溃/被回收后重启：latch 是一次性的，重绑前必须重建，
+                    // 否则旧 latch 已 countDown 会让 await 立即假醒（实际未连接），
+                    // 重绑后的第一次 startAsr 必然失败（同 InferenceClient 的修复）
+                    connectLatch = CountDownLatch(1)
+                    val intent = Intent(context, AsrInferenceService::class.java)
+                    context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+                }
             }
         }
         if (!boundOk) return false
@@ -149,6 +159,13 @@ class AsrInferenceClient(private val context: Context) {
     suspend fun releaseAsr() {
         try {
             requireService().releaseAsr()
+        } catch (_: Exception) {}
+    }
+
+    /** 同步"保持引擎常驻"设置到 :asr 进程（服务端据此决定是否空闲自动释放模型）。 */
+    suspend fun setKeepModelAlive(keepAlive: Boolean) {
+        try {
+            requireService().setKeepModelAlive(keepAlive)
         } catch (_: Exception) {}
     }
 }

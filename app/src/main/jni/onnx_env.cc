@@ -2,6 +2,7 @@
 #include <android/log.h>
 #include <mutex>
 #include <dlfcn.h>
+#include <sys/system_properties.h>
 
 static OrtEnv* g_shared_env = nullptr;
 static std::mutex g_env_mutex;
@@ -76,6 +77,17 @@ void OnnxReleaseSharedEnv() {
 bool OnnxTryEnableNnapi(OrtSessionOptions* options) {
     const OrtApi* api = OnnxGetApi();
     if (!api || !options) return false;
+
+    // 默认禁用 NNAPI：联想模型是动态形状（输出 [1, seq, 8000]，seq 随上下文增长），
+    // nnapi-reference 后端在推理中会触发 SIGSEGV（tombstone: libonnxruntime.so 内
+    // fault addr 0x600000002），导致 :inference 进程死亡、联想永久失效。
+    // int8 动态量化模型在 CPU 上推理耗时仅毫秒级，NNAPI 收益可忽略。
+    // 调试需要时设置系统属性 setprop debug.xime.nnapi 1 重新启用。
+    char value[2] = {0};
+    if (__system_property_get("debug.xime.nnapi", value) == 0 || value[0] != '1') {
+        LOGD("NNAPI EP disabled by default (debug.xime.nnapi not set)");
+        return false;
+    }
 
     typedef OrtStatus* (*NnapiProviderFn)(OrtSessionOptions*, uint32_t);
     NnapiProviderFn nnapi_fn = (NnapiProviderFn)dlsym(

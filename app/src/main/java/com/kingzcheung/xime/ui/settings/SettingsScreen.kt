@@ -1,5 +1,9 @@
 package com.kingzcheung.xime.ui.settings
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.navigation.NavType
@@ -11,13 +15,21 @@ import androidx.navigation.navArgument
 @Composable
 fun SettingsScreen(
     initialRoute: String? = null,
+    initialPluginId: String? = null,
     onThemeChanged: () -> Unit = {},
     onWizardBack: () -> Unit = {}
 ) {
     val navController = rememberNavController()
     val startDestination = if (initialRoute == "manage_dict") SettingsRoutes.Dictionary
     else if (initialRoute == "schema") SettingsRoutes.Schema
+    else if (initialRoute == "plugins") SettingsRoutes.Plugins
     else SettingsRoutes.Main
+
+    LaunchedEffect(initialPluginId) {
+        if (initialPluginId != null) {
+            navController.navigate("plugin_market_detail/$initialPluginId")
+        }
+    }
     
     NavHost(
         navController = navController,
@@ -34,6 +46,7 @@ fun SettingsScreen(
                 onNavigateToPlugins = { navController.navigate(SettingsRoutes.Plugins) },
                 onNavigateToModelLocal = { navController.navigate(SettingsRoutes.ModelLocal) },
                 onNavigateToSmartPrediction = { navController.navigate(SettingsRoutes.SmartPrediction) },
+                onNavigateToCorrection = { navController.navigate(SettingsRoutes.Correction) },
                 onNavigateToSpeechToText = { navController.navigate(SettingsRoutes.SpeechToText) },
                 onNavigateToAbout = { navController.navigate(SettingsRoutes.About) },
                 onNavigateToWebDav = { navController.navigate(SettingsRoutes.WebDav) },
@@ -56,6 +69,8 @@ fun SettingsScreen(
                 },
                 onNavigateToMarket = { navController.navigate(SettingsRoutes.Market) },
                 onNavigateToRimeFileBrowser = { navController.navigate(SettingsRoutes.RimeFileBrowser) },
+                onNavigateToSchemaDictBrowser = { navController.navigate(SettingsRoutes.SchemaDictBrowser) },
+                onNavigateToImported = { navController.navigate(SettingsRoutes.SchemaLocal) },
             )
         }
         composable(SettingsRoutes.Market) {
@@ -69,6 +84,9 @@ fun SettingsScreen(
                 },
                 onNavigateToPluginDetail = { pluginId ->
                     navController.navigate("plugin_market_detail/$pluginId")
+                },
+                onNavigateToLayoutDetail = { layoutId ->
+                    navController.navigate("layout_market_detail/$layoutId")
                 },
                 onNavigateToLocal = { navController.navigate(SettingsRoutes.SchemaLocal) },
                 onNavigateToModelLocal = { navController.navigate(SettingsRoutes.ModelLocal) },
@@ -114,6 +132,16 @@ fun SettingsScreen(
                 onBack = { navController.popBackStack() },
             )
         }
+        composable(
+            route = SettingsRoutes.LayoutMarketDetail,
+            arguments = listOf(navArgument("layoutId") { type = NavType.StringType }),
+        ) { backStackEntry ->
+            val layoutId = backStackEntry.arguments?.getString("layoutId") ?: return@composable
+            LayoutMarketDetailContent(
+                layoutId = layoutId,
+                onBack = { navController.popBackStack() },
+            )
+        }
         composable(SettingsRoutes.Theme) {
             ThemeSettingsContent(
                 onBack = { navController.popBackStack() },
@@ -130,7 +158,8 @@ fun SettingsScreen(
                     navController.navigate("plugin_market_detail/$pluginId")
                 },
                 onNavigateToSpeechToText = { navController.navigate(SettingsRoutes.SpeechToText) },
-                onNavigateToClipboardSync = { navController.navigate(SettingsRoutes.ClipboardSync) }
+                onNavigateToClipboardSync = { navController.navigate(SettingsRoutes.ClipboardSync) },
+                onNavigateToBackup = { navController.navigate(SettingsRoutes.Backup) }
             )
         }
         composable(
@@ -162,19 +191,33 @@ fun SettingsScreen(
                 }
             )
         }
+        composable(SettingsRoutes.Correction) {
+            CorrectionSettingsContent(
+                onBack = { navController.popBackStack() }
+            )
+        }
         composable(SettingsRoutes.SpeechToText) {
             SpeechToTextSettingsContent(
                 onBack = { navController.popBackStack() },
                 onNavigateToPluginSettings = { pluginId ->
                     navController.navigate("${SettingsRoutes.PluginSettings}/$pluginId")
                 },
-                onNavigateToPlugins = { navController.navigate(SettingsRoutes.Plugins) }
+                onNavigateToPlugins = { navController.navigate(SettingsRoutes.Plugins) },
+                onNavigateToModelMarket = { navController.navigate(SettingsRoutes.MarketModel) }
             )
         }
         composable(SettingsRoutes.Dictionary) {
-            DictionarySettingsContent(
+            DictionaryHubContent(
+                onNavigateToUserDict = { navController.navigate(SettingsRoutes.DictionaryUserDict) },
+                onNavigateToCustomPhrase = { navController.navigate(SettingsRoutes.DictionaryCustomPhrase) },
                 onBack = { navController.popBackStack() }
             )
+        }
+        composable(SettingsRoutes.DictionaryUserDict) {
+            UserDictContent(onBack = { navController.popBackStack() })
+        }
+        composable(SettingsRoutes.DictionaryCustomPhrase) {
+            CustomPhraseSettingsContent(onBack = { navController.popBackStack() })
         }
         composable(SettingsRoutes.SchemaDictBrowser) {
             SchemaDictBrowserContent(
@@ -186,15 +229,27 @@ fun SettingsScreen(
                 onBack = { navController.popBackStack() }
             )
         }
-        composable(SettingsRoutes.WebDav) {
-            WebDavSyncContent(
-                onBack = { navController.popBackStack() }
+        composable(SettingsRoutes.Clipboard) {
+            ClipboardSettingsContent(
+                onBack = { navController.popBackStack() },
+                // 剪贴板同步作为剪贴板的内页（返回回到剪贴板设置）
+                onNavigateToClipboardSync = { navController.navigate(SettingsRoutes.ClipboardSync) }
             )
         }
         composable(SettingsRoutes.ClipboardSync) {
             ClipboardSyncSettingsContent(
                 onBack = { navController.popBackStack() },
-                onNavigateToPlugins = { navController.navigate(SettingsRoutes.Plugins) }
+                onNavigateToMarket = { navController.navigate(SettingsRoutes.MarketPlugins) }
+            )
+        }
+        composable(SettingsRoutes.Backup) {
+            BackupSettingsContent(
+                onBack = { navController.popBackStack() },
+                onNavigateToPlugins = { navController.navigate(SettingsRoutes.Plugins) },
+                onNavigateToMarket = { navController.navigate(SettingsRoutes.MarketPlugins) },
+                onNavigateToPluginSettings = { pluginId ->
+                    navController.navigate("${SettingsRoutes.PluginSettings}/$pluginId")
+                }
             )
         }
         composable(SettingsRoutes.Rpc) {
@@ -208,7 +263,21 @@ fun SettingsScreen(
                 onBack = { navController.popBackStack() },
                 onNavigateToPrivacy = { navController.navigate(SettingsRoutes.Privacy) },
                 onNavigateToLicenses = { navController.navigate(SettingsRoutes.Licenses) },
-                onNavigateToLogViewer = { navController.navigate(SettingsRoutes.LogViewer) }
+                onNavigateToLogViewer = { navController.navigate(SettingsRoutes.LogViewer) },
+                onNavigateToDeveloper = { navController.navigate(SettingsRoutes.Developer) },
+                onNavigateToStorageSpace = { navController.navigate(SettingsRoutes.StorageSpace) }
+            )
+        }
+        composable(SettingsRoutes.Developer) {
+            DeveloperContent(
+                onBack = { navController.popBackStack() },
+                onNavigateToHandwritingCapture = { navController.navigate(SettingsRoutes.HandwritingCapture) }
+            )
+        }
+        composable(SettingsRoutes.StorageSpace) {
+            StorageSpaceScreen(
+                onBack = { navController.popBackStack() },
+                onNavigateToPlugins = { navController.navigate(SettingsRoutes.Plugins) }
             )
         }
         composable(SettingsRoutes.MarketModel) {
@@ -223,13 +292,41 @@ fun SettingsScreen(
                 onNavigateToPluginDetail = { pluginId ->
                     navController.navigate("plugin_market_detail/$pluginId")
                 },
+                onNavigateToLayoutDetail = { layoutId ->
+                    navController.navigate("layout_market_detail/$layoutId")
+                },
                 onNavigateToLocal = { navController.navigate(SettingsRoutes.SchemaLocal) },
                 onNavigateToModelLocal = { navController.navigate(SettingsRoutes.ModelLocal) },
                 initialTab = 0,
             )
         }
+        composable(SettingsRoutes.MarketPlugins) {
+            MarketHubContent(
+                onBack = { navController.popBackStack() },
+                onNavigateToDetail = { schemeId ->
+                    navController.navigate("schema_market_detail/$schemeId")
+                },
+                onNavigateToModelDetail = { modelId ->
+                    navController.navigate("model_market_detail/$modelId")
+                },
+                onNavigateToPluginDetail = { pluginId ->
+                    navController.navigate("plugin_market_detail/$pluginId")
+                },
+                onNavigateToLayoutDetail = { layoutId ->
+                    navController.navigate("layout_market_detail/$layoutId")
+                },
+                onNavigateToLocal = { navController.navigate(SettingsRoutes.SchemaLocal) },
+                onNavigateToModelLocal = { navController.navigate(SettingsRoutes.ModelLocal) },
+                initialTab = 2,
+            )
+        }
         composable(SettingsRoutes.LogViewer) {
             LogViewerScreen(
+                onBack = { navController.popBackStack() }
+            )
+        }
+        composable(SettingsRoutes.HandwritingCapture) {
+            HandwritingCaptureScreen(
                 onBack = { navController.popBackStack() }
             )
         }

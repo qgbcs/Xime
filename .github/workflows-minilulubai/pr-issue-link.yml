@@ -1,0 +1,186 @@
+name: PR 关联 Issue 检查
+
+# 外部 PR 必须关联 issue（正文写 Closes #123，或右侧 Development 面板手动关联）。
+# - 未关联 → 打 needs-issue 标签 + @作者提醒
+# - 补关联 → 自动移除标签并删除提醒（幂等，不重复刷屏）
+# - 提醒发出满 24 小时仍未关联 → 自动关闭
+# OWNER / MEMBER / COLLABORATOR 与机器人（dependabot 等）豁免。
+# 用 pull_request_target 是为了拿到写权限（fork PR 的默认 token 只读）；
+# 本工作流只调 API、不 checkout 任何 PR 代码。
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, ready_for_review]
+  schedule:
+    - cron: '0 * * * *' # 每小时扫一次，保证满 24h 后 1 小时内关闭
+  workflow_dispatch: {} # 支持手动跑一次，用于上线前验证扫描逻辑
+
+permissions:
+  pull-requests: write
+  issues: write
+
+# 事件与定时可能撞车，串行执行避免同一 PR 被重复处理
+concurrency:
+  group: pr-issue-link
+  cancel-in-progress: false
+
+jobs:
+  enforce:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const LABEL = 'needs-issue';
+            const MARKER = '<!-- pr-issue-link -->';
+            const GRACE_HOURS = 24;
+            const EXEMPT_ASSOC = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+            const { owner, repo } = context.repo;
+
+            // 已关联的 issue 号：只认「会被关闭」的关联（Closes/Fixes/Resolves + 手动关联），
+            // 仅在正文里提一句 #123 不算。
+            async function linkedIssueNumbers(prNumber) {
+              const data = await github.graphql(
+                `query ($owner: String!, $repo: String!, $number: Int!) {
+                   repository(owner: $owner, name: $repo) {
+                     pullRequest(number: $number) {
+                       closingIssuesReferences(first: 20) { nodes { number } }
+                     }
+                   }
+                 }`,
+                { owner, repo, number: prNumber }
+              );
+              return data.repository.pullRequest.closingIssuesReferences.nodes.map(n => n.number);
+            }
+
+            async function findReminder(prNumber) {
+              const { data: comments } = await github.rest.issues.listComments({
+                owner, repo, issue_number: prNumber, per_page: 100,
+              });
+              return comments.find(c => c.user.type === 'Bot' && c.body.includes(MARKER));
+            }
+
+            async function clearLabel(prNumber) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner, repo, issue_number: prNumber, name: LABEL,
+                });
+              } catch (e) { /* 标签本就不存在 */ }
+            }
+
+            // 标签不存在时补建，避免仓库还没建过 needs-issue 时打标失败
+            async function ensureLabel() {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name: LABEL });
+              } catch (e) {
+                await github.rest.issues.createLabel({
+                  owner, repo, name: LABEL, color: 'fbca04',
+                  description: 'PR 未关联 issue，超时将自动关闭',
+                });
+              }
+            }
+
+            // 打标 + 提醒；已有提醒则原地更新，不重复评论。
+            // 24 小时从这条评论的创建时间算起，补关联后评论会被删除，天然重置计时。
+            async function remind(prNumber, login) {
+              await ensureLabel();
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: prNumber, labels: [LABEL],
+              });
+              const body = [
+                MARKER,
+                `@${login} 这个 PR 还没有关联 issue。`,
+                '',
+                '按 [贡献指南](CONTRIBUTING.md) 要求，外部 PR 必须先有对应 issue，否则 **满 24 小时会被自动关闭**。',
+                '',
+                '任选一种方式关联，本提醒会自动清除并重新计时：',
+                '- 在 PR 正文里写 `Closes #123`（`Fixes` / `Resolves` 同样有效）',
+                '- 在右侧 **Development** 面板手动关联 issue',
+                '',
+                '> 只在正文里提一句 `#123` 不算关联，必须是上面两种方式之一。',
+              ].join('\n');
+              const existing = await findReminder(prNumber);
+              if (existing) {
+                if (existing.body !== body) {
+                  await github.rest.issues.updateComment({
+                    owner, repo, comment_id: existing.id, body,
+                  });
+                }
+              } else {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: prNumber, body,
+                });
+              }
+            }
+
+            async function clearReminder(prNumber) {
+              await clearLabel(prNumber);
+              const existing = await findReminder(prNumber);
+              if (existing) {
+                await github.rest.issues.deleteComment({
+                  owner, repo, comment_id: existing.id,
+                });
+              }
+            }
+
+            // ── 事件触发：PR 新建 / 编辑 / 重开 / 转正式 ──
+            async function checkOne(pr) {
+              if (pr.state !== 'open') return;
+              if (pr.user.type === 'Bot' || EXEMPT_ASSOC.has(pr.author_association)) {
+                core.info(`内部贡献者或机器人（${pr.author_association}），跳过`);
+                return;
+              }
+              const linked = await linkedIssueNumbers(pr.number);
+              if (linked.length > 0) {
+                await clearReminder(pr.number);
+                core.info(`#${pr.number} 已关联 #${linked.join(', #')}`);
+              } else {
+                // 重开时重建提醒，重置 24 小时计时，避免刚重开就被关掉
+                if (context.payload.action === 'reopened') await clearReminder(pr.number);
+                await remind(pr.number, pr.user.login);
+                core.info(`#${pr.number} 未关联 issue，已提醒`);
+              }
+            }
+
+            // ── 定时 / 手动触发：补关联的撤提醒，超时的关闭 ──
+            async function sweep() {
+              const items = await github.paginate(github.rest.issues.listForRepo, {
+                owner, repo, state: 'open', labels: LABEL, per_page: 100,
+              });
+              let closed = 0, cleared = 0;
+              for (const item of items) {
+                if (!item.pull_request) continue; // 只看 PR，issue 有独立的工作流
+                const linked = await linkedIssueNumbers(item.number);
+                if (linked.length > 0) {
+                  await clearReminder(item.number);
+                  cleared++;
+                  continue;
+                }
+                const reminder = await findReminder(item.number);
+                if (!reminder) {
+                  // 标签是人工加的，补一条提醒用于计时，下一轮再判
+                  await remind(item.number, item.user.login);
+                  continue;
+                }
+                const hours = (Date.now() - new Date(reminder.created_at).getTime()) / 3600000;
+                if (hours < GRACE_HOURS) continue;
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: item.number,
+                  body: `超过 ${GRACE_HOURS} 小时仍未关联 issue，已自动关闭。`
+                    + '关联好 issue 后请新开 PR，或 @维护者 重新打开。',
+                });
+                await github.rest.pulls.update({
+                  owner, repo, pull_number: item.number, state: 'closed',
+                });
+                closed++;
+                core.info(`已关闭 #${item.number}（${Math.floor(hours)} 小时未关联）`);
+              }
+              core.info(`本轮撤销提醒 ${cleared} 个，关闭 ${closed} 个`);
+            }
+
+            if (context.eventName === 'pull_request_target') {
+              await checkOne(context.payload.pull_request);
+            } else {
+              // schedule 与 workflow_dispatch 都走全量扫描
+              await sweep();
+            }

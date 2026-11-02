@@ -1,5 +1,9 @@
 package com.kingzcheung.xime.model
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import android.content.Context
 import com.kingzcheung.xime.util.FileLogger
 import kotlinx.coroutines.Dispatchers
@@ -39,7 +43,7 @@ object ModelDownloader {
 
         val target = version ?: modelInfo.resolvedVersion()
         if (target == null) {
-            onProgress(ModelDownloadState.Error("模型没有可用版本"))
+            onProgress(ModelDownloadState.Error(tr(R.string.s_moxingmeiyoukeyongbanben)))
             return@withContext
         }
 
@@ -56,7 +60,7 @@ object ModelDownloader {
             onProgress(ModelDownloadState.Complete)
         } catch (e: Exception) {
             FileLogger.e(TAG, "Download failed: ${modelInfo.id}: ${e.message}", e)
-            onProgress(ModelDownloadState.Error("下载失败: ${e.message}"))
+            onProgress(ModelDownloadState.Error(tr(R.string.s_xiazaishibai, e.message)))
         }
     }
 

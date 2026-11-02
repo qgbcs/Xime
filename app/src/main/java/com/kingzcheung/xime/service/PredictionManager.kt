@@ -37,12 +37,21 @@ class PredictionManager(
     fun invalidatePendingPredictions() {
         requestEpoch++
     }
+
+    /**
+     * 单次联想抑制标志：联想候选上屏（点击/空格）前置位，使 commitText 触发的下一轮
+     * 自动推理被跳过并清空联想候选（候选栏干净），等待用户下一次真实输入。
+     * 连续联想模式不置位——commitText 的自动推理即为"一直上屏一直推理"。
+     */
+    @Volatile
+    private var suppressNextPrediction = false
+
+    fun suppressNextPredictionOnce() {
+        suppressNextPrediction = true
+    }
     
     fun appendCommittedText(text: String) {
         _lastCommittedText = (_lastCommittedText + text).takeLast(MAX_CONTEXT_LENGTH)
-        if (BuildConfig.DEBUG) {
-            FileLogger.d(TAG, "Context updated: '$text' -> '$lastCommittedText' (len=${lastCommittedText.length})")
-        }
     }
     
     fun clearCommittedText() {
@@ -91,6 +100,13 @@ class PredictionManager(
     }
     
     fun getPrediction(contextText: String) {
+        // 单次联想：消费抑制标志——联想上屏引发的本轮推理不执行，回调空结果清空候选栏
+        if (suppressNextPrediction) {
+            suppressNextPrediction = false
+            onPredictionResult(emptyList())
+            return
+        }
+
         if (contextText.isEmpty()) {
             onPredictionResult(emptyList())
             return
@@ -120,7 +136,7 @@ class PredictionManager(
                 }
                 
                 val candidates = AssociationManager.predict(contextText, MAX_ASSOCIATION_COUNT)
-                
+
                 withContext(Dispatchers.Main) {
                     // 代际过期说明上下文已被退格/清空修改，丢弃过期结果避免候选栏闪动
                     if (epoch == requestEpoch) {

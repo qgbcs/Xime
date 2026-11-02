@@ -1,5 +1,9 @@
 package com.kingzcheung.xime.speech
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import android.content.Context
 import com.kingzcheung.xime.service.AsrInferenceClient
 import com.kingzcheung.xime.util.FileLogger
@@ -17,7 +21,9 @@ class OfflineAsrBackend(private val context: Context) : AsrBackend {
         private const val TAG = "OfflineAsrBackend"
     }
 
-    override val name: String = "本地 Zipformer（离线）"
+    override val name: String
+        get() = AsrModelManager(context).getSelectedModelInfo()?.let { tr(R.string.s_lixian, it.name) }
+            ?: tr(R.string.s_bendilixianshibie)
 
     private val client = AsrInferenceClient(context)
     private var initialized = false
@@ -61,12 +67,13 @@ class OfflineAsrBackend(private val context: Context) : AsrBackend {
                 return false
             }
             initialized = true
+            syncKeepAlive()
             // 预热模型：绑定后立即创建模型句柄并驻留，避免首次语音时
             // 1s 模型加载导致开头音频（如"你觉得"）在录音缓冲中被丢弃
             try {
                 val modelManager = AsrModelManager(context)
-                if (modelManager.isModelReady()) {
-                    val modelDir = modelManager.getSelectedModelDir().absolutePath
+                val modelDir = modelManager.getSelectedModelDir()?.absolutePath
+                if (modelManager.isModelReady() && modelDir != null) {
                     runBlocking { client.startAsr(modelDir, asrCallback) }
                     runBlocking { client.stopAsr() }
                 }
@@ -87,13 +94,21 @@ class OfflineAsrBackend(private val context: Context) : AsrBackend {
             val modelManager = AsrModelManager(context)
             if (!modelManager.isModelReady()) {
                 FileLogger.e(TAG, "ASR model not downloaded")
-                errorCallback?.invoke("离线语音模型未下载，请在设置中先下载")
+                errorCallback?.invoke(tr(R.string.s_lixianyuyinmoxingweixiazai_qin_5346e))
                 return false
             }
             // 每次会话开始都重新 startAsr：服务端会 nativeReset 并重设回调，
             // 否则 preload 预热时 stop() 清空的 callback 会导致 partial 结果丢失
-            val modelDir = modelManager.getSelectedModelDir().absolutePath
+            syncKeepAlive()
+            val modelDir = modelManager.getSelectedModelDir()?.absolutePath ?: return false
             runBlocking { client.startAsr(modelDir, asrCallback) }
+        } catch (e: InterruptedException) {
+            // 快速取消竞态：stopRecognition/cancelRecognition 会 interrupt 录音线程，
+            // 中断正好落在等待 :asr 绑定/模型加载的 runBlocking 上——属正常取消，不算错误，
+            // 不打 E 级日志（避免"启动引擎失败"误报污染排查）
+            Thread.currentThread().interrupt()
+            FileLogger.d(TAG, "start aborted: recording cancelled before engine started")
+            false
         } catch (e: Exception) {
             FileLogger.e(TAG, "start failed", e)
             false
@@ -109,6 +124,11 @@ class OfflineAsrBackend(private val context: Context) : AsrBackend {
         if (!initialized) return
         val text = try {
             runBlocking { client.stopAsr() }
+        } catch (e: InterruptedException) {
+            // 录音线程被取消 interrupt 时可能正阻塞在此（同 start 的取消竞态），属正常路径
+            Thread.currentThread().interrupt()
+            FileLogger.d(TAG, "stop aborted: recording cancelled")
+            ""
         } catch (e: Exception) {
             FileLogger.e(TAG, "stop failed", e)
             ""
@@ -146,7 +166,20 @@ class OfflineAsrBackend(private val context: Context) : AsrBackend {
         client.unbind()
     }
 
-    override fun getState(): RecognitionState = RecognitionState.IDLE
-
     override fun isAvailable(): Boolean = true
+
+    /**
+     * 把"保持引擎常驻"设置同步到 :asr 服务。每次绑定/会话开始都同步一次：
+     * 用户中途切换设置后，下一个会话立即按新设置决定是否空闲释放模型。
+     */
+    private fun syncKeepAlive() {
+        try {
+            runBlocking {
+                client.setKeepModelAlive(
+                    com.kingzcheung.xime.settings.SettingsPreferences.isSttKeepEngineAlive(context)
+                )
+            }
+        } catch (_: Exception) {
+        }
+    }
 }

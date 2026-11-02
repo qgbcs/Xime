@@ -2,6 +2,7 @@ package com.kingzcheung.xime.plugin.core.api
 
 import android.content.Context
 import com.kingzcheung.xime.plugin.core.config.IPluginConfigurable
+import com.kingzcheung.xime.plugin.core.model.PluginCapabilities
 
 enum class AsrPluginState {
     IDLE,
@@ -10,31 +11,15 @@ enum class AsrPluginState {
     ERROR
 }
 
-enum class AsrInputMode {
-    STREAMING,
-    BATCH
-}
-
-data class AsrAudioFormat(
-    val sampleRate: Int = 16000,
-    val channels: Int = 1,
-    val encoding: String = "pcm16le"
-)
-
-data class AsrPluginCapabilities(
-    val inputMode: AsrInputMode = AsrInputMode.STREAMING,
-    val supportsPartialResults: Boolean = true,
-    val maxRecordDurationMillis: Int = 10 * 60 * 1000,
-    val requiresNetwork: Boolean = true
-)
-
+/**
+ * ASR 识别结果回调（插件 → 宿主）。
+ * 输入（PCM 流）与识别周期由 [AsrPluginBackend] 驱动，结果统一回调回传。
+ */
 interface AsrPluginListener {
     fun onFinal(text: String)
     fun onPartial(text: String) {}
     fun onError(message: String) {}
     fun onStateChanged(state: AsrPluginState) {}
-    fun onStopped() {}
-    fun onAmplitude(amplitude: Float) {}
 }
 
 interface AsrPluginBackend {
@@ -46,6 +31,7 @@ interface AsrPluginBackend {
 
     fun start(): Boolean
 
+    /** 宿主录音 PCM 灌入（16k/mono/pcm16le，见宿主录音实现）。 */
     fun processAudioChunk(pcm: ByteArray)
 
     fun stop()
@@ -53,20 +39,18 @@ interface AsrPluginBackend {
     fun cancel()
 
     fun release()
-
-    fun getState(): AsrPluginState
 }
 
 interface AsrPlugin : IPluginEntryClass, IPluginConfigurable {
-    val providerId: String
 
-    fun getDisplayName(): String
+    /**
+     * 能力声明（manifest.capabilities.speech 的镜像，设置页与服务选型消费）。
+     * 原生插件与 JS 插件均由元数据提供。
+     */
+    fun getCapabilities(): PluginCapabilities.SpeechCapabilities
 
-    fun getCapabilities(): AsrPluginCapabilities
-
-    fun getAudioFormat(): AsrAudioFormat = AsrAudioFormat()
-
-    fun isConfigured(): Boolean
+    /** 配置就绪判定（见 [IPluginConfigurable.isConfigured]）。 */
+    override fun isConfigured(): Boolean
 
     fun createBackend(context: Context): AsrPluginBackend
 }

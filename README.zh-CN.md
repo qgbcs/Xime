@@ -8,7 +8,23 @@
   <a href="README.md">English</a> 
 </p>
 
-[Xime 输入法 (Windows 版)](https://github.com/ximeiorg/winxime) | [Xime 输入法 (Linux 版)](https://github.com/ximeiorg/xime-wayland) | [联想词预测模型](https://github.com/ximeiorg/predictive-text) | [手写输入法模型](https://github.com/ximeiorg/ochwpro)
+<p align="center">
+  <a href="https://gitcode.com/ximeiorg/Xime/releases"><img alt="国内下载" src="https://img.shields.io/badge/%E5%9B%BD%E5%86%85%E4%B8%8B%E8%BD%BD-GitCode%20%E9%95%9C%E5%83%8F-FC5531?logo=git&logoColor=white"></a>
+  <a href="https://github.com/ximeiorg/Xime/releases"><img alt="Release" src="https://img.shields.io/github/v/release/ximeiorg/Xime?label=release&color=2ea44f"></a>
+  <a href="https://github.com/ximeiorg/Xime/actions/workflows/build.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/ximeiorg/Xime/build.yml?label=build"></a>
+  <img alt="Android 9.0+" src="https://img.shields.io/badge/Android-9.0%2B%20%7C%20API%2028-3DDC84?logo=android&logoColor=white">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue"></a>
+  <a href="https://rime.im/"><img alt="Rime" src="https://img.shields.io/badge/powered%20by-Rime-00A0E9"></a>
+</p>
+
+<p align="center"><b>面向国内用户</b>：GitHub 下载慢？直接到 <a href="https://gitcode.com/ximeiorg/Xime/releases"><b>GitCode 镜像下载 APK</b></a>，代码与 Release 会自动同步。</p>
+
+[<img src="https://f-droid.org/badge/get-it-on.png"
+    alt="Get it on F-Droid"
+    height="80">](https://f-droid.org/packages/com.kingzcheung.xime)
+
+
+[Xime 输入法 (Windows 版)](https://github.com/ximeiorg/XimeYao) | [Xime 输入法 (Linux 版)](https://github.com/ximeiorg/XimeChe) | [联想词预测模型](https://github.com/ximeiorg/predictive-text) | [手写输入法模型](https://github.com/ximeiorg/ochwpro)
 
 一款基于 <a href="https://rime.im/">Rime</a> 引擎构建的 Android 五笔/拼音输入法，专注于简洁高效的中文输入体验。
 
@@ -17,6 +33,7 @@
 ---
 
 > 本输入法支持五笔/拼音输入，只是本人以五笔为主，拼音为辅，因此资源会倾向于五笔为主。
+如果你是拼音用户，默认的拼音不是很强大，你可以到扩展市场里下载如`凇雾拼音` 之类的方案。
 
 <table align="center">
   <tr>
@@ -102,7 +119,14 @@
 
 ### 国内下载
 
-由于 APK 包是通过 GitHub Actions 自动构建的，国内的仓库没有免费的功能使用，因此如果你觉得 GitHub Release 下载不稳定，请自行构建安装，或者通过 [https://github.akams.cn](https://github.akams.cn) 来下载。
+GitHub Release 在国内偶尔访问不稳定，推荐使用 GitCode 镜像仓库：
+
+- 镜像仓库：[https://gitcode.com/ximeiorg/Xime](https://gitcode.com/ximeiorg/Xime)
+- 镜像 Release：[https://gitcode.com/ximeiorg/Xime/releases](https://gitcode.com/ximeiorg/Xime/releases)
+
+镜像的代码、tag 与 Release 附件（APK）都会自动同步，国内访问速度更快。
+
+如果镜像也不可用，可以自行构建安装，或通过 [https://github.akams.cn](https://github.akams.cn) 加速下载 GitHub Release。
 
 ### 手动构建安装
 
@@ -115,11 +139,19 @@
 
 详细使用说明请查看 [使用文档](https://ime.ximei.me)。
 
+- [常见问题 FAQ](https://ime.ximei.me/faq.html)
+- [Rime 方案列表](https://ime.ximei.me/rime-list.html)
+- [插件列表](https://ime.ximei.me/plugin-list.html)
+- [AI 模型列表](https://ime.ximei.me/model-list.html)
+
 ## 构建
 
 ```bash
 # 克隆项目（包含子模块）
 git clone --recursive https://github.com/ximeiorg/Xime.git
+
+# 国内网络可改用 GitCode 镜像（子模块仍指向 GitHub，必要时自行替换 .gitmodules 中的地址）
+git clone https://gitcode.com/ximeiorg/Xime.git
 
 # 或者在已克隆的项目中初始化子模块
 git submodule update --init --recursive
@@ -176,3 +208,7 @@ git submodule update --init --recursive
 ## 许可证
 
 GPLv3 License
+
+Copyright © 2026 Kingz Cheung
+
+"Xime" 名称、Logo 及其他品牌资产**不在** GPLv3 开源授权范围内，详见 [TRADEMARKS.md](TRADEMARKS.md)。

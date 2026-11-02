@@ -1,6 +1,11 @@
 package com.kingzcheung.xime.ui.settings
 
+import com.kingzcheung.xime.R
+
+import com.kingzcheung.xime.i18n.tr
+
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +39,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -98,12 +104,12 @@ fun SmartPredictionSettingsContent(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
             TopAppBar(
-                title = { Text("智能联想") },
+                title = { Text(tr(R.string.s_zhinenglianxiang)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "返回"
+                            contentDescription = tr(R.string.s_fanhui)
                         )
                     }
                 },
@@ -123,7 +129,7 @@ fun SmartPredictionSettingsContent(
             contentPadding = PaddingValues(vertical = 8.dp)
         ) {
             item {
-                SettingsSection(title = "功能开关", content = {
+                SettingsSection(title = tr(R.string.s_gongnengkaiguan), content = {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -132,12 +138,12 @@ fun SmartPredictionSettingsContent(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "启用智能联想",
+                                text = tr(R.string.s_qiyongzhinenglianxiang),
                                 style = MaterialTheme.typography.bodyLarge,
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                text = "基于 AI 模型的智能联想词预测",
+                                text = tr(R.string.s_jiyu_ai_moxingdezhinenglianxia_5cce9),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -179,7 +185,7 @@ fun SmartPredictionSettingsContent(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "未检测到模型文件，请先下载模型",
+                                text = tr(R.string.s_weijiancedaomoxingwenjian_qing_6a5a6),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error
                             )
@@ -188,9 +194,60 @@ fun SmartPredictionSettingsContent(
                 })
             }
 
+            if (uiState.isEnabled) {
+                item {
+                    var spaceCommitEnabled by remember {
+                        mutableStateOf(SettingsPreferences.isSpaceCommitAssociationEnabled(context))
+                    }
+                    var singleMode by remember {
+                        mutableStateOf(SettingsPreferences.isSingleAssociationMode(context))
+                    }
+                    SettingsSection(title = tr(R.string.s_lianxiangxingwei), content = {
+                        SettingsToggleItem(
+                            icon = Icons.Default.AutoAwesome,
+                            title = tr(R.string.s_konggeshangpinglianxianghouxuan),
+                            subtitle = tr(R.string.s_youlianxianghouxuanshi_ankongg_00102),
+                            checked = spaceCommitEnabled,
+                            onCheckedChange = {
+                                spaceCommitEnabled = it
+                                SettingsPreferences.setSpaceCommitAssociationEnabled(context, it)
+                            }
+                        )
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 16.dp),
+                            thickness = 0.5.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                        )
+                        AssociationModeRow(
+                            title = tr(R.string.s_lianxulianxiang),
+                            subtitle = tr(R.string.s_lianxiangcishangpinghoujixutui_d319f),
+                            isSelected = !singleMode,
+                            onClick = {
+                                singleMode = false
+                                SettingsPreferences.setAssociationSingleMode(context, false)
+                            }
+                        )
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 16.dp),
+                            thickness = 0.5.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                        )
+                        AssociationModeRow(
+                            title = tr(R.string.s_dancilianxiang),
+                            subtitle = tr(R.string.s_lianxiangcishangpingyicihoutin_29aac),
+                            isSelected = singleMode,
+                            onClick = {
+                                singleMode = true
+                                SettingsPreferences.setAssociationSingleMode(context, true)
+                            }
+                        )
+                    })
+                }
+            }
+
             if (predictionModels.isNotEmpty()) {
                 item {
-                    SettingsSection(title = "选择模型", content = {
+                    SettingsSection(title = tr(R.string.s_xuanzemoxing), content = {
                         predictionModels.forEach { model ->
                             PredictionModelCard(
                                 modelInfo = model,
@@ -215,7 +272,7 @@ fun SmartPredictionSettingsContent(
 
             if (uiState.isInitialized) {
                 item {
-                    SettingsSection(title = "用户学习数据", content = {
+                    SettingsSection(title = tr(R.string.s_yonghuxuexishuju), content = {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -223,18 +280,18 @@ fun SmartPredictionSettingsContent(
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "缓存大小",
+                                        text = tr(R.string.s_huancundaxiao),
                                         style = MaterialTheme.typography.bodyLarge,
                                         fontWeight = FontWeight.Medium
                                     )
                                     Text(
-                                        text = "记录用户输入习惯以提升预测准确度",
+                                        text = tr(R.string.s_jiluyonghushuruxiguanyitisheng_3888f),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                                 Text(
-                                    text = "${uiState.cacheSize} 条",
+                                    text = tr(R.string.s_tiao_2, uiState.cacheSize),
                                     style = MaterialTheme.typography.bodyLarge,
                                     color = MaterialTheme.colorScheme.primary,
                                     fontWeight = FontWeight.Bold
@@ -260,7 +317,7 @@ fun SmartPredictionSettingsContent(
                                             )
                                             Spacer(modifier = Modifier.width(8.dp))
                                         }
-                                        Text(if (uiState.isSaving) "保存中..." else "保存数据")
+                                        Text(if (uiState.isSaving) tr(R.string.s_baocunzhong) else tr(R.string.s_baocunshuju))
                                     }
 
                                     OutlinedButton(
@@ -269,7 +326,7 @@ fun SmartPredictionSettingsContent(
                                     ) {
                                         Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Text("刷新")
+                                        Text(tr(R.string.s_shuaxin))
                                     }
                                 }
                             }
@@ -279,17 +336,49 @@ fun SmartPredictionSettingsContent(
             }
 
             item {
-                SettingsSection(title = "模型管理", content = {
+                SettingsSection(title = tr(R.string.s_moxingguanli), content = {
                     SettingsItem(
                         icon = Icons.Default.Build,
-                        title = "模型管理",
-                        subtitle = "管理所有已下载的 AI 模型",
+                        title = tr(R.string.s_moxingguanli),
+                        subtitle = tr(R.string.s_guanlisuoyouyixiazaide_ai_moxing),
                         onClick = onNavigateToModelManagement,
                         showArrow = true
                     )
                 })
             }
         }
+    }
+}
+
+@Composable
+private fun AssociationModeRow(
+    title: String,
+    subtitle: String,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                color = if (isSelected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        RadioButton(selected = isSelected, onClick = onClick)
     }
 }
 
@@ -357,7 +446,7 @@ private fun PredictionModelCard(
                         MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                 ) {
                     Text(
-                        text = if (isDownloaded) "已下载" else "未下载",
+                        text = if (isDownloaded) tr(R.string.s_yixiazai) else tr(R.string.s_weixiazai),
                         style = MaterialTheme.typography.labelSmall,
                         color = if (isDownloaded) MaterialTheme.colorScheme.primary
                                else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -382,7 +471,7 @@ private fun PredictionModelCard(
                     )
                     Spacer(Modifier.width(4.dp))
                 }
-                Text(if (isSelected) "使用中" else "使用")
+                Text(if (isSelected) tr(R.string.s_shiyongzhong) else tr(R.string.s_shiyong))
             }
         } else {
             Spacer(modifier = Modifier.width(8.dp))
@@ -396,7 +485,7 @@ private fun PredictionModelCard(
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(Modifier.width(4.dp))
-                Text("去商店")
+                Text(tr(R.string.s_qushangdian))
             }
         }
     }

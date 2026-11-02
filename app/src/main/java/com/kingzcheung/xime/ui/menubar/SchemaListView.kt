@@ -4,15 +4,21 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -30,13 +36,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
-import com.kingzcheung.xime.R
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kingzcheung.xime.R
+import com.kingzcheung.xime.i18n.tr
 import com.kingzcheung.xime.settings.SchemaInfo
+import com.kingzcheung.xime.ui.keyboard.WIDE_CONTAINER_WIDTH
+import com.kingzcheung.xime.ui.keyboard.isHandwritingSchema
+import com.kingzcheung.xime.ui.keyboard.isT9Schema
 
 @Composable
 fun SchemaListView(
@@ -60,21 +69,25 @@ fun SchemaListView(
         MaterialTheme.colorScheme.primary,
         0.35f
     )
-    val configuration = LocalConfiguration.current
-    val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    // 布局按父容器真实宽度自适应（悬浮卡片/键盘收窄/分屏的容器宽 ≠ 屏幕宽），
+    // 不读屏幕方向：宽容器（横屏全屏）用横排网格，其余按竖屏分页网格
+    BoxWithConstraints(modifier = modifier) {
+        val isWide = maxWidth >= WIDE_CONTAINER_WIDTH
+
     Column(
-        modifier = modifier
-            .fillMaxWidth()
+        modifier = Modifier
+            .fillMaxSize()
             .background(backgroundColor),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(50.dp)
-                .padding(horizontal = if (isLandscape) 50.dp else 8.dp),
-            contentAlignment = Alignment.CenterStart
-        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+                    // 返回按钮与候选栏 logo 同位（8dp），不再随宽容器加大缩进
+                    .padding(horizontal = 8.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
             Box(
                 modifier = Modifier
                     .size(28.dp)
@@ -85,23 +98,36 @@ fun SchemaListView(
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                    contentDescription = "返回",
+                    contentDescription = tr(R.string.s_fanhui),
                     tint = textColor,
                     modifier = Modifier.size(24.dp)
                 )
             }
         }
 
-        if (isLandscape) {
-            Row(
+        if (isWide) {
+            // 横屏：方案多时固定单行会把每格压到只剩一个字，
+            // 按可用宽度自适应列数换行、超出可滚动（与菜单栏横屏同款方案）
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 64.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 50.dp)
+                    .padding(horizontal = 8.dp)
                     .weight(1f),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+                contentPadding = PaddingValues(vertical = 8.dp),
             ) {
-                schemas.forEach { schema ->
+                if (schemas.isEmpty()) {
+                    item {
+                        Text(
+                            text = tr(R.string.s_meiyoukeyongdeshurufangan),
+                            color = subTextColor,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+                items(schemas) { schema ->
                     SchemaGridItem(
                         schema = schema,
                         isSelected = schema.schemaId == currentSchemaId,
@@ -109,15 +135,8 @@ fun SchemaListView(
                         textColor = textColor,
                         accentColor = accentColor,
                         onSelect = { onSelectSchema(schema.schemaId) },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.fillMaxWidth(),
                         isLandscape = true
-                    )
-                }
-                if (schemas.isEmpty()) {
-                    Text(
-                        text = "没有可用的输入方案",
-                        color = subTextColor,
-                        fontSize = 13.sp
                     )
                 }
             }
@@ -136,7 +155,7 @@ fun SchemaListView(
             ) {
                 if (schemas.isEmpty()) {
                     Text(
-                        text = "没有可用的输入方案",
+                        text = tr(R.string.s_meiyoukeyongdeshurufangan),
                         color = subTextColor,
                         fontSize = 13.sp
                     )
@@ -195,6 +214,7 @@ fun SchemaListView(
             }
         }
     }
+    }
 }
 
 @Composable
@@ -220,16 +240,15 @@ private fun SchemaGridItem(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        val isT9 = schema.schemaId.contains("t9", ignoreCase = true) || schema.name.contains("t9", ignoreCase = true)
         when {
-            schema.schemaId == "handwriting" ->
+            isHandwritingSchema(schema.schemaId) ->
                 Icon(
                     imageVector = Icons.TwoTone.Gesture,
                     contentDescription = schema.name,
                     tint = if (isSelected) accentColor else textColor,
                     modifier = Modifier.size(if (isLandscape) 18.dp else 24.dp)
                 )
-            isT9 ->
+            isT9Schema(schema.schemaId) ->
                 Icon(
                     painter = painterResource(R.drawable.keyboard_t9),
                     contentDescription = schema.name,
