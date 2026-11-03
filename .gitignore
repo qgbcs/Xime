@@ -27,8 +27,11 @@ DECISIONS.md
 app/src/main/jni/librime/
 app/src/main/jni/snappy/
 app/src/main/jni/boost*
-app/src/main/jni/onnxruntime/
-app/src/main/jniLibs/
+# 构建机本地软链（软链不算目录，忽略规则不能带尾斜杠）
+app/src/main/jni/onnxruntime
+app/src/main/jniLibs
+app/src/main/jni/snappy
+app/src/main/jni/third_party
 app/src/main/jni/librime-t9/build_test/
 app/release
 # Large archives
