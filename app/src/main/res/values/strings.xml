@@ -1,12 +1,10 @@
 <resources>
-    <string name="app_name">曦码输入法</string>
-    <string name="subtype_label_wubi">曦码输入法</string>
+    <string name="subtype_label_wubi">@string/app_name</string>
     <string name="subtype_label_pinyin">拼音</string>
-    <string name="keyboard_name">曦码输入法</string>
-    <string name="ime_service_label">曦码输入法</string>
+    <string name="keyboard_name">@string/app_name</string>
+    <string name="ime_service_label">@string/app_name</string>
 
-    <!-- 设置 -->
-    <string name="settings_title">曦码输入法设置</string>
+    <!-- 设置（app_name、settings_title 由 build.gradle.kts 的 resValue 按 -PappName 注入） -->
     <string name="settings_section_appearance">外观与交互</string>
 
     <!-- 语言选项 -->
@@ -815,7 +813,6 @@
     <string name="s_shurufa">输入法</string>
     <string name="s_lixue">力学</string>
     <string name="s_qiyongshurufa">启用输入法</string>
-    <string name="s_zaixitongshezhizhongqiyongxima_44550">在系统设置中启用曦码输入法</string>
     <string name="s_xuanzeshurufa">选择输入法</string>
     <string name="s_jiangximasheweidangqianshurufa">将曦码设为当前输入法</string>
     <string name="s_dianjicichukaishishuruceshi">点击此处开始输入测试...</string>
@@ -848,20 +845,15 @@
     <string name="s_xuanzefangan">选择方案</string>
     <string name="s_qiehuanshurufa">切换输入法</string>
     <string name="s_xuanzebingbushushurufangan">选择并部署输入方案</string>
-    <string name="s_qiehuandaoximashurufa">切换到曦码输入法</string>
     <string name="s_buzhou_1_qiyongshurufa">步骤 1：启用输入法</string>
     <string name="s_buzhou_2_xuanzeshurufangan">步骤 2：选择输入方案</string>
     <string name="s_buzhou_3_qiehuanshurufa">步骤 3：切换输入法</string>
     <string name="s_fanganyixuanze_danshangweibush_80e59">方案已选择，但尚未部署。请前往设置点击「部署」按钮编译词库</string>
     <string name="s_shezhixiangdao">设置向导</string>
-    <string name="s_ximashurufa">曦码输入法</string>
     <string name="s_wanchengyixiabuzhoujikekaishis_a88af">完成以下步骤即可开始使用</string>
     <string name="s_jiyu_rime_yinqingde_android_sh_4b613">基于 Rime 引擎的 Android 输入法</string>
-    <string name="s_qingzaixitongshezhizhongqiyong_f6c5a">请在系统设置中启用「曦码输入法」</string>
     <string name="s_quxitongshezhiqiyong">去系统设置启用</string>
-    <string name="s_ximashurufayiqiyong">✓ 曦码输入法已启用</string>
     <string name="s_xiayibu">下一步</string>
-    <string name="s_qingxianzaixitongshezhizhongqi_97b2c">请先在系统设置中启用曦码输入法</string>
     <string name="s_jianchazhuangtai">检查状态</string>
     <string name="s_dianjixiafanganniuqianwangshez_77d28">点击下方按钮前往设置，选择您需要的输入方案并点击「部署」</string>
     <string name="s_qingzhishaoxuanzeyigefanganhou_e4dfa">请至少选择一个方案后才能继续</string>
@@ -869,7 +861,6 @@
     <string name="s_yixuanze_gefangan">✓ 已选择 %1$s 个方案</string>
     <string name="s_zhengzaichushihuashurufayinqing">正在初始化输入法引擎...</string>
     <string name="s_cuowu">错误：%1$s</string>
-    <string name="s_yiqiezhunbeijiuxu_qingqiehuand_3e15e">一切准备就绪！请切换到曦码输入法开始使用</string>
     <string name="s_danchushurufaxuanzeqi">弹出输入法选择器</string>
     <string name="s_wanchengshezhi">完成设置</string>
     <string name="s_qiyongzhinenglianxiang">启用智能联想</string>

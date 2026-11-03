@@ -13,6 +13,7 @@ import com.kingzcheung.xime.keyboard.MainType
 import com.kingzcheung.xime.keyboard.OverlayRoute
 import com.kingzcheung.xime.keyboard.PanelType
 import com.kingzcheung.xime.keyboard.ToolbarButton
+import com.kingzcheung.xime.settings.KeysConfigHelper
 import com.kingzcheung.xime.settings.SchemaInfo
 import com.kingzcheung.xime.speech.RecognitionState
 import com.kingzcheung.xime.ui.keyboard.KeyboardDispatchAction
@@ -128,6 +129,25 @@ class KeyboardViewModel(application: Application) : AndroidViewModel(application
     val viewState: StateFlow<KeyboardViewState> = _viewState.asStateFlow()
 
     /**
+     * 按 action 携带（或显式传入）的 schemaId 同步键布局缓存。
+     * dispatch 各分支都会经由 initialKeyboardLayoutState 依据 schemaId 推导布局，
+     * 合并键布局（pinyin_14jian/t9_pinyin 等）需在此之前切换到位，
+     * 否则 initialKeyboardLayoutState 会读到上一个方案的缓存，导致 T9/合并键切不过去。
+     */
+    private fun applySchemaLayout(action: KeyboardDispatchAction, schemaId: String) {
+        val sid = schemaId.ifEmpty {
+            when (action) {
+                is KeyboardDispatchAction.AsciiModeChanged -> action.schemaId
+                is KeyboardDispatchAction.InputSessionStarted -> action.schemaId
+                else -> ""
+            }
+        }
+        if (sid.isNotEmpty()) {
+            KeysConfigHelper.setActiveKeyboardSchema(sid)
+        }
+    }
+
+    /**
      * 单⼀状态转移入口 — 替代所有散落的 LaunchedEffect、setKeyboardState、switchMain 等。
      */
     fun dispatch(
@@ -135,6 +155,8 @@ class KeyboardViewModel(application: Application) : AndroidViewModel(application
         isAsciiMode: Boolean = false,
         schemaId: String = "",
     ) {
+        // 布局随方案切换：必须在状态更新前同步执行，保证重组时读到新布局
+        applySchemaLayout(action, schemaId)
         val current = _viewState.value
         val (newState, newPage, newKbState) = when (action) {
             is KeyboardDispatchAction.ToggleChineseEnglish -> {

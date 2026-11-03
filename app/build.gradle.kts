@@ -190,6 +190,16 @@ android {
         buildConfigField("String", "APP_NAME", "\"$escapedAppName\"")
         buildConfigField("String", "APP_CHINESE_NAME", "\"$escapedChineseAppName\"")
         resValue("string", "app_name", configuredAppName)
+        // 设置页标题同样走注入，避免各语言 strings.xml 里再写死中文名
+        resValue("string", "settings_title", "${configuredAppName}设置")
+        // 引导/启用引导文案里的输入法名字也走注入（这些文案内嵌名字，无法用 @string/app_name 引用）
+        resValue("string", "s_zaixitongshezhizhongqiyongxima_44550", "在系统设置中启用${configuredAppName}")
+        resValue("string", "s_qiehuandaoximashurufa", "切换到${configuredAppName}")
+        resValue("string", "s_ximashurufa", configuredAppName)
+        resValue("string", "s_qingzaixitongshezhizhongqiyong_f6c5a", "请在系统设置中启用「${configuredAppName}」")
+        resValue("string", "s_ximashurufayiqiyong", "✓ ${configuredAppName}已启用")
+        resValue("string", "s_qingxianzaixitongshezhizhongqi_97b2c", "请先在系统设置中启用${configuredAppName}")
+        resValue("string", "s_yiqiezhunbeijiuxu_qingqiehuand_3e15e", "一切准备就绪！请切换到${configuredAppName}开始使用")
 
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
