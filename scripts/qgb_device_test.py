@@ -1,20 +1,37 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""统一真机测试脚本（qgb 分支）。
+"""统一真机 e2e 测试框架（qgb 分支）。
 
-覆盖每次改动后最容易翻车的几条链路：
-  1. adb 安装 APK（可用 --skip-install 跳过）
-  2. 启用/切换 Xime 输入法
-  3. 拉起短信编写页，点输入框，确认键盘真的弹出（mInputShown=true）
-  4. 切到简体拼音（26 键基线），截图并判断键盘区域“不是空白页”（边缘像素占比）
-  5. 按左下角 ?123，确认符号/数字面板有内容且与主键盘不同
-  6. 再按左下角键返回主键盘，确认恢复
-  7. 切到拼音九键，确认九键布局出现，再按「符号」确认面板非空白
-  8. 检查 logcat 有无 FATAL / AndroidRuntime 崩溃
+把「过去真实翻过车的问题」固化成可筛选、可重复执行的用例集，每次改动后跑一遍：
+
+  install        安装 APK（--skip-install 可跳过）
+  ime            启用并切换到 Xime 输入法
+  launch         拉起短信编写页并点输入框
+  ime_shown      确认键盘真的弹出（mInputShown=true）
+  schema_26      切到简体拼音（26 键基线）
+  kb_26          26 键主键盘非空白
+  panel_26       按左下角 ?123 进入符号面板
+  panel_26_ok    符号面板非空白且与主键盘不同（20261102 中文 ?123 空白回归）
+  panel_compact  符号面板每行键数 = 10/10/9/6（「符号显示太大、不够紧凑」回归）
+  back_26        再按左下角键返回主键盘并确认恢复
+  panel_again    再次按 ?123 回面板（全集符号页入口在面板里）
+  open_symbol_page 面板点「符号」打开全集符号页
+  symbol_back    符号页返回箭头回面板
+  panel_en       菜单「中文•西文」切英文后 ?123 面板非空白且紧凑（英文 ?123 空白回归）
+  restore_zh     切回中文（避免影响后续九键用例）
+  schema_t9      切到拼音九键（拼音九键无法切换显示回归）
+  t9_ok          九键布局出现且与 26 键不同
+  t9_symbol      九键点「符号」面板非空白
+  logcat         logcat 无 FATAL / AndroidRuntime 崩溃
 
 用法：
   python3 scripts/qgb_device_test.py --apk out/com.qgb.xime-20261103-arm64-v8a.apk
   python3 scripts/qgb_device_test.py --skip-install --serial ENU7N16322378460
+  python3 scripts/qgb_device_test.py --skip-install --cases panel_26,panel_compact,t9_ok
+  python3 scripts/qgb_device_test.py --list-cases
+
+坐标全部是「屏幕比例」，默认值按 Nexus 6P（1440x2560，API27）校准；
+换机型先 --list-cases 看用例，再按截图调参数。
 
 退出码：0 全部通过；1 有失败项；2 环境/依赖错误。
 """
@@ -76,7 +93,13 @@ def _paeth(a, b, c):
     return b if pb <= pc else c
 
 
+_PNG_CACHE = {}
+
+
 def read_png_rgba(path):
+    key = (os.path.abspath(path), os.path.getmtime(path))
+    if key in _PNG_CACHE:
+        return _PNG_CACHE[key]
     data = open(path, "rb").read()
     pos = 8
     width = height = depth = ctype = None
@@ -123,7 +146,9 @@ def read_png_rgba(path):
                 line[x] = (line[x] + _paeth(left, prev[x], upleft)) & 0xFF
         rows.append(line)
         prev = line
-    return width, height, bpp, rows
+    out = (width, height, bpp, rows)
+    _PNG_CACHE[key] = out
+    return out
 
 
 def region_stats(png_path, y0f, y1f, x0f=0.0, x1f=1.0):
@@ -170,7 +195,7 @@ def edge_ratio(png_path, y0f, y1f, x0f=0.0, x1f=1.0, threshold=20):
     """区域内横向相邻差 > threshold 的像素占比。
 
     空白页（整片纯色 + 零星文字）约 1%，键盘（键框/键帽/文字）约 3%-6%；
-    比“平均差”更能区分浅色主题下的空白键盘。
+    比"平均差"更能区分浅色主题下的空白键盘。
     """
     w, h, bpp, rows = read_png_rgba(png_path)
     y0, y1 = int(h * y0f), int(h * y1f)
@@ -191,14 +216,99 @@ def edge_ratio(png_path, y0f, y1f, x0f=0.0, x1f=1.0, threshold=20):
     return edges / max(count, 1)
 
 
-# ── 测试步骤 ──
+def count_key_runs(png_path, yf, threshold=12, max_gap=6, min_run=20):
+    """在某个 y 比例处横向扫描，统计"键面"色块数量。
 
-def check_logcat(adb):
-    out = adb.sh("logcat", "-d", "-v", "brief", check=False)
-    bad = [l for l in out.splitlines() if re.search(r"FATAL EXCEPTION|E/AndroidRuntime", l)]
-    if bad:
-        raise Fail("logcat 命中崩溃：\n" + "\n".join(bad[-8:]))
+    背景色取最左侧像素；与背景通道差 > threshold 的连续像素算键面。
+    键与键之间只有 2dp 内衬，抗锯齿可能让 1-2 个像素回落到背景色，
+    因此把间隔 <= max_gap 的相邻色块合并，再过滤掉过短的碎块。
+    """
+    w, h, bpp, rows = read_png_rgba(png_path)
+    y = int(h * yf)
+    row = rows[y]
+    o = 0
+    bg = (row[0], row[1], row[2])
+    runs = []
+    start = 0
+    inrun = False
+    for x in range(w):
+        o = x * bpp
+        d = max(abs(row[o] - bg[0]), abs(row[o + 1] - bg[1]), abs(row[o + 2] - bg[2]))
+        if d > threshold:
+            if not inrun:
+                inrun = True
+                start = x
+        else:
+            if inrun:
+                runs.append((start, x - start))
+                inrun = False
+    if inrun:
+        runs.append((start, w - start))
+    merged = []
+    for s, ln in runs:
+        if merged and s - (merged[-1][0] + merged[-1][1]) <= max_gap:
+            last_s, last_ln = merged[-1]
+            merged[-1] = (last_s, s + ln - last_s)
+        else:
+            merged.append((s, ln))
+    return [r for r in merged if r[1] >= min_run]
 
+
+def count_columns_robust(png_path, y0f, y1f, samples=9, threshold=12, max_gap=6, min_run=20):
+    """在 y0f-y1f 区间内多条扫描线取样，取出现次数最多的键数。
+
+    网格行与行之间有明显留白，单条扫描线可能正好落在行间隙；
+    取众数可以稳定得到列数（同时排除只有 1 段的间隙扫描线）。
+    """
+    from collections import Counter
+    counts = Counter()
+    for i in range(samples):
+        yf = y0f + (y1f - y0f) * i / max(samples - 1, 1)
+        n = len(count_key_runs(png_path, yf, threshold, max_gap, min_run))
+        if n >= 2:
+            counts[n] += 1
+    if not counts:
+        return 0
+    return counts.most_common(1)[0][0]
+
+
+def detect_key_rows(png_path, y0f=0.655, y1f=0.95, step=0.004, min_cells=5, min_samples=6):
+    """自动找出按键行的中心 y 比例（从下往上取最后 4 行）。
+
+    逐条扫描线统计键数，连续 >= min_cells 的扫描线聚成一行；
+    这样中/英面板、候选栏高度不同、键盘整体上下位移都不影响断言。
+    """
+    bands = []
+    cur = []
+    y = y0f
+    while y <= y1f:
+        n = len(count_key_runs(png_path, y))
+        if n >= min_cells:
+            cur.append(y)
+        else:
+            if len(cur) >= min_samples:
+                bands.append(cur)
+            cur = []
+        y += step
+    if len(cur) >= min_samples:
+        bands.append(cur)
+    centers = [sum(b) / len(b) for b in bands]
+    return centers[-4:] if len(centers) >= 4 else centers
+
+
+def check_row_counts(png_path, ys, expected, label):
+    if ys is None:
+        ys = detect_key_rows(png_path)
+        if len(ys) < 4:
+            raise Fail("%s 只找到 %d 行按键（应至少 4 行）" % (label, len(ys)))
+        print("    自动定位按键行 y=%s" % ["%.3f" % v for v in ys], flush=True)
+    actual = [len(count_key_runs(png_path, y)) for y in ys]
+    if actual != list(expected):
+        raise Fail("%s 每行键数 %s != 期望 %s（面板没有恢复紧凑布局？）" % (label, actual, list(expected)))
+    print("    %s 每行键数=%s" % (label, actual), flush=True)
+
+
+# ── 设备操作小工具 ──
 
 def wait_ime_shown(adb, timeout=8):
     end = time.time() + timeout
@@ -210,6 +320,13 @@ def wait_ime_shown(adb, timeout=8):
     return False
 
 
+def check_logcat(adb):
+    out = adb.sh("logcat", "-d", "-v", "brief", check=False)
+    bad = [l for l in out.splitlines() if re.search(r"FATAL EXCEPTION|E/AndroidRuntime", l)]
+    if bad:
+        raise Fail("logcat 命中崩溃：\n" + "\n".join(bad[-8:]))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--apk")
@@ -219,9 +336,14 @@ def main():
     ap.add_argument("--package", default=DEFAULT_PACKAGE)
     ap.add_argument("--ime", default=DEFAULT_IME)
     ap.add_argument("--out", default="out/device_test")
-    ap.add_argument("--panely", type=float, default=0.879, help="?123/符号 键中心 y 占比")
-    ap.add_argument("--panelx", type=float, default=0.083, help="?123 键中心 x 占比")
+    ap.add_argument("--cases", help="只跑这些用例（逗号分隔），默认全部")
+    ap.add_argument("--skip-cases", help="跳过这些用例（逗号分隔）")
+    ap.add_argument("--list-cases", action="store_true", help="打印用例列表后退出")
+    ap.add_argument("--expect-version", help="安装了 APK 时校验 versionName 包含该子串")
+    ap.add_argument("--inputx", type=float, default=0.61, help="短信输入框点击 x 占比")
     ap.add_argument("--inputy", type=float, default=0.89, help="短信输入框点击 y 占比")
+    ap.add_argument("--panelx", type=float, default=0.083, help="?123 键中心 x 占比")
+    ap.add_argument("--panely", type=float, default=0.879, help="?123 / 返回 键中心 y 占比")
     ap.add_argument("--toolbarx", type=float, default=0.056, help="键盘工具栏菜单图标 x 占比")
     ap.add_argument("--toolbary", type=float, default=0.63, help="键盘工具栏菜单图标 y 占比")
     ap.add_argument("--schemacardx", type=float, default=0.616, help="菜单「输入方案」卡片 x 占比")
@@ -230,157 +352,354 @@ def main():
     ap.add_argument("--pinyin26y", type=float, default=0.713, help="方案列表「简体拼音」卡片 y 占比")
     ap.add_argument("--t9x", type=float, default=0.376, help="方案列表「拼音九键」卡片 x 占比")
     ap.add_argument("--t9y", type=float, default=0.713, help="方案列表「拼音九键」卡片 y 占比")
-    ap.add_argument("--symbolkeyx", type=float, default=0.065, help="九键「符号」键 x 占比")
+    ap.add_argument("--symbolkeyx", type=float, default=0.069, help="面板「符号」键 x 占比")
+    ap.add_argument("--symbolkeyy", type=float, default=0.810, help="面板「符号」键 y 占比")
+    ap.add_argument("--symbolbackx", type=float, default=0.049, help="全集符号页返回箭头 x 占比")
+    ap.add_argument("--symbolbacky", type=float, default=0.635, help="全集符号页返回箭头 y 占比")
+    ap.add_argument("--symbolcols", type=int, default=8, help="全集符号页期望列数")
+    ap.add_argument("--rowcounts", default="10,10,9,6", help="面板每行期望键数（逗号分隔）")
+    ap.add_argument("--enkeyx", type=float, default=0.46, help="菜单「中文•西文」西文半区 x 占比")
+    ap.add_argument("--zhkeyx", type=float, default=0.326, help="菜单「中文•西文」中文半区 x 占比")
+    ap.add_argument("--langcardy", type=float, default=0.838, help="菜单「中文•西文」卡片 y 占比")
     args = ap.parse_args()
 
-    if not (os.path.exists(args.adb) or shutil.which(args.adb)):
-        print("[FAIL] 找不到 adb: %s" % args.adb)
-        return 2
+    cases = []
+    seen = set()
 
-    adb = Adb(args.adb, args.serial)
-    os.makedirs(args.out, exist_ok=True)
+    def add(cid, title, fn):
+        if cid not in seen:
+            seen.add(cid)
+            cases.append((cid, title, fn))
+
+    selected = set(x.strip() for x in args.cases.split(",") if x.strip()) if args.cases else None
+    skipped = set(x.strip() for x in args.skip_cases.split(",") if x.strip()) if args.skip_cases else set()
+
+    def enabled(cid):
+        if cid in skipped:
+            return False
+        return selected is None or cid in selected
+
     results = []
 
-    def step(name, fn):
-        print("==> %s" % name, flush=True)
+    def run(cid, title, fn):
+        if not enabled(cid):
+            print("-- skip %s %s" % (cid, title), flush=True)
+            return
+        print("==> [%s] %s" % (cid, title), flush=True)
         try:
             fn()
-            results.append((name, True, ""))
+            results.append((cid, title, True, ""))
             print("    PASS", flush=True)
         except Fail as e:
-            results.append((name, False, str(e)))
+            results.append((cid, title, False, str(e)))
             print("    FAIL: %s" % e, flush=True)
 
-    if not args.skip_install:
+    # ── 环境与前置 ──
+    adb = Adb(args.adb, args.serial)
+    ctx = {}
+
+    def do_install():
         if not args.apk or not os.path.exists(args.apk):
-            print("[FAIL] APK 不存在: %s" % args.apk)
-            return 2
-        step("安装 APK", lambda: adb.sh("install", "-r", args.apk, timeout=600))
+            raise Fail("APK 不存在: %s" % args.apk)
+        adb.sh("install", "-r", args.apk, timeout=600)
+
+    add("install", "安装 APK", do_install)
+
+    def check_version():
+        if not args.expect_version:
+            return
+        d = adb.shell("dumpsys package %s" % args.package, check=False)
+        m = re.search(r"versionName=(\S+)", d)
+        if not m:
+            raise Fail("dumpsys 未找到 versionName")
+        if args.expect_version not in m.group(1):
+            raise Fail("versionName=%s 不含 %s" % (m.group(1), args.expect_version))
+        print("    versionName=%s" % m.group(1), flush=True)
+
+    add("version", "校验已安装版本号（可选）", check_version)
 
     def ime_setup():
         adb.shell("ime enable %s" % args.ime, check=False)
         adb.shell("ime set %s" % args.ime)
 
-    step("启用并切换输入法", ime_setup)
-    adb.sh("logcat", "-c", check=False)
+    add("ime", "启用并切换输入法", ime_setup)
 
-    w, h = adb.screen_size()
+    add("logcat_clear", "清空 logcat 基线", lambda: adb.sh("logcat", "-c", check=False))
+
+    def screen_size():
+        if "w" not in ctx:
+            ctx["w"], ctx["h"] = adb.screen_size()
+        return ctx["w"], ctx["h"]
+
+    def tap(fx, fy, wait=1.2):
+        w, h = screen_size()
+        adb.shell("input tap %d %d" % (int(w * fx), int(h * fy)))
+        time.sleep(wait)
 
     def launch():
+        w, h = screen_size()
         adb.shell("am force-stop com.google.android.apps.messaging", check=False)
         adb.shell("am start -a android.intent.action.SENDTO -d smsto:10086", check=False)
         time.sleep(2.5)
-        adb.shell("input tap %d %d" % (int(w * 0.61), int(h * args.inputy)))
-        time.sleep(1.5)
+        adb.shell("input tap %d %d" % (int(w * args.inputx), int(h * args.inputy)))
+        time.sleep(1.2)
+        # 首次点可能落在附件面板/工具栏上：没弹出键盘就按 BACK 收起再点一次
+        if not wait_ime_shown(adb, 2):
+            adb.shell("input keyevent 4")
+            time.sleep(0.6)
+            adb.shell("input tap %d %d" % (int(w * args.inputx), int(h * args.inputy)))
+            time.sleep(1.2)
 
-    step("拉起输入框", launch)
+    add("launch", "拉起输入框", launch)
 
     def ime_visible():
         if not wait_ime_shown(adb):
             raise Fail("键盘没有弹出（mInputShown=false）")
 
-    step("键盘弹出", ime_visible)
+    add("ime_shown", "键盘弹出", ime_visible)
 
-    # 统一从 26 键简体拼音开始，保证后续 ?123 / 九键的坐标与基线稳定
     def open_schema_menu():
-        adb.shell("input tap %d %d" % (int(w * args.toolbarx), int(h * args.toolbary)))
-        time.sleep(0.9)
-        adb.shell("input tap %d %d" % (int(w * args.schemacardx), int(h * args.schemacardy)))
-        time.sleep(0.9)
+        tap(args.toolbarx, args.toolbary, 0.9)
+        tap(args.schemacardx, args.schemacardy, 0.9)
 
     def switch_schema(x, y):
-        adb.shell("input tap %d %d" % (int(w * x), int(h * y)))
-        time.sleep(1.4)
+        tap(x, y, 1.4)
 
-    step("切到简体拼音（26 键基线）",
-         lambda: (open_schema_menu(), switch_schema(args.pinyin26x, args.pinyin26y)))
+    add("schema_26", "切到简体拼音（26 键基线）",
+        lambda: (open_schema_menu(), switch_schema(args.pinyin26x, args.pinyin26y)))
 
-    full_png = os.path.join(args.out, "1_full.png")
-    step("截图主键盘", lambda: adb.screencap(full_png))
+    def shot_full():
+        p = os.path.join(args.out, "1_full.png")
+        adb.screencap(p)
+        ctx["full_png"] = p
+
+    add("kb_26", "截图 26 键主键盘", shot_full)
 
     def full_not_blank():
-        var, lum = region_stats(full_png, 0.60, 0.95)
-        er = edge_ratio(full_png, 0.63, 0.90)
+        p = ctx["full_png"]
+        var, lum = region_stats(p, 0.60, 0.95)
+        er = edge_ratio(p, 0.63, 0.90)
         if er < 0.02:
             raise Fail("主键盘区域近乎空白（边缘占比=%.3f 相邻差=%.1f 亮度=%.1f）" % (er, var, lum))
         print("    主键盘边缘占比=%.3f 相邻差=%.1f 亮度=%.1f" % (er, var, lum), flush=True)
 
-    step("主键盘非空白", full_not_blank)
+    add("kb_26_ok", "26 键主键盘非空白", full_not_blank)
 
-    def tap_left_bottom():
-        adb.shell("input tap %d %d" % (int(w * args.panelx), int(h * args.panely)))
-        time.sleep(1.2)
+    add("panel_26", "按 ?123 进入符号面板", lambda: tap(args.panelx, args.panely))
 
-    step("按 ?123 进入符号面板", tap_left_bottom)
+    def shot_panel(name):
+        p = os.path.join(args.out, name)
+        adb.screencap(p)
+        ctx["panel_png"] = p
 
-    panel_png = os.path.join(args.out, "2_panel.png")
-    step("截图符号面板", lambda: adb.screencap(panel_png))
+    add("panel_26_shot", "截图符号面板", lambda: shot_panel("2_panel.png"))
 
     def panel_not_blank():
-        var, lum = region_stats(panel_png, 0.60, 0.95)
-        er = edge_ratio(panel_png, 0.63, 0.90)
+        p = ctx.get("panel_png")
+        if not p:
+            p = os.path.join(args.out, "2_panel.png")
+        var, lum = region_stats(p, 0.60, 0.95)
+        er = edge_ratio(p, 0.63, 0.90)
         if er < 0.02:
             raise Fail("符号面板空白（边缘占比=%.3f 相邻差=%.1f 亮度=%.1f）" % (er, var, lum))
-        diff = region_diff(full_png, panel_png, 0.60, 0.95)
-        if diff < 8:
-            raise Fail("符号面板与主键盘几乎相同（diff=%.1f），可能没切过去" % diff)
-        print("    符号面板边缘占比=%.3f 相邻差=%.1f diff=%.1f" % (er, var, diff), flush=True)
+        full = ctx.get("full_png")
+        if full and os.path.exists(full):
+            diff = region_diff(full, p, 0.60, 0.95)
+            if diff < 8:
+                raise Fail("符号面板与主键盘几乎相同（diff=%.1f），可能没切过去" % diff)
+            print("    符号面板边缘占比=%.3f 相邻差=%.1f diff=%.1f" % (er, var, diff), flush=True)
+        else:
+            print("    符号面板边缘占比=%.3f 相邻差=%.1f" % (er, var), flush=True)
 
-    step("符号面板有内容且已切换", panel_not_blank)
+    add("panel_26_ok", "符号面板非空白且已切换", panel_not_blank)
 
-    step("按返回键回主键盘", tap_left_bottom)
-    back_png = os.path.join(args.out, "3_back.png")
-    step("截图返回后的主键盘", lambda: adb.screencap(back_png))
+    def panel_compact():
+        p = ctx.get("panel_png")
+        if not p:
+            p = os.path.join(args.out, "2_panel.png")
+        expected = [int(x) for x in args.rowcounts.split(",")]
+        check_row_counts(p, None, expected, "符号面板")
+
+    add("panel_compact", "符号面板每行键数（紧凑布局回归）", panel_compact)
+
+    add("back_26", "按左下角键返回主键盘", lambda: tap(args.panelx, args.panely))
+
+    def shot_back():
+        p = os.path.join(args.out, "3_back.png")
+        adb.screencap(p)
+        ctx["back_png"] = p
+
+    add("back_26_shot", "截图返回后的主键盘", shot_back)
 
     def back_ok():
-        var, _ = region_stats(back_png, 0.60, 0.95)
-        er = edge_ratio(back_png, 0.63, 0.90)
+        p = ctx["back_png"]
+        var, _ = region_stats(p, 0.60, 0.95)
+        er = edge_ratio(p, 0.63, 0.90)
         if er < 0.02:
             raise Fail("返回主键盘后空白（边缘占比=%.3f 相邻差=%.1f）" % (er, var))
         print("    返回后边缘占比=%.3f 相邻差=%.1f" % (er, var), flush=True)
 
-    step("返回主键盘恢复显示", back_ok)
+    add("back_26_ok", "返回主键盘恢复显示", back_ok)
 
-    # ── T9 九键：切到九键，点「符号」确认面板非空白 ──
-    t9_png = os.path.join(args.out, "5_t9.png")
-    step("切到拼音九键", lambda: (open_schema_menu(), switch_schema(args.t9x, args.t9y)))
-    step("截图九键键盘", lambda: adb.screencap(t9_png))
+    # ── 全集符号页（默认英文分类、8 列网格）──
+    add("panel_again", "回主键盘后再次进 ?123 面板",
+        lambda: tap(args.panelx, args.panely))
+
+    add("open_symbol_page", "面板点「符号」打开全集符号页",
+        lambda: tap(args.symbolkeyx, args.symbolkeyy))
+
+    def shot_symbol_page():
+        p = os.path.join(args.out, "4_symbol_page.png")
+        adb.screencap(p)
+        ctx["symbol_png"] = p
+
+    add("symbol_page_shot", "截图全集符号页", shot_symbol_page)
+
+    def symbol_page_ok():
+        p = ctx["symbol_png"]
+        var, lum = region_stats(p, 0.62, 0.92)
+        er = edge_ratio(p, 0.62, 0.92)
+        if er < 0.02:
+            raise Fail("符号页空白（边缘占比=%.3f 相邻差=%.1f 亮度=%.1f）" % (er, var, lum))
+        cols = count_columns_robust(p, 0.66, 0.80)
+        if cols != args.symbolcols:
+            raise Fail("符号页列数=%d != 期望 %d（布局被改动？）" % (cols, args.symbolcols))
+        print("    符号页边缘占比=%.3f 列数=%d" % (er, cols), flush=True)
+
+    add("symbol_page_ok", "符号页非空白且列数正确", symbol_page_ok)
+
+    add("symbol_back", "符号页返回箭头回面板",
+        lambda: tap(args.symbolbackx, args.symbolbacky))
+
+    # ── 英文模式 ?123 面板（20261102 英文 ?123 空白回归）──
+    def row_signature(p):
+        return [len(count_key_runs(p, y)) for y in detect_key_rows(p)]
+
+    def close_compact_panel_if_any():
+        """symbol_back 之后仍停在 ?123 面板里；面板没有工具栏，必须先回主键盘。
+
+        用截图里的每行键数判断当前是否面板（10/10/9/6），避免 --cases 单跑时
+        状态不对就乱点。
+        """
+        p = os.path.join(args.out, "8_state_before_en.png")
+        adb.screencap(p)
+        if row_signature(p) == [int(x) for x in args.rowcounts.split(",")]:
+            tap(args.panelx, args.panely, 1.2)
+
+    def switch_en():
+        close_compact_panel_if_any()
+        tap(args.toolbarx, args.toolbary, 0.9)
+        tap(args.enkeyx, args.langcardy, 1.5)
+        # 先断言语言真的切过去了：英文主键盘 vs 中文主键盘必须不同
+        p = os.path.join(args.out, "5_en_main.png")
+        adb.screencap(p)
+        ctx["en_main_png"] = p
+        zh = ctx.get("full_png")
+        if zh and os.path.exists(zh):
+            d = region_diff(zh, p, 0.60, 0.95)
+            # 英文键盘与中文只差键上的拼音注音，diff 只有 4-5；未切换时约 1.7
+            if d < 3:
+                raise Fail("切英文后主键盘与中文几乎相同（diff=%.1f），语言没切过去" % d)
+            print("    英文主键盘 diff(中)=%.1f" % d, flush=True)
+        tap(args.panelx, args.panely, 1.5)
+
+    add("panel_en", "切英文后按 ?123", switch_en)
+
+    def shot_panel_en():
+        p = os.path.join(args.out, "5_panel_en.png")
+        adb.screencap(p)
+        ctx["panel_en_png"] = p
+
+    add("panel_en_shot", "截图英文 ?123 面板", shot_panel_en)
+
+    def panel_en_ok():
+        p = ctx["panel_en_png"]
+        var, lum = region_stats(p, 0.60, 0.95)
+        er = edge_ratio(p, 0.63, 0.90)
+        if er < 0.02:
+            raise Fail("英文 ?123 面板空白（边缘占比=%.3f 相邻差=%.1f 亮度=%.1f）" % (er, var, lum))
+        en_main = ctx.get("en_main_png")
+        diff = 0.0
+        if en_main and os.path.exists(en_main):
+            diff = region_diff(en_main, p, 0.60, 0.95)
+            if diff < 8:
+                raise Fail("英文 ?123 与英文主键盘几乎相同（diff=%.1f），可能没切到面板" % diff)
+        expected = [int(x) for x in args.rowcounts.split(",")]
+        check_row_counts(p, None, expected, "英文符号面板")
+        print("    英文 ?123 边缘占比=%.3f diff(英主键)=%.1f" % (er, diff), flush=True)
+
+    add("panel_en_ok", "英文 ?123 面板非空白且紧凑", panel_en_ok)
+
+    def restore_zh():
+        tap(args.panelx, args.panely)  # 面板左下角「返回」回主键盘
+        tap(args.toolbarx, args.toolbary, 0.9)
+        tap(args.zhkeyx, args.langcardy, 1.0)
+
+    add("restore_zh", "切回中文", restore_zh)
+
+    # ── 拼音九键（无法切换显示回归）──
+    add("schema_t9", "切到拼音九键",
+        lambda: (open_schema_menu(), switch_schema(args.t9x, args.t9y)))
+
+    def shot_t9():
+        p = os.path.join(args.out, "6_t9.png")
+        adb.screencap(p)
+        ctx["t9_png"] = p
+
+    add("t9_shot", "截图九键键盘", shot_t9)
 
     def t9_ok():
-        var, lum = region_stats(t9_png, 0.60, 0.95)
-        er = edge_ratio(t9_png, 0.63, 0.90)
+        p = ctx["t9_png"]
+        var, lum = region_stats(p, 0.60, 0.95)
+        er = edge_ratio(p, 0.63, 0.90)
         if er < 0.02:
             raise Fail("九键键盘空白（边缘占比=%.3f 相邻差=%.1f 亮度=%.1f）" % (er, var, lum))
-        diff = region_diff(full_png, t9_png, 0.60, 0.95)
-        if diff < 8:
-            raise Fail("九键与 26 键几乎相同（diff=%.1f），可能没切换" % diff)
-        print("    九键边缘占比=%.3f 相邻差=%.1f diff=%.1f" % (er, var, diff), flush=True)
+        full = ctx.get("full_png")
+        if full:
+            diff = region_diff(full, p, 0.60, 0.95)
+            if diff < 8:
+                raise Fail("九键与 26 键几乎相同（diff=%.1f），可能没切换" % diff)
+            print("    九键边缘占比=%.3f diff=%.1f" % (er, diff), flush=True)
+        else:
+            print("    九键边缘占比=%.3f" % er, flush=True)
 
-    step("九键布局已切换且非空白", t9_ok)
+    add("t9_ok", "九键布局已切换且非空白", t9_ok)
 
-    t9_sym_png = os.path.join(args.out, "6_t9_symbol.png")
-
-    def tap_t9_symbol():
-        adb.shell("input tap %d %d" % (int(w * args.symbolkeyx), int(h * args.panely)))
-        time.sleep(1.2)
-
-    step("九键点「符号」", tap_t9_symbol)
-    step("截图九键符号面板", lambda: adb.screencap(t9_sym_png))
+    add("t9_symbol", "九键点「符号」", lambda: tap(args.symbolkeyx, args.panely))
 
     def t9_symbol_ok():
-        var, lum = region_stats(t9_sym_png, 0.60, 0.95)
-        er = edge_ratio(t9_sym_png, 0.63, 0.90)
+        p = os.path.join(args.out, "7_t9_symbol.png")
+        adb.screencap(p)
+        var, lum = region_stats(p, 0.60, 0.95)
+        er = edge_ratio(p, 0.63, 0.90)
         if er < 0.02:
             raise Fail("九键符号面板空白（边缘占比=%.3f 相邻差=%.1f 亮度=%.1f）" % (er, var, lum))
-        print("    九键符号面板边缘占比=%.3f 相邻差=%.1f 亮度=%.1f" % (er, var, lum), flush=True)
+        print("    九键符号面板边缘占比=%.3f" % er, flush=True)
 
-    step("九键符号面板有内容", t9_symbol_ok)
-    step("logcat 无崩溃", lambda: check_logcat(adb))
+    add("t9_symbol_ok", "九键符号面板非空白", t9_symbol_ok)
+
+    add("logcat", "logcat 无崩溃", lambda: check_logcat(adb))
+
+    if args.list_cases:
+        for cid, title, _ in cases:
+            print("%-18s %s" % (cid, title))
+        return 0
+
+    if not (os.path.exists(args.adb) or shutil.which(args.adb)):
+        print("[FAIL] 找不到 adb: %s" % args.adb)
+        return 2
+    os.makedirs(args.out, exist_ok=True)
+
+    for cid, title, fn in cases:
+        if cid == "install" and args.skip_install:
+            print("-- skip install （--skip-install）", flush=True)
+            continue
+        run(cid, title, fn)
 
     print("\n==== 结果 ====")
     bad = 0
-    for name, ok, err in results:
-        print(("PASS" if ok else "FAIL") + "  " + name + (("  | " + err) if err else ""))
+    for cid, title, ok, err in results:
+        print(("PASS" if ok else "FAIL") + "  [%s] %s%s" % (cid, title, ("  | " + err) if err else ""))
         bad += 0 if ok else 1
     print("截图目录: %s" % os.path.abspath(args.out))
     return 0 if bad == 0 else 1

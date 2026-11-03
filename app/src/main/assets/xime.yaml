@@ -1026,8 +1026,9 @@ keyboard:
       enter: { tap: { action: send_rime, value: enter, label: "确定" } }
 
   # ── 常用符号键盘（rows 行布局；中英共用一套，不再分中/英两段、没有 En 键）──
-  # 符号默认用**中文形态**（＠＃＄… 、＊“”！？），只有 `,` 与 `.` 保留半角 ASCII
-  #（写代码/英文时更顺手）。符号键是值键（点按直接上屏）；功能键 back / number(切数字面板) /
+  # qgb 分支：恢复旧版紧凑观感——符号用半角 ASCII（旧版默认英语形态，字形窄、不撑键），
+  # 第三行沿用旧版 符号 + * " ' : ; ! ? + 删除，第四行为 返回/123/`,`/空格/`.`/确定 六键。
+  # 符号键是值键（点按直接上屏）；功能键 back / number(切数字面板) /
   # open_symbols / space_key(空格) / delete / enter 行为内置，keys.<id> 只用来覆盖宽度与键面文字。
   # 键间距沿用 keyboard.key.symbol（面板旧名，与段名不同，保持老配置兼容）。
   common_symbols:
@@ -1035,10 +1036,9 @@ keyboard:
     layout:
       rows:
         - [1, 2, 3, 4, 5, 6, 7, 8, 9, 0]
-        - ["＠", "＃", "＄", "＆", "＿", "－", "＋", "（", "）", "／"]
-        # 引号成对：左双引号 + 右双引号（旧配置误用了 左双 + 右单）
-        - [open_symbols, "＊", "“", "”", "！", "？", ",", ".", delete]
-        - [back, number, space_key, enter]
+        - ["@", "#", "$", "&", "_", "-", "+", "(", ")", "/"]
+        - [open_symbols, "*", "\"", "'", ":", ";", "!", "?", delete]
+        - [back, number, ",", space_key, ".", enter]
     keys:
       open_symbols: { width: 1.3 }
       delete: { width: 1.2 }
