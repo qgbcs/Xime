@@ -52,7 +52,8 @@ common_symbols:
 ## 二、构建
 
 ```bash
-./debug_build_secexp.sh          # 默认 VERSION_CODE=20261103，APP_CHINESE_NAME=随手
+./debug_build_secexp.sh          # 默认 VERSION_CODE=20261103，APP_CHINESE_NAME=随手，arm64-v8a
+BUILD_ABIS=armeabi-v7a ./debug_build_secexp.sh   # 指定架构出 arm32 包
 adb install -r out/com.qgb.xime-20261103-arm64-v8a.apk
 ```
 

@@ -64,3 +64,11 @@ app/src/main/jni/third_party/
 # Python bytecode cache
 __pycache__/
 *.pyc
+
+# 构建产物 / 安装包（不要提交大文件）
+/out/
+/app/build/
+app/build/outputs/
+*.apk
+*.aab
+

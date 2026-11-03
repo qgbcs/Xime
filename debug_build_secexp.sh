@@ -10,16 +10,14 @@ if (($#)); then
     exit 2
 fi
 
-if grep -Eq '^[[:space:]]*version[[:space:]]*=[[:space:]]*"3\.13"[[:space:]]*$' \
-    "$PROJECT_DIR/app/build.gradle.kts"; then
-    "$PROJECT_DIR/scripts/install-python313.sh"
-fi
+# Python 运行时版本在解析 BUILD_ABIS 后确定（arm32 需要 3.11）
 
 # ============================================================
 # 构建参数：需要调整时只修改本段。
 # APP_ICON_PATH 默认使用项目原始矢量图标；可改为 PNG、WebP 或矢量 XML 文件。
 # ============================================================
-unset APPLICATION_ID VERSION_CODE VERSION_NAME APP_NAME BUILD_ABIS
+# 注：BUILD_ABIS 可用环境变量覆盖（如 BUILD_ABIS=armeabi-v7a ./debug_build_secexp.sh 出 arm32 包），默认 arm64-v8a。
+unset APPLICATION_ID VERSION_CODE VERSION_NAME APP_NAME
 VERSION_CODE="${VERSION_CODE:-20261103}"
 
 APP_CHINESE_NAME="${APP_CHINESE_NAME:-随手}"
@@ -37,6 +35,21 @@ VERSION_NAME="${VERSION_NAME:-${VERSION_CODE}有问题请联系作者  }"
 
 APK_BASENAME="${APPLICATION_ID}"
 BUILD_ABIS="${BUILD_ABIS:-arm64-v8a}"
+
+# Chaquopy 限制：Python 3.12+ 只支持 64 位，armeabi-v7a 只能用 3.11。
+if [[ "$BUILD_ABIS" == *"armeabi-v7a"* ]]; then
+    PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
+else
+    PYTHON_VERSION="${PYTHON_VERSION:-3.13}"
+fi
+if [[ ! -x "/usr/bin/python${PYTHON_VERSION}" ]]; then
+    if [[ "$PYTHON_VERSION" == "3.13" ]]; then
+        "$PROJECT_DIR/scripts/install-python313.sh"
+    else
+        echo "错误: 缺少 /usr/bin/python${PYTHON_VERSION}（arm32 需要 Python 3.11）" >&2
+        exit 1
+    fi
+fi
 OUT_DIR="${OUT_DIR:-$PROJECT_DIR/out}"
 
 GRADLE_USER_HOME="$WORKSPACE_DIR/.gradle"
@@ -194,6 +207,7 @@ rm -rf "$PROJECT_DIR/app/build/outputs/apk/debug" "$PROJECT_DIR/out/debug-secexp
   -PversionCode="$VERSION_CODE" \
   -PversionName="$VERSION_NAME" \
   -PbuildAbis="$BUILD_ABIS" \
+  -PpythonVersion="$PYTHON_VERSION" \
   -PappIconPath="$APP_ICON_PATH"
 
 # 4) 找到编译出的 APK

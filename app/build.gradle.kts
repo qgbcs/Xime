@@ -15,9 +15,12 @@ plugins {
 
 chaquopy {
     defaultConfig {
-        version = "3.13"
-        // 远端构建容器的 buildPython 必须与目标主次版本一致，显式指向 3.13
-        buildPython = listOf("/usr/bin/python3.13")
+        // arm32（armeabi-v7a）只有 Python 3.11 及更早支持；3.12+ 仅 64 位。
+        // 默认 3.13（arm64）；出 arm32 时由 debug_build_secexp.sh 传 -PpythonVersion=3.11。
+        val pyVersion = providers.gradleProperty("pythonVersion").orElse("3.13").get()
+        version = pyVersion
+        // 远端构建容器的 buildPython 必须与目标主次版本一致
+        buildPython = listOf("/usr/bin/python$pyVersion")
         pip {
             install("pip")
             install("wheel")
