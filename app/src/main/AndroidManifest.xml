@@ -441,6 +441,20 @@
                 android:resource="@xml/method" />
         </service>
 
+        <!-- 辅助功能服务：供 RPC 注入点击、长按、滑动、拖拽和多指手势 -->
+        <service
+            android:name=".service.XimeAccessibilityService"
+            android:exported="true"
+            android:label="@string/accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/xime_accessibility_service" />
+        </service>
+
         <!-- FileProvider -->
         <provider
             android:name="androidx.core.content.FileProvider"

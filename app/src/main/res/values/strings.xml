@@ -3,6 +3,8 @@
     <string name="subtype_label_pinyin">拼音</string>
     <string name="keyboard_name">@string/app_name</string>
     <string name="ime_service_label">@string/app_name</string>
+    <string name="accessibility_service_label">@string/app_name</string>
+    <string name="accessibility_service_description">供本机 RPC 调用注入点击、长按、滑动、拖拽和多指手势</string>
 
     <!-- 设置（app_name、settings_title 由 build.gradle.kts 的 resValue 按 -PappName 注入） -->
     <string name="settings_section_appearance">外观与交互</string>
