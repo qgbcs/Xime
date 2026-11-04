@@ -2,10 +2,13 @@ package com.kingzcheung.xime.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.Intent
 import android.graphics.Path
+import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.CountDownLatch
@@ -228,6 +231,104 @@ class XimeAccessibilityService : AccessibilityService() {
                     .put("error", e.toString())
                     .toString()
             }
+
+        /**
+         * 读取当前界面节点树（需 canRetrieveWindowContent）。
+         *
+         * 返回 {"ok","pkg","count","nodes":[{"t" 文本,"d" 描述,"id" 资源 ID,
+         * "c" 类名,"b" [left,top,right,bottom],"k" 可点击,"e" 可编辑,"f" 聚焦,"s" 可滚动}]}。
+         * 按窗口顺序广度优先遍历，最多 maxNodes 个；includeEmpty=false 时丢弃无文本且不可交互的空节点。
+         */
+        @JvmStatic
+        fun dumpUi(maxNodes: Int, includeEmpty: Boolean): String {
+            val service = instance ?: return JSONObject()
+                .put("ok", false).put("error", "service_not_connected").toString()
+            val limit = maxNodes.coerceIn(1, 2000)
+            return try {
+                val nodesJson = JSONArray()
+                var counted = 0
+                var pkg = ""
+                val roots = ArrayList<AccessibilityNodeInfo>()
+                try {
+                    service.windows?.forEach { window -> window.root?.let { roots.add(it) } }
+                } catch (e: Throwable) {
+                    // 个别 ROM 不让读多窗口，退化到当前活动窗口。
+                }
+                if (roots.isEmpty()) service.rootInActiveWindow?.let { roots.add(it) }
+                if (roots.isEmpty()) {
+                    JSONObject().put("ok", false).put("error", "no_window_root").toString()
+                } else {
+                    val queue = ArrayDeque<AccessibilityNodeInfo>()
+                    roots.forEach { node -> queue.addLast(node) }
+                    while (queue.isNotEmpty() && counted < limit) {
+                        val node = queue.removeFirst()
+                        val text = node.text?.toString()?.trim().orEmpty()
+                        val desc = node.contentDescription?.toString()?.trim().orEmpty()
+                        val keep = includeEmpty || text.isNotEmpty() || desc.isNotEmpty() ||
+                            node.isClickable || node.isEditable
+                        if (keep) {
+                            val rect = Rect()
+                            node.getBoundsInScreen(rect)
+                            val bounds = JSONArray()
+                            bounds.put(rect.left)
+                            bounds.put(rect.top)
+                            bounds.put(rect.right)
+                            bounds.put(rect.bottom)
+                            nodesJson.put(
+                                JSONObject()
+                                    .put("t", text)
+                                    .put("d", desc)
+                                    .put("id", node.viewIdResourceName.orEmpty())
+                                    .put("c", node.className?.toString().orEmpty())
+                                    .put("b", bounds)
+                                    .put("k", node.isClickable)
+                                    .put("e", node.isEditable)
+                                    .put("f", node.isFocused)
+                                    .put("s", node.isScrollable)
+                            )
+                            if (pkg.isEmpty()) pkg = node.packageName?.toString().orEmpty()
+                            counted++
+                        }
+                        for (i in 0 until node.childCount) {
+                            val child = node.getChild(i) ?: continue
+                            queue.addLast(child)
+                        }
+                    }
+                    JSONObject()
+                        .put("ok", true)
+                        .put("pkg", pkg)
+                        .put("count", counted)
+                        .put("nodes", nodesJson)
+                        .toString()
+                }
+            } catch (e: Throwable) {
+                JSONObject().put("ok", false).put("error", "$e").toString()
+            }
+        }
+
+        /** 全局动作（AccessibilityService 常量）：1=返回 2=Home 3=最近任务 4=通知栏 5=快捷设置 6=电源菜单 8=锁屏 9=截图。 */
+        @JvmStatic
+        fun globalAction(action: Int): Boolean {
+            val service = instance ?: return fail("service_not_connected")
+            return try {
+                if (service.performGlobalAction(action)) succeed() else fail("global_action_rejected:$action")
+            } catch (e: Throwable) {
+                fail("global_action_failed:$e")
+            }
+        }
+
+        /** 用 Intent 换起界面（action 如 android.settings.SETTINGS），后台启动可能被系统拦截。 */
+        @JvmStatic
+        fun startActivityAction(action: String): Boolean {
+            val service = instance ?: return fail("service_not_connected")
+            return try {
+                val intent = Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                service.startActivity(intent)
+                succeed()
+            } catch (e: Throwable) {
+                fail("start_activity_failed:$e")
+            }
+        }
 
         private fun maxStrokeCount(): Int =
             try {

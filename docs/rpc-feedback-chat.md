@@ -92,7 +92,7 @@ code = (
     "from com.kingzcheung.xime.util import RpcUiController; "
     "print(RpcUiController.feedbackPush('你好，我是反馈作者'))"
 )
-print(client_mqtt.rpc(code, request_topic='Huawei_Nexus6P_568810', timeout=40, k=2**222, mb=6))
+print(client_mqtt.rpc(code, request_topic='<设备 topic>', timeout=40, k=<私钥表达式>, mb=6))
 ```
 
 ## 发送信号与离线重试

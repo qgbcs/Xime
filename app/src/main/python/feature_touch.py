@@ -19,6 +19,7 @@
 """
 
 import json
+import time
 
 SERVICE_CLASS_NAME = "com.kingzcheung.xime.service.XimeAccessibilityService"
 
@@ -161,6 +162,99 @@ def gesture(strokes):
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         return _failure("gesture", str(e))
+
+
+def dump_ui(max_nodes=400, include_empty=False):
+    """读取当前界面节点树（可跨应用），返回 {"ok","pkg","count","nodes":[...]}。"""
+    try:
+        result = json.loads(_service().dumpUi(int(max_nodes), bool(include_empty)))
+        result["op"] = "dump_ui"
+        result["connected"] = bool(_service().isConnected())
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        return _failure("dump_ui", str(e))
+
+
+def find_text(text, max_nodes=400, exact=False, include_empty=False):
+    """按文本或内容描述查找节点，返回命中列表（含点击用的中心点 x/y）。"""
+    try:
+        data = json.loads(dump_ui(max_nodes, include_empty))
+        if not data.get("ok"):
+            return json.dumps(data, ensure_ascii=False)
+        wanted = str(text)
+        hits = []
+        for node in data.get("nodes") or []:
+            node_text = node.get("t") or ""
+            node_desc = node.get("d") or ""
+            if exact:
+                matched = wanted in (node_text, node_desc)
+            else:
+                matched = wanted in node_text or wanted in node_desc
+            if not matched:
+                continue
+            left, top, right, bottom = node.get("b") or (0, 0, 0, 0)
+            hits.append(
+                {
+                    "text": node_text,
+                    "desc": node_desc,
+                    "id": node.get("id"),
+                    "class": node.get("c"),
+                    "bounds": node.get("b"),
+                    "x": int((left + right) // 2),
+                    "y": int((top + bottom) // 2),
+                    "clickable": node.get("k"),
+                    "editable": node.get("e"),
+                }
+            )
+        return json.dumps(
+            {"ok": True, "op": "find_text", "query": wanted, "count": len(hits), "hits": hits},
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return _failure("find_text", str(e))
+
+
+def tap_text(text, index=0, max_nodes=400, exact=False, duration_ms=80):
+    """找到文本命中的节点并点击其中心点；index 用于同名节点排序。"""
+    found = json.loads(find_text(text, max_nodes, exact))
+    if not found.get("ok"):
+        return json.dumps(found, ensure_ascii=False)
+    hits = found.get("hits") or []
+    if not hits:
+        return _failure("tap_text", "text_not_found:" + str(text), query=str(text))
+    if index < 0 or index >= len(hits):
+        return _failure("tap_text", "index_out_of_range:%s/%s" % (index, len(hits)))
+    hit = hits[index]
+    result = json.loads(tap(hit["x"], hit["y"], duration_ms))
+    result["op"] = "tap_text"
+    result["query"] = str(text)
+    result["hit"] = hit
+    return json.dumps(result, ensure_ascii=False)
+
+
+def wait_text(text, timeout=10.0, interval=0.3, max_nodes=400, exact=False):
+    """轮询等待文本出现，命中直接返回节点，超时返回失败。"""
+    start = time.time()
+    deadline = start + float(timeout)
+    while True:
+        found = json.loads(find_text(text, max_nodes, exact))
+        if found.get("ok") and found.get("hits"):
+            found["op"] = "wait_text"
+            found["waited_ms"] = int((time.time() - start) * 1000)
+            return json.dumps(found, ensure_ascii=False)
+        if time.time() >= deadline:
+            return _failure("wait_text", "text_not_found:" + str(text), timeout=timeout)
+        time.sleep(float(interval))
+
+
+def global_action(action):
+    """全局动作：1=返回 2=Home 3=最近任务 4=通知栏 5=快捷设置 6=电源菜单 8=锁屏 9=截图。"""
+    return _run("global_action", lambda: _service().globalAction(int(action)), action=int(action))
+
+
+def start_activity(action):
+    """用 Intent 拉起界面，如 android.settings.SETTINGS；后台启动可能被系统拦截。"""
+    return _run("start_activity", lambda: _service().startActivityAction(str(action)), action=str(action))
 
 
 def tap(x, y, duration_ms=80):
