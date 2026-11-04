@@ -186,8 +186,88 @@ ensure_native_dependency() {
     rm -rf "$temporary_directory"
 }
 
-ensure_native_dependency "https://github.com/rime/librime.git" "app/src/main/jni/librime" || true
 ensure_native_dependency "https://github.com/google/snappy.git" "app/src/main/jni/snappy" || true
+
+# ============================================================
+# librime 与插件源码准备（曾在全新构建机上直接导致 CMake/编译失败）
+#   1) librime 必须使用主仓 index 记录的提交（ximeiorg fork），
+#      不能拉上游 rime/librime 的 master：上游 core 的 Dictionary/Candidate
+#      API 与 librime-correction、librime-t9 不匹配，会报
+#      “no member named 'LookupAll' / only virtual member functions can be marked 'override'”。
+#   2) librime/plugins 只跟踪 CMakeLists 和适配代码，真正插件源码在主仓
+#      兄弟目录（librime-octagram/predict/lua 等）。这些目录是子模块，
+#      没初始化时是空目录，plugins 下也不是软链，CMake 的 add_subdirectory
+#      会直接报 “does not contain a CMakeLists.txt file”。
+# ============================================================
+librime_git_url() {
+    local url origin_url credential
+    url="$(git config -f .gitmodules --get submodule.librime.url 2>/dev/null || true)"
+    # .gitmodules 里是 git@github.com: 形式，构建机通常没有 SSH key，改成带凭据的 https
+    if [[ "$url" == git@github.com:* ]]; then
+        url="https://github.com/${url#git@github.com:}"
+    fi
+    if [[ "$url" == https://github.com/* ]]; then
+        origin_url="$(git remote get-url origin 2>/dev/null || true)"
+        if [[ "$origin_url" =~ ^https://([^@/]+)@github\.com/ ]]; then
+            credential="${BASH_REMATCH[1]}"
+            url="https://${credential}@github.com/${url#https://github.com/}"
+        fi
+    fi
+    printf '%s\n' "$url"
+}
+
+prepare_librime() {
+    local path=app/src/main/jni/librime
+    local commit url
+    commit="$(git ls-tree HEAD "$path" | awk '{print $3}')"
+    [[ -n "$commit" ]] || return 0
+    url="$(librime_git_url)"
+
+    if [[ -d "$path/.git" ]]; then
+        git -C "$path" fetch --depth 1 "$url" "$commit" >/dev/null 2>&1 || true
+        git -C "$path" checkout -f "$commit" >/dev/null 2>&1 || true
+    fi
+
+    # 目录为空、不是 git 仓库，或提交仍对不上时，按 index 提交重新拉取
+    if [[ "$(git -C "$path" rev-parse HEAD 2>/dev/null || true)" != "$commit" ]]; then
+        echo "重新获取 librime 源码: $commit"
+        rm -rf "$path"
+        git config "submodule.librime.url" "$url"
+        git submodule update --init --depth 1 "$path" || true
+        git -C "$path" checkout -f "$commit" >/dev/null 2>&1 || true
+    fi
+
+    # librime 自身依赖（glog/leveldb/marisa-trie/opencc/yaml-cpp 等）
+    git -C "$path" submodule update --init --depth 1 --recursive >/dev/null 2>&1 || true
+}
+
+link_librime_plugin() {
+    local name="$1"
+    local source_name="${2:-$1}"
+    local source="$PWD/app/src/main/jni/$source_name"
+    local destination="$PWD/app/src/main/jni/librime/plugins/$name"
+    [[ -d "$source" ]] || return 0
+    if [[ -e "$destination" && ! -L "$destination" ]]; then
+        rm -rf "$destination"
+    fi
+    if [[ ! -L "$destination" ]]; then
+        ln -s "../../$source_name" "$destination"
+    fi
+}
+
+prepare_librime || echo "警告: librime 源码准备失败，继续尝试构建。" >&2
+
+# 插件子模块：octagram / predict / lua（含 lua 运行时依赖）
+for plugin_path in librime-octagram librime-predict librime-lua librime-lua-deps; do
+    git submodule update --init --depth 1 "app/src/main/jni/$plugin_path" || true
+done
+
+# plugins 目录软链（correction/t9 是主仓普通目录，其余是上面的子模块）
+link_librime_plugin librime-correction
+link_librime_plugin librime-t9
+link_librime_plugin librime-octagram
+link_librime_plugin librime-predict
+link_librime_plugin lua librime-lua
 
 [ ! -f "$PWD/app/src/main/python/aliyun_git.py" ] && wget -q -O "$PWD/app/src/main/python/aliyun_git.py" https://github.com/QGB/git.bat/raw/refs/heads/master/aliyun_git.py || true
 # ============================================================
