@@ -3,16 +3,25 @@ package com.kingzcheung.xime.service
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * RPC 驱动的辅助功能服务：用 GestureDescription 注入触摸手势。
@@ -30,7 +39,24 @@ class XimeAccessibilityService : AccessibilityService() {
         instance = this
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
+    /**
+     * 事件监听默认关闭。只有 RPC/MCP 显式调用 setEventCapture(true, ttl) 后才记录；
+     * 回调里只做几次原子/volatile 写入，绝不 dump、不拼 JSON、不联网，避免拖慢主线程。
+     */
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null || !eventsEnabled) return
+        val now = System.currentTimeMillis()
+        if (now > eventsUntilMs) {
+            eventsEnabled = false
+            return
+        }
+        eventVersion.incrementAndGet()
+        lastEventType.set(event.eventType)
+        lastEventPkg = event.packageName?.toString().orEmpty()
+        lastEventClass = event.className?.toString().orEmpty()
+        lastEventAtMs.set(now)
+        lastEventWindowId.set(event.windowId)
+    }
 
     override fun onInterrupt() = Unit
 
@@ -49,6 +75,29 @@ class XimeAccessibilityService : AccessibilityService() {
 
         @Volatile
         private var lastAtMs: Long = 0L
+
+        // 事件监听开关：默认全关，只有显式开启且在 TTL 内才记录，常态零开销。
+        @Volatile
+        private var eventsEnabled = false
+
+        @Volatile
+        private var eventsUntilMs = 0L
+
+        private val eventVersion = AtomicLong(0L)
+        private val lastEventType = AtomicInteger(0)
+        private val lastEventAtMs = AtomicLong(0L)
+        private val lastEventWindowId = AtomicInteger(-1)
+
+        @Volatile
+        private var lastEventPkg: String = ""
+
+        @Volatile
+        private var lastEventClass: String = ""
+
+        // 截图回调在同一后台线程执行，避免在主线程上等待回调造成死锁。
+        private val shotExecutor: ExecutorService by lazy { Executors.newSingleThreadExecutor() }
+
+        private val nodeRefPattern = Regex("w(\\d+):p([0-9.]*)")
 
         private val mainHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
 
@@ -248,20 +297,25 @@ class XimeAccessibilityService : AccessibilityService() {
                 val nodesJson = JSONArray()
                 var counted = 0
                 var pkg = ""
-                val roots = ArrayList<AccessibilityNodeInfo>()
+                data class RootRef(val index: Int, val windowId: Int, val root: AccessibilityNodeInfo)
+                val roots = ArrayList<RootRef>()
                 try {
-                    service.windows?.forEach { window -> window.root?.let { roots.add(it) } }
+                    service.windows?.forEachIndexed { index, window ->
+                        window.root?.let { roots.add(RootRef(index, window.id, it)) }
+                    }
                 } catch (e: Throwable) {
                     // 个别 ROM 不让读多窗口，退化到当前活动窗口。
                 }
-                if (roots.isEmpty()) service.rootInActiveWindow?.let { roots.add(it) }
+                if (roots.isEmpty()) {
+                    service.rootInActiveWindow?.let { roots.add(RootRef(0, it.windowId, it)) }
+                }
                 if (roots.isEmpty()) {
                     JSONObject().put("ok", false).put("error", "no_window_root").toString()
                 } else {
-                    val queue = ArrayDeque<AccessibilityNodeInfo>()
-                    roots.forEach { node -> queue.addLast(node) }
+                    val queue = ArrayDeque<Triple<AccessibilityNodeInfo, String, RootRef>>()
+                    roots.forEach { entry -> queue.addLast(Triple(entry.root, "", entry)) }
                     while (queue.isNotEmpty() && counted < limit) {
-                        val node = queue.removeFirst()
+                        val (node, path, entry) = queue.removeFirst()
                         val text = node.text?.toString()?.trim().orEmpty()
                         val desc = node.contentDescription?.toString()?.trim().orEmpty()
                         val keep = includeEmpty || text.isNotEmpty() || desc.isNotEmpty() ||
@@ -285,13 +339,15 @@ class XimeAccessibilityService : AccessibilityService() {
                                     .put("e", node.isEditable)
                                     .put("f", node.isFocused)
                                     .put("s", node.isScrollable)
+                                    .put("w", entry.windowId)
+                                    .put("r", "w" + entry.index + ":p" + path)
                             )
                             if (pkg.isEmpty()) pkg = node.packageName?.toString().orEmpty()
                             counted++
                         }
                         for (i in 0 until node.childCount) {
                             val child = node.getChild(i) ?: continue
-                            queue.addLast(child)
+                            queue.addLast(Triple(child, if (path.isEmpty()) "$i" else "$path.$i", entry))
                         }
                     }
                     JSONObject()
@@ -328,6 +384,301 @@ class XimeAccessibilityService : AccessibilityService() {
             } catch (e: Throwable) {
                 fail("start_activity_failed:$e")
             }
+        }
+
+        /**
+         * 开启/关闭事件监听。TtlMs 到点自动关闭，避免客户端异常退出后一直记录耗电。
+         * 默认关闭，只有 RPC/MCP 显式调用才会打开。
+         */
+        @JvmStatic
+        fun setEventCapture(enabled: Boolean, ttlMs: Long): Boolean {
+            if (enabled) {
+                eventsUntilMs = System.currentTimeMillis() + ttlMs.coerceIn(1000L, 600000L)
+                eventsEnabled = true
+            } else {
+                eventsEnabled = false
+                eventsUntilMs = 0L
+            }
+            return true
+        }
+
+        /** 读取事件版本号与最近事件；监听关闭时 version 保持不变。 */
+        @JvmStatic
+        fun eventState(): String {
+            val enabled = eventsEnabled && System.currentTimeMillis() <= eventsUntilMs
+            return JSONObject()
+                .put("ok", true)
+                .put("enabled", enabled)
+                .put("version", eventVersion.get())
+                .put("eventType", lastEventType.get())
+                .put("eventTypeName", eventTypeName(lastEventType.get()))
+                .put("pkg", lastEventPkg)
+                .put("class", lastEventClass)
+                .put("windowId", lastEventWindowId.get())
+                .put("atMs", lastEventAtMs.get())
+                .put("remainingMs", if (enabled) (eventsUntilMs - System.currentTimeMillis()).coerceAtLeast(0L) else 0L)
+                .toString()
+        }
+
+        /** 多窗口元信息；index 与 dump_ui 的 r 字段（w0/w1）保持一致。 */
+        @JvmStatic
+        fun windows(): String {
+            val service = instance ?: return errorJson("windows", "service_not_connected")
+            val array = JSONArray()
+            try {
+                service.windows?.forEachIndexed { index, window ->
+                    val bounds = Rect()
+                    window.getBoundsInScreen(bounds)
+                    val root = window.root
+                    array.put(
+                        JSONObject()
+                            .put("index", index)
+                            .put("id", window.id)
+                            .put("type", window.type)
+                            .put("layer", window.layer)
+                            .put("active", window.isActive)
+                            .put("focused", window.isFocused)
+                            .put("title", window.title?.toString().orEmpty())
+                            .put("bounds", rectJson(bounds))
+                            .put("pkg", root?.packageName?.toString().orEmpty())
+                    )
+                    root?.recycle()
+                }
+                return JSONObject().put("ok", true).put("op", "windows")
+                    .put("count", array.length()).put("windows", array).toString()
+            } catch (e: Throwable) {
+                return errorJson("windows", "windows_failed:$e")
+            }
+        }
+
+        /**
+         * 按 dump_ui 返回的 r 字段（如 w0:p1.2）执行节点动作。
+         * 每次调用都按路径重新定位节点，不缓存 AccessibilityNodeInfo。
+         */
+        @JvmStatic
+        fun performNodeAction(ref: String, action: String, text: String): String {
+            val node = resolveNode(ref) ?: return errorJson("perform_action", "node_ref_not_found:$ref")
+            try {
+                val wanted = action.trim().lowercase()
+                val args = Bundle()
+                val code = when (wanted) {
+                    "click" -> AccessibilityNodeInfo.ACTION_CLICK
+                    "long_click", "longclick" -> AccessibilityNodeInfo.ACTION_LONG_CLICK
+                    "scroll_forward" -> AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                    "scroll_backward" -> AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                    "select" -> AccessibilityNodeInfo.ACTION_SELECT
+                    "focus" -> AccessibilityNodeInfo.ACTION_FOCUS
+                    "clear_focus" -> AccessibilityNodeInfo.ACTION_CLEAR_FOCUS
+                    "expand" -> AccessibilityNodeInfo.ACTION_EXPAND
+                    "collapse" -> AccessibilityNodeInfo.ACTION_COLLAPSE
+                    "dismiss" -> AccessibilityNodeInfo.ACTION_DISMISS
+                    "paste" -> AccessibilityNodeInfo.ACTION_PASTE
+                    "set_text" -> {
+                        args.putCharSequence(
+                            AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text
+                        )
+                        AccessibilityNodeInfo.ACTION_SET_TEXT
+                    }
+                    else -> return errorJson("perform_action", "unknown_action:$action", nodeInfo(node))
+                }
+
+                // PASTE 只在已聚焦的输入框上生效，先补一次 ACTION_FOCUS。
+                if (wanted == "paste") {
+                    node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                }
+                val ok = node.performAction(code, args)
+                val resolved = nodeInfo(node)
+                if (!ok) {
+                    return JSONObject().put("ok", false).put("op", "perform_action")
+                        .put("action", wanted).put("ref", ref)
+                        .put("error", "action_rejected:$wanted")
+                        .put("resolved", resolved).toString()
+                }
+                if (wanted == "set_text") {
+                    val actual = verifyText(ref, text)
+                    if (actual != text) {
+                        return JSONObject().put("ok", false).put("op", "perform_action")
+                            .put("action", wanted).put("ref", ref)
+                            .put("error", "text_verify_failed")
+                            .put("expected", text).put("actual", actual)
+                            .put("resolved", resolved).toString()
+                    }
+                }
+                if (wanted == "paste") {
+                    val actual = readText(ref)
+                    return JSONObject().put("ok", true).put("op", "perform_action")
+                        .put("action", wanted).put("ref", ref).put("text_after", actual)
+                        .put("resolved", resolved).toString()
+                }
+                return JSONObject().put("ok", true).put("op", "perform_action")
+                    .put("action", wanted).put("ref", ref).put("resolved", resolved).toString()
+            } catch (e: Throwable) {
+                return errorJson("perform_action", "action_failed:$e")
+            } finally {
+                node.recycle()
+            }
+        }
+
+        /**
+         * 按需截图，仅显式调用时执行。windowId<0 截整屏；结果只返回本地 PNG 路径与尺寸。
+         * Android 10 及以下没有 takeScreenshot，直接返回 sdk_unsupported。
+         */
+        @JvmStatic
+        fun screenshot(windowId: Int): String {
+            val service = instance ?: return errorJson("screenshot", "service_not_connected")
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                return errorJson("screenshot", "sdk_unsupported:${Build.VERSION.SDK_INT}")
+            }
+            val latch = CountDownLatch(1)
+            var bitmap: Bitmap? = null
+            var failure = ""
+            val callback = object : AccessibilityService.TakeScreenshotCallback {
+                override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                    try {
+                        val buffer = result.hardwareBuffer
+                        try {
+                            bitmap = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
+                                ?.copy(Bitmap.Config.ARGB_8888, false)
+                        } finally {
+                            buffer.close()
+                        }
+                    } catch (e: Throwable) {
+                        failure = "decode_failed:$e"
+                    } finally {
+                        latch.countDown()
+                    }
+                }
+
+                override fun onFailure(errorCode: Int) {
+                    failure = "screenshot_failed:$errorCode"
+                    latch.countDown()
+                }
+            }
+            try {
+                if (windowId >= 0 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    service.takeScreenshotOfWindow(windowId, shotExecutor, callback)
+                } else {
+                    service.takeScreenshot(android.view.Display.DEFAULT_DISPLAY, shotExecutor, callback)
+                }
+            } catch (e: Throwable) {
+                return errorJson("screenshot", "screenshot_exception:$e")
+            }
+            val waited = try {
+                latch.await(8, TimeUnit.SECONDS)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                false
+            }
+            if (!waited) return errorJson("screenshot", "screenshot_timeout")
+            val image = bitmap ?: return errorJson("screenshot", failure.ifEmpty { "screenshot_empty" })
+            return try {
+                val dir = File(service.filesDir, "shots").apply { mkdirs() }
+                val name = "shot_${System.currentTimeMillis()}" + if (windowId >= 0) "_w$windowId.png" else ".png"
+                val file = File(dir, name)
+                FileOutputStream(file).use { out ->
+                    if (!image.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+                        return errorJson("screenshot", "encode_failed")
+                    }
+                }
+                JSONObject().put("ok", true).put("op", "screenshot")
+                    .put("path", file.absolutePath)
+                    .put("width", image.width).put("height", image.height)
+                    .put("bytes", file.length()).put("windowId", windowId).toString()
+            } catch (e: Throwable) {
+                errorJson("screenshot", "save_failed:$e")
+            } finally {
+                image.recycle()
+            }
+        }
+
+        private fun eventTypeName(type: Int): String = when (type) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> "window_state_changed"
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> "window_content_changed"
+            AccessibilityEvent.TYPE_VIEW_FOCUSED -> "view_focused"
+            AccessibilityEvent.TYPE_VIEW_SCROLLED -> "view_scrolled"
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> "view_text_changed"
+            else -> "unknown"
+        }
+
+        /** 按 ref 定位节点；中间节点用完立即 recycle，只把最终节点交给调用方。 */
+        private fun resolveNode(ref: String): AccessibilityNodeInfo? {
+            val match = nodeRefPattern.matchEntire(ref.trim()) ?: return null
+            val index = match.groupValues[1].toIntOrNull() ?: return null
+            val service = instance ?: return null
+            val windows = try { service.windows } catch (e: Throwable) { null } ?: return null
+            if (index < 0 || index >= windows.size) return null
+            val root = windows[index].root ?: return null
+            val segments = match.groupValues[2]
+            if (segments.isEmpty()) return root
+            val chain = ArrayList<AccessibilityNodeInfo>()
+            chain.add(root)
+            var node = root
+            for (part in segments.split('.')) {
+                val childIndex = part.toIntOrNull()
+                if (childIndex == null) {
+                    chain.forEach { it.recycle() }
+                    return null
+                }
+                val child = try { node.getChild(childIndex) } catch (e: Throwable) { null }
+                if (child == null) {
+                    chain.forEach { it.recycle() }
+                    return null
+                }
+                chain.add(child)
+                node = child
+            }
+            chain.dropLast(1).forEach { it.recycle() }
+            return node
+        }
+
+        /** 重新按 ref 定位并读取当前 text，供 PASTE 回读校验。 */
+        private fun readText(ref: String): String {
+            val node = resolveNode(ref) ?: return ""
+            return try {
+                node.text?.toString().orEmpty()
+            } finally {
+                node.recycle()
+            }
+        }
+
+        private fun verifyText(ref: String, expected: String): String {
+            repeat(3) { attempt ->
+                val node = resolveNode(ref)
+                if (node != null) {
+                    try {
+                        val current = node.text?.toString().orEmpty()
+                        if (current == expected) return current
+                    } finally {
+                        node.recycle()
+                    }
+                }
+                if (attempt < 2) Thread.sleep(80L)
+            }
+            return ""
+        }
+
+        private fun nodeInfo(node: AccessibilityNodeInfo): JSONObject {
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            return JSONObject()
+                .put("text", node.text?.toString().orEmpty())
+                .put("desc", node.contentDescription?.toString().orEmpty())
+                .put("id", node.viewIdResourceName.orEmpty())
+                .put("class", node.className?.toString().orEmpty())
+                .put("bounds", rectJson(rect))
+                .put("clickable", node.isClickable)
+                .put("editable", node.isEditable)
+                .put("scrollable", node.isScrollable)
+        }
+
+        private fun rectJson(rect: Rect): JSONArray =
+            JSONArray().put(rect.left).put(rect.top).put(rect.right).put(rect.bottom)
+
+        private fun errorJson(op: String, error: String, extra: JSONObject? = null): String {
+            val payload = JSONObject().put("ok", false).put("op", op)
+                .put("error", error).put("connected", instance != null)
+            if (extra != null) payload.put("resolved", extra)
+            return payload.toString()
         }
 
         private fun maxStrokeCount(): Int =

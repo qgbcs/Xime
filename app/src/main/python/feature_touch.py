@@ -320,3 +320,71 @@ def pinch(center_x, center_y, start_radius, end_radius, duration_ms=400):
         end_radius=float(end_radius),
         duration_ms=int(duration_ms),
     )
+
+
+def event_capture(enabled=True, ttl_ms=60000):
+    """开启/关闭无障碍事件监听。默认关闭，只应在自动执行或实时连接期间开启。"""
+    try:
+        ok = bool(_service().setEventCapture(bool(enabled), int(ttl_ms)))
+        return json.dumps(
+            {"ok": ok, "op": "event_capture", "enabled": bool(enabled), "ttl_ms": int(ttl_ms)},
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return _failure("event_capture", str(e))
+
+
+def event_state():
+    """读取事件版本号与最近事件（类型/包名/时间戳/窗口id）。"""
+    try:
+        data = json.loads(_service().eventState())
+        data["op"] = "event_state"
+        data["connected"] = bool(_service().isConnected())
+        return json.dumps(data, ensure_ascii=False)
+    except Exception as e:
+        return _failure("event_state", str(e))
+
+
+def windows():
+    """读取多窗口元信息，index 与 dump_ui 的 r 字段（w0/w1）一致。"""
+    try:
+        data = json.loads(_service().windows())
+        data["op"] = "windows"
+        return json.dumps(data, ensure_ascii=False)
+    except Exception as e:
+        return _failure("windows", str(e))
+
+
+def perform_action(node_ref, action, text=""):
+    """按 dump_ui 的 r 字段对节点执行动作。
+
+    action: click / long_click / scroll_forward / scroll_backward / select /
+    focus / clear_focus / expand / collapse / dismiss / paste / set_text。
+    每次调用都按路径重新定位节点，不缓存 AccessibilityNodeInfo。
+    """
+    try:
+        data = json.loads(_service().performNodeAction(str(node_ref), str(action), str(text)))
+        data["op"] = "perform_action"
+        return json.dumps(data, ensure_ascii=False)
+    except Exception as e:
+        return _failure("perform_action", str(e), node_ref=str(node_ref), action=str(action))
+
+
+def set_text(node_ref, text):
+    """向可编辑节点写入文本，并回读校验写入结果。"""
+    return perform_action(node_ref, "set_text", text)
+
+
+def paste_text(node_ref):
+    """向可编辑节点粘贴剪贴板内容。"""
+    return perform_action(node_ref, "paste")
+
+
+def screenshot(window_id=-1):
+    """按需截图，返回本地 PNG 路径与尺寸；仅在显式调用时执行。"""
+    try:
+        data = json.loads(_service().screenshot(int(window_id)))
+        data["op"] = "screenshot"
+        return json.dumps(data, ensure_ascii=False)
+    except Exception as e:
+        return _failure("screenshot", str(e))
