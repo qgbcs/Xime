@@ -69,3 +69,11 @@ RPC 地址和授权信息应从本地安全配置读取；不要把设备地址�
 ## 远程构建与同步
 
 使用经过授权的凭据管理方式和设备；不要将设备地址、设备标识、解锁信息或访问令牌嵌入命令示例、日志或受版本控制的文档。同步工具的 `-m/--commit-msg` 参数不应传入空字符串；省略时由工具生成默认提交信息。
+
+## 已知子模块构建残留（忽略即可）
+以下子模块里的变更属于历史构建产物或本地补丁，**不要提交、不要清理、不要当成待办**：
+- `app/src/main/jni/librime`：`src/rime/algo/syllabifier.cc` 有修改；`plugins/librime-correction`、`plugins/librime-octagram`、`plugins/librime-predict`、`plugins/librime-t9` 为未跟踪内容
+- `app/src/main/jni/librime-lua`：内部有未跟踪内容
+- `app/src/main/jni/librime-lua-deps`：`lua5.4/liolib.c` 有修改
+
+判断工作区是否干净请用 `git status --short --ignore-submodules=all`；发布脚本等仓库文件的改动仍须正常 add/commit。
