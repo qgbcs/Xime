@@ -398,6 +398,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--branch", default=None, help="Git 分支（默认 main）")
     ap.add_argument("--dir", default=None, help="Git 本地工作副本")
     ap.add_argument("--key", default=None, help="SSH 私钥（默认 ~/.ssh/NIST256p.pem）")
+    ap.add_argument("--git-name", default=None,
+                    help="Git 发布文件名（默认 ime.apk）")
     ap.add_argument("--rpc-base", default=None,
                     help="RPC 入口 base（也可用环境变量 XIME_RPC_BASE）")
     ap.add_argument("--rpc-name", default=RPC_NAME,
@@ -442,7 +444,8 @@ def main(argv: "list[str] | None" = None) -> int:
         if args.dry_run:
             cmd.append("--dry-run")
     for flag, value in (("--repo", args.repo), ("--branch", args.branch),
-                        ("--dir", args.dir), ("--key", args.key)):
+                        ("--dir", args.dir), ("--key", args.key),
+                        ("--name", args.git_name)):
         if value:
             git_cmd += [flag, value]
 

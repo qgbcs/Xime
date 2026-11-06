@@ -652,21 +652,30 @@ def main(argv: "list[str] | None" = None) -> int:
         version = choose_next_version(existing)
     log("新版本   : %s@%s (tag=%s, 包内文件=%s)" % (args.package, version, args.tag, args.name))
 
-    # 3.5) APK 与最新已发布版本完全一致时跳过，避免无意义地造新版本
+    # 3.5) 同名 APK 与已发布版本完全一致时跳过，避免无意义地造新版本。
+    #      64 位 ime.apk 用 latest、32 位 ime32.apk 用 ime32 dist-tag，版本交替，
+    #      所以按元数据里的 apkName 找到「同名」的最近版本再比对。
     if not args.force and existing:
+        versions = pkgdoc.get("versions") or {}
         latest = existing[-1]
+        prev_name = latest
+        for v in reversed(existing):
+            vmeta = versions.get(v) or {}
+            if str((vmeta.get("xime") or {}).get("apkName") or "") == args.name:
+                prev_name = v
+                break
         prev_sha = None
         state = read_state()
-        if state.get("package") == args.package and state.get("version") == latest:
+        if state.get("package") == args.package and state.get("version") == prev_name:
             prev_sha = str(state.get("sha256") or "").strip().lower() or None
         if not prev_sha:
-            prev_meta = (pkgdoc.get("versions") or {}).get(latest) or {}
-            prev_sha = published_apk_sha(latest, prev_meta, args.name)
+            prev_meta = versions.get(prev_name) or {}
+            prev_sha = published_apk_sha(prev_name, prev_meta, args.name)
             if prev_sha:
-                write_state(latest, prev_sha, args.package)
+                write_state(prev_name, prev_sha, args.package)
         if prev_sha and prev_sha == digest:
             log("APK 与 %s@%s 完全一致，跳过发布（要重发加 --force）"
-                % (args.package, latest))
+                % (args.package, prev_name))
             return 0
         if prev_sha:
             log("APK 有变化（%s → %s），继续发布" % (prev_sha[:12], digest[:12]))

@@ -51,6 +51,7 @@ GITEE_REPO = "qgbcs/suishou"
 GITEE_RELEASE_TAG = "apk"
 BRANCH = "main"
 NPM_PACKAGE = "qgb"
+NPM_TAG = "latest"
 NAME = "ime.apk"
 
 DEFAULT_OUT_DIR = Path("/root/build_xime_home/xime/out")
@@ -111,7 +112,8 @@ def channels() -> "list[tuple[str, str, str]]":
          % (GH_REPO, BRANCH, NAME)),
         ("gitee", "Gitee 发行版附件", "https://gitee.com/%s/releases/download/%s/%s"
          % (GITEE_REPO, GITEE_RELEASE_TAG, NAME)),
-        ("npm", "npm unpkg @latest", "https://unpkg.com/%s@latest/%s" % (NPM_PACKAGE, NAME)),
+        ("npm", "npm unpkg @%s" % NPM_TAG,
+         "https://unpkg.com/%s@%s/%s" % (NPM_PACKAGE, NPM_TAG, NAME)),
     ]
 
 
@@ -342,6 +344,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="pythonanywhere RPC base（也可用环境变量 XIME_PA_BASE）")
     ap.add_argument("--npm-package", default=None, help="npm 包名（默认 %s）" % NPM_PACKAGE)
     ap.add_argument("--npm-name", default=None, help="包内文件名（默认 %s）" % NAME)
+    ap.add_argument("--name", default=None,
+                    help="所有渠道统一使用的 APK 文件名（优先级高于 --npm-name）")
+    ap.add_argument("--npm-tag", default=None, help="npm dist-tag（默认 latest）")
     ap.add_argument("--gitee-repo", default=None, help="Gitee 仓库（默认 %s）" % GITEE_REPO)
     ap.add_argument("--gitee-tag", default=None, help="Gitee 发行版 tag（默认 %s）" % GITEE_RELEASE_TAG)
     return ap
@@ -349,13 +354,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: "list[str] | None" = None) -> int:
     args = build_parser().parse_args(argv)
-    global PA_BASE, NPM_PACKAGE, NAME, GITEE_REPO, GITEE_RELEASE_TAG
+    global PA_BASE, NPM_PACKAGE, NAME, NPM_TAG, GITEE_REPO, GITEE_RELEASE_TAG
     if args.pa_base:
         PA_BASE = args.pa_base
     if args.npm_package:
         NPM_PACKAGE = args.npm_package
-    if args.npm_name:
-        NAME = args.npm_name
+    if args.name or args.npm_name:
+        NAME = args.name or args.npm_name
+    if args.npm_tag:
+        NPM_TAG = args.npm_tag
     if args.gitee_repo:
         GITEE_REPO = args.gitee_repo
     if args.gitee_tag:

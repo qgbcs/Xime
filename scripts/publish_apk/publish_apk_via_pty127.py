@@ -2,16 +2,21 @@
 # -*- coding: utf-8 -*-
 """publish_apk_via_pty127.py
 
-一句话流程：
-  1) 通过本机 http://127.0.0.1:1188 的 /r=<表达式> RPC，在远端后台执行
+一句话流程（双包）：
+  1) 依次取 out/ 里最新的 arm64-v8a 与 armeabi-v7a APK，经本机
+     http://127.0.0.1:1188 的 /r=<表达式> RPC 在远端后台执行
      publish_apk_all.py --no-gitee，上传 npm + GitHub git + pythonanywhere 三个渠道；
+     两个包在所有渠道固定发布为 ime.apk（64 位）与 ime32.apk（32 位）；
+     npm 一个版本只装一个 APK，所以 ime.apk 用 latest、ime32.apk 用 ime32
+     dist-tag，两个文件名链接都始终可下载；
   2) 轮询远端日志，等 git 通道推送成功并打印 ghfast 加速链接（通常最快，约几秒）；
   3) 拿到链接立刻在本地下载 APK，按远端 sha256/size 校验（此时远端其它渠道继续跑）；
   4) 本地通过 Gitee API 上传发行版附件（避开美国远端到 Gitee 的慢链路）；
-  5) 等远端 publish_all 全部结束 rc=0，再执行 check_apk_all.py 校验 6 条渠道。
+  5) 等远端 publish_all 全部结束 rc=0，再执行 check_apk_all.py 校验两个包的 6 条渠道。
 
 自动接手（本地窗口关掉也不丢任务）：
-  - 每次运行先扫远端 /tmp/apk_publish_flow/publish_all_* 与 check_*；
+  - 每次运行先扫远端 /tmp/apk_publish_flow/publish_all_ime64_*、
+    publish_all_ime32_* 与 check_ime64_*、check_ime32_*；
   - 最近 24 小时内已 rc=0、日志 sha 与当前 APK 一致的 publish_all 直接复用链接，
     不重新上传；仍在跑的则按字节偏移接手日志，只等它结束；
   - 最近 24 小时内已完成且 6 渠道都与当前 APK 一致的 check 直接复用结果，
@@ -45,6 +50,7 @@
     {"publish_apk": {
         "rpc_base": "https://.../-",
         "gitee": {"api": ..., "repo": ..., "tag": ..., "token": ...},
+        "github": {"key": "C:/path/to/privateKey.pem"},
         "npm":   {"package": ..., "registry": ..., "tag": ..., "name": ..., "token": ...}}}
   rpc_base / npm 会作为 --rpc-base / --npm-* 传给远端 publish_apk_all.py
   （npm token 走 NPM_TOKEN 环境变量，不出现在命令行和日志里），
@@ -55,8 +61,9 @@
 常用开关：
     --check-only          只复用/执行远端 check，不发布、不下载、不上传 Gitee
     --dry-run             只预检，不执行任何写操作
-    --skip-publish-all    跳过第 1 步（需同时给 --apk-url）
-    --apk-url URL         指定远端已发布的下载链接（配合 --skip-publish-all）
+    --skip-publish-all    跳过第 1 步（需同时给 --apk-url / --apk-url-32）
+    --apk-url URL         64 位 ime.apk 的远端已发布下载链接（配合 --skip-publish-all）
+    --apk-url-32 URL      32 位 ime32.apk 的远端已发布下载链接（配合 --skip-publish-all）
     --skip-download       跳过第 3 步（本地已有同名 APK）
     --skip-gitee          跳过第 4 步
     --skip-check          跳过第 5 步
@@ -67,6 +74,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import http.client
 import json
@@ -93,6 +101,18 @@ REMOTE_SCRIPTS = REMOTE_ROOT + "/scripts/publish_apk"
 REMOTE_OUT = REMOTE_ROOT + "/out"
 REMOTE_WORK = "/tmp/apk_publish_flow"
 APK_GLOB = "com.qgb.xime-*-arm64-v8a.apk"
+APK_GLOB_32 = "com.qgb.xime-*-armeabi-v7a.apk"
+# 双包发布目标：所有渠道都固定用这两个文件名（第三方渠道按此名覆盖）。
+# (发布文件名, 远端 APK 匹配模式)；任务名后缀直接取文件名去掉 .apk（ime / ime32）。
+PUBLISH_TARGETS = (
+    ("ime.apk", APK_GLOB),
+    ("ime32.apk", APK_GLOB_32),
+)
+# npm 一个版本只能装一个 APK（两个 70MB 包合打会超 registry 上限），所以 32 位
+# 用独立 dist-tag：ime.apk 走默认 latest，ime32.apk 走 ime32，两个下载链接都稳定。
+NPM_TAGS = {"ime.apk": "", "ime32.apk": "ime32"}
+# 大包 publish 后 registry 要安全扫描几分钟到十几分钟才生效；check 前最多等这么久。
+NPM_WAIT_SECONDS = 1800.0
 
 UA = "xime-publish-flow/1.0"
 
@@ -338,12 +358,14 @@ def remote_preflight(b: Bridge) -> None:
     log("远端预检通过：%s" % last)
 
 
-def remote_apk_info(b: Bridge) -> dict:
+def remote_apk_info(b: Bridge, glob: str = APK_GLOB) -> dict:
+    """取 out/ 下最新的匹配 APK（含 arm32/、arm64/ 等一级子目录）。"""
     cmd = (
-        "cd %s && f=$(ls -t %s 2>/dev/null | head -1) && "
+        "cd %s && f=$(find . -maxdepth 2 -type f -name %s "
+        "-printf '%%T@ %%p\\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-) && "
         "[ -n \"$f\" ] && printf '%%s\\n' \"$f\" && stat -c %%s \"$f\" && "
         "sha256sum \"$f\" | cut -d' ' -f1"
-        % (REMOTE_OUT, APK_GLOB)
+        % (REMOTE_OUT, shlex.quote(glob))
     )
     r = b.run(cmd, timeout=120)
     if r.get("rc") != 0:
@@ -353,6 +375,8 @@ def remote_apk_info(b: Bridge) -> dict:
     if len(lines) < 3:
         raise FlowError("远端 APK 信息输出不完整：%r" % (r.get("out") or "")[:300])
     name, size_s, sha = lines[0], lines[1], lines[2].lower()
+    if name.startswith("./"):
+        name = name[2:]
     try:
         size = int(size_s)
     except ValueError:
@@ -365,9 +389,13 @@ def remote_apk_info(b: Bridge) -> dict:
     return info
 
 
-def remote_git_links(b: Bridge, remote_python: str) -> str:
+def remote_git_links(b: Bridge, remote_python: str, name: str,
+                     apk_path: str, key: str = "") -> str:
     """git 通道因内容未变化跳过推送时，用远端脚本 --dry-run 打印同一组链接。"""
-    cmd = "cd %s && %s publish_apk_git.py --dry-run" % (REMOTE_SCRIPTS, remote_python)
+    cmd = ("cd %s && %s publish_apk_git.py --dry-run --name %s --apk %s%s"
+           % (REMOTE_SCRIPTS, remote_python,
+              shlex.quote(name), shlex.quote(apk_path),
+              (" --key " + shlex.quote(key)) if key else ""))
     r = b.run(cmd, timeout=180)
     text = r.get("out") or ""
     if r.get("rc") != 0:
@@ -453,7 +481,8 @@ def read_remote_json(b: Bridge, path: str) -> "dict | None":
     return obj if isinstance(obj, dict) else None
 
 
-def check_json_ok(obj: dict, apk_info: dict, cfg: dict = None) -> bool:
+def check_json_ok(obj: dict, apk_info: dict, cfg: dict = None,
+                  name: str = "") -> bool:
     """上次 check 的每条渠道都与当前 APK 一致，且测的就是当前配置的入口，才可复用。"""
     cfg = cfg or {}
     chans = obj.get("channels") or []
@@ -472,12 +501,13 @@ def check_json_ok(obj: dict, apk_info: dict, cfg: dict = None) -> bool:
         if not str(pa.get("url") or "").startswith(base + "/"):
             return False
     npm = cfg.get("npm") or {}
-    if npm.get("package") or npm.get("name"):
+    expected = name or npm.get("name")
+    if npm.get("package") or expected:
         nc = by_key.get("npm") or {}
         url = str(nc.get("url") or "")
         if npm.get("package") and ("unpkg.com/%s@" % npm["package"]) not in url:
             return False
-        if npm.get("name") and not url.endswith("/" + npm["name"]):
+        if expected and not url.endswith("/" + expected):
             return False
     gitee = cfg.get("gitee") or {}
     if gitee.get("repo") or gitee.get("tag"):
@@ -692,7 +722,7 @@ class RemoteJob:
 # =============================== 接手上次任务 ===============================
 
 def resume_or_start_publish(b: Bridge, apk_info: dict, args, work_token: str,
-                            cfg: dict):
+                            cfg: dict, name: str, job_name: str):
     """优先接手最近 24 小时内跑完/仍在跑的 publish_all，否则新启动。
 
     返回 (job, url, outcome)：
@@ -701,7 +731,7 @@ def resume_or_start_publish(b: Bridge, apk_info: dict, args, work_token: str,
       job!=None, outcome="started"  新启动。
     """
     expect_base = ("[all] rpc: " + cfg["rpc_base"]) if cfg.get("rpc_base") else ""
-    for j in list_recent_jobs(b, "publish_all", 5):
+    for j in list_recent_jobs(b, job_name, 5):
         if j["age"] > 86400:
             continue
         log_path = j["dir"] + "/run.log"
@@ -711,61 +741,66 @@ def resume_or_start_publish(b: Bridge, apk_info: dict, args, work_token: str,
             if expect_base and not remote_log_contains(b, log_path, expect_base):
                 continue
             if j["rc"] == 0 and url and (not sha or sha == apk_info["sha256"]):
-                log("捡起上次 publish_all：%.0fs 前完成 rc=0，sha 一致，复用链接"
-                    % j["age"])
+                log("捡起上次 publish_all（%s）：%.0fs 前完成 rc=0，sha 一致，复用链接"
+                    % (name, j["age"]))
                 return None, url, "reused"
             continue
         if remote_process_alive(b, "publish_apk_all.py"):
             if expect_base and not remote_log_contains(b, log_path, expect_base):
                 continue
-            job = RemoteJob(b, "publish_all", "", args.timeout_publish,
+            job = RemoteJob(b, job_name, "", args.timeout_publish,
                             token=work_token, poll=5.0)
             if url:
                 job.attach(j["dir"], offset=remote_file_size(b, log_path))
                 job.ghfast_url = url
                 job.git_seconds = round(j["age"], 1)
-                log("捡起仍在运行的 publish_all，已有链接，只等它结束")
+                log("捡起仍在运行的 publish_all（%s），已有链接，只等它结束" % name)
                 return job, url, "attached"
             job.attach(j["dir"], offset=0)
             outcome = job.wait_for_git(args.timeout_git)
             if outcome == "url":
                 return job, job.ghfast_url, "attached"
-            return job, remote_git_links(b, args.remote_python), "attached"
+            return job, remote_git_links(b, args.remote_python, name,
+                                         apk_info["path"],
+                                         getattr(args, "github_key", "")), "attached"
 
     inner = ("cd %s && %s%s publish_apk_all.py --no-gitee%s"
              % (REMOTE_SCRIPTS, publish_env_prefix(cfg), args.remote_python,
-                publish_all_flags(cfg, args)))
-    job = RemoteJob(b, "publish_all", inner,
+                publish_all_flags(cfg, args, name, apk_info["path"])))
+    job = RemoteJob(b, job_name, inner,
                     timeout=args.timeout_publish, token=work_token, poll=5.0)
     job.start()
     outcome = job.wait_for_git(args.timeout_git)
     if outcome == "url":
         return job, job.ghfast_url, "started"
-    return job, remote_git_links(b, args.remote_python), "started"
+    return job, remote_git_links(b, args.remote_python, name,
+                                 apk_info["path"],
+                                 getattr(args, "github_key", "")), "started"
 
 
 def resume_or_run_check(b: Bridge, apk_info: dict, args, work_token: str,
-                        check_json_local: Path, cfg: dict) -> dict:
+                        check_json_local: Path, cfg: dict, name: str,
+                        job_name: str) -> dict:
     """优先复用/接手最近 24 小时内的 check，否则新跑一次轻量校验。"""
-    for j in list_recent_jobs(b, "check", 5):
+    for j in list_recent_jobs(b, job_name, 5):
         if j["age"] > 86400:
             continue
         log_path = j["dir"] + "/run.log"
         json_path = j["dir"] + "/check.json"
         if j["rc"] is not None:
             obj = read_remote_json(b, json_path)
-            if j["rc"] == 0 and obj and check_json_ok(obj, apk_info, cfg):
-                log("捡起上次 check：%.0fs 前完成，6 渠道都与当前 APK 一致，"
-                    "不再重复下载校验" % j["age"])
+            if j["rc"] == 0 and obj and check_json_ok(obj, apk_info, cfg, name):
+                log("捡起上次 check（%s）：%.0fs 前完成，6 渠道都与当前 APK 一致，"
+                    "不再重复下载校验" % (name, j["age"]))
                 info = {"rc": 0, "json": json_path, "reused": True}
                 save_check_json(check_json_local, obj, info)
                 return info
             continue
         if remote_process_alive(b, "check_apk_all.py"):
-            job = RemoteJob(b, "check", "", args.timeout_check,
+            job = RemoteJob(b, job_name, "", args.timeout_check,
                             token=work_token, poll=5.0)
             job.attach(j["dir"], offset=remote_file_size(b, log_path))
-            log("捡起仍在运行的 check（日志 %s），继续等待" % log_path)
+            log("捡起仍在运行的 check（%s，日志 %s），继续等待" % (name, log_path))
             rc = job.wait()
             info = {"rc": rc, "log": log_path, "json": json_path, "attached": True}
             obj = read_remote_json(b, json_path)
@@ -773,16 +808,16 @@ def resume_or_run_check(b: Bridge, apk_info: dict, args, work_token: str,
                 save_check_json(check_json_local, obj, info)
             return info
 
-    check_dir = "%s/check_%s" % (REMOTE_WORK, work_token)
+    check_dir = "%s/%s_%s" % (REMOTE_WORK, job_name, work_token)
     remote_json = check_dir + "/check.json"
     inner = (
         "mkdir -p %s && cd %s && %s check_apk_all.py --ref-sha %s --ref-size %d "
         "--timeout %.0f --json %s%s"
         % (check_dir, REMOTE_SCRIPTS, args.remote_python, apk_info["sha256"],
            apk_info["size"], args.check_channel_timeout, remote_json,
-           check_flags(cfg))
+           check_flags(cfg, name))
     )
-    job = RemoteJob(b, "check", inner, timeout=args.timeout_check,
+    job = RemoteJob(b, job_name, inner, timeout=args.timeout_check,
                     token=work_token, poll=5.0)
     job.start()
     rc = job.wait()
@@ -796,15 +831,6 @@ def resume_or_run_check(b: Bridge, apk_info: dict, args, work_token: str,
 
 
 # =============================== 本地下载 ===============================
-
-def apk_name_from_url(url: str) -> str:
-    """从远端给出的下载链接解析发布文件名（不硬编码任何仓库/文件名）。"""
-    path = urllib.parse.urlparse(url).path
-    name = urllib.parse.unquote(path.rsplit("/", 1)[-1])
-    if not name or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
-        raise FlowError("无法从远端链接解析 APK 文件名：%r" % url)
-    return name
-
 
 def download_once(url: str, dest: Path, expected_size: int, timeout: float,
                   meter: ProgressMeter) -> int:
@@ -926,6 +952,7 @@ def download_apk(url: str, expected: dict, dest: Path, timeout: float,
 
 PUBLISH_SECTION = {
     "rpc_base": "",
+    "github": {"key": "", "remote_key": ""},
     "gitee": {"api": "", "repo": "", "tag": "", "token": ""},
     "npm": {"package": "", "registry": "", "tag": "", "name": "", "token": ""},
 }
@@ -937,6 +964,8 @@ def read_publish_apk_config(path: Path) -> dict:
     结构：
         "publish_apk": {
           "rpc_base": "https://.../-",
+          "github": {"ssh": "!ssh -i <本机私钥> -v -T git@github.com",
+                     "remote_key": "/root/.ssh/NIST256p.pem"},
           "gitee": {"api": ..., "repo": ..., "tag": ..., "token": ...},
           "npm":   {"package": ..., "registry": ..., "tag": ..., "name": ...}
         }
@@ -944,7 +973,9 @@ def read_publish_apk_config(path: Path) -> dict:
     文件缺失、JSON 坏、段类型写错、某键不是字符串，都只告警并回落到
     空值/已读到的部分：这些配置只影响对应的渠道，不能打断主流程。
     """
-    cfg = {"rpc_base": "", "gitee": dict(PUBLISH_SECTION["gitee"]),
+    cfg = {"rpc_base": "",
+           "github": dict(PUBLISH_SECTION["github"]),
+           "gitee": dict(PUBLISH_SECTION["gitee"]),
            "npm": dict(PUBLISH_SECTION["npm"])}
     try:
         text = path.read_text(encoding="utf-8")
@@ -973,7 +1004,7 @@ def read_publish_apk_config(path: Path) -> dict:
     elif value is not None and not isinstance(value, str):
         log("警告：publish_apk.rpc_base 不是字符串，已忽略")
 
-    for group in ("gitee", "npm"):
+    for group in ("github", "gitee", "npm"):
         sub = section.get(group)
         if sub is None:
             log("警告：publish_apk 缺少 %s 段" % group)
@@ -995,20 +1026,65 @@ def read_publish_apk_config(path: Path) -> dict:
     return cfg
 
 
-def publish_all_flags(cfg: dict, args) -> str:
-    """把 publish_apk 段转成 publish_apk_all.py 的命令行参数。"""
-    flags = []
+def prepare_github_key(bridge, cfg: dict) -> str:
+    """按 publish_apk.github.key 取本机私钥，直接传到远端（不需要本地 ssh）。
+
+    返回远端私钥路径（供 publish_apk_git.py --key 使用）；未配置、本机缺文件、
+    上传或校验失败都只告警返回 ""，让 git 渠道自己失败，不牵连其它渠道。
+    """
+    gcfg = cfg.get("github") or {}
+    key_text = str(gcfg.get("key") or "").strip()
+    if not key_text:
+        log("警告：publish_apk.github.key 未配置，git 渠道缺私钥会失败")
+        return ""
+    key = Path(key_text).expanduser()
+    if not key.is_file():
+        log("警告：本机 GitHub 私钥不存在：%s，git 渠道跳过" % key)
+        return ""
+
+    # 本机只负责把私钥内容传过去，不需要本地 ssh/git（下载都走 ghfast）。
+    # base64 传到远端并校验 sha256
+    remote = str(gcfg.get("remote_key") or "/root/.ssh/NIST256p.pem").strip()
+    local_sha = hashlib.sha256(key.read_bytes()).hexdigest()
+    blob = base64.b64encode(key.read_bytes()).decode("ascii")
+    cmd2 = (
+        "mkdir -p %s && printf '%%s' %s | base64 -d > %s && chmod 600 %s && "
+        "chmod 700 %s && sha256sum %s | cut -d' ' -f1"
+        % (shlex.quote(str(Path(remote).parent)), shlex.quote(blob), remote,
+           remote, shlex.quote(str(Path(remote).parent)), remote)
+    )
+    r = bridge.run(cmd2, timeout=120)
+    got = ((r.get("out") or "").strip().splitlines() or [""])[-1].strip().lower()
+    if got != local_sha:
+        log("警告：远端私钥写入校验失败（%s != %s）" % (got[:12], local_sha[:12]))
+        return ""
+    log("GitHub 私钥已同步到远端：%s（sha256 %s）" % (remote, local_sha[:12]))
+    return remote
+
+
+def publish_all_flags(cfg: dict, args, name: str, apk_path: str) -> str:
+    """把 publish_apk 段与双包目标转成 publish_apk_all.py 的命令行参数。"""
+    flags = ["--apk", shlex.quote(apk_path)]
+    key = getattr(args, "github_key", "")
+    if key:
+        flags += ["--key", shlex.quote(key)]
     if cfg["rpc_base"]:
         flags += ["--rpc-base", shlex.quote(cfg["rpc_base"])]
     else:
         # 没配 rpc_base 就只关掉 RPC 通道，npm/git 照常跑（不打断主流程）。
         flags.append("--no-rpc")
     for flag, key in (("--npm-package", "package"),
-                      ("--npm-registry", "registry"),
-                      ("--npm-tag", "tag"),
-                      ("--npm-name", "name")):
+                      ("--npm-registry", "registry")):
         if cfg["npm"].get(key):
             flags += [flag, shlex.quote(cfg["npm"][key])]
+    # 32 位用独立 dist-tag，其余沿用配置里的 tag（默认 latest）。
+    npm_tag = NPM_TAGS.get(name) or cfg["npm"].get("tag")
+    if npm_tag:
+        flags += ["--npm-tag", shlex.quote(npm_tag)]
+    # 三个渠道统一使用目标文件名（ime.apk / ime32.apk），不被 rpc.json 的默认名覆盖。
+    flags += ["--npm-name", shlex.quote(name),
+              "--rpc-name", shlex.quote(name),
+              "--git-name", shlex.quote(name)]
     if getattr(args, "force_publish", False):
         flags.append("--force")
     return (" " + " ".join(flags)) if flags else ""
@@ -1020,8 +1096,8 @@ def publish_env_prefix(cfg: dict) -> str:
     return ("NPM_TOKEN=%s " % shlex.quote(token)) if token else ""
 
 
-def check_flags(cfg: dict) -> str:
-    """把 publish_apk 段转成 check_apk_all.py 的命令行参数。"""
+def check_flags(cfg: dict, name: str = "ime.apk") -> str:
+    """把 publish_apk 段与目标文件名转成 check_apk_all.py 的命令行参数。"""
     flags = []
     if cfg["rpc_base"]:
         flags += ["--pa-base", shlex.quote(cfg["rpc_base"])]
@@ -1030,13 +1106,73 @@ def check_flags(cfg: dict) -> str:
         flags += ["--skip", "pa"]
     if cfg["npm"].get("package"):
         flags += ["--npm-package", shlex.quote(cfg["npm"]["package"])]
-    if cfg["npm"].get("name"):
-        flags += ["--npm-name", shlex.quote(cfg["npm"]["name"])]
+    # 6 条渠道统一按目标文件名（ime.apk / ime32.apk）校验。
+    flags += ["--name", shlex.quote(name)]
+    npm_tag = NPM_TAGS.get(name)
+    if npm_tag:
+        flags += ["--npm-tag", shlex.quote(npm_tag)]
     if cfg["gitee"].get("repo"):
         flags += ["--gitee-repo", shlex.quote(repo_slug(cfg["gitee"]["repo"]))]
     if cfg["gitee"].get("tag"):
         flags += ["--gitee-tag", shlex.quote(cfg["gitee"]["tag"])]
     return (" " + " ".join(flags)) if flags else ""
+
+
+def http_json(url: str, timeout: float = 30.0) -> dict:
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        obj = json.loads(resp.read().decode("utf-8", "replace"))
+    if not isinstance(obj, dict):
+        raise ValueError("返回不是 JSON object")
+    return obj
+
+
+def npm_ready_state(cfg: dict, name: str, sha: str) -> "tuple[bool, str]":
+    """按 dist-tag 指向的版本比对 xime.apkName/apkSha256，判断 npm 是否已生效。
+
+    大包 publish 后 registry 要安全扫描几分钟到十几分钟，packument 里的
+    dist-tags 才会指向新版本；这里只读官方 registry（unpkg 也读它）。
+    """
+    pkg = (cfg["npm"].get("package") or "").strip()
+    if not pkg:
+        return (True, "npm 未配置包名，无需等待")
+    tag = NPM_TAGS.get(name) or cfg["npm"].get("tag") or "latest"
+    quoted = urllib.parse.quote(pkg, safe="@")
+    try:
+        doc = http_json("https://registry.npmjs.org/%s" % quoted)
+        ver = (doc.get("dist-tags") or {}).get(tag)
+        if not ver:
+            return (False, "dist-tags 里还没有 %s" % tag)
+        vdoc = http_json("https://registry.npmjs.org/%s/%s"
+                         % (quoted, urllib.parse.quote(ver, safe="")))
+    except Exception as exc:  # noqa: BLE001 - 读失败只重试
+        return (False, "registry 读取失败：%s: %s" % (type(exc).__name__, exc))
+    meta = vdoc.get("xime") or {}
+    if meta.get("apkName") != name or meta.get("apkSha256") != sha:
+        return (False, "%s@%s 仍是旧 APK（%s）"
+                % (pkg, ver, meta.get("apkName") or "无元数据"))
+    return (True, "%s@%s 已生效（%s）" % (pkg, ver, name))
+
+
+def wait_npm_ready(cfg: dict, name: str, sha: str,
+                   timeout: float = NPM_WAIT_SECONDS) -> dict:
+    """等 npm 目标版本生效；超时只告警，不阻断后续 check。"""
+    if not cfg["npm"].get("package"):
+        return {"skipped": True, "reason": "no-package"}
+    t0 = time.monotonic()
+    while True:
+        ok, detail = npm_ready_state(cfg, name, sha)
+        if ok:
+            log("npm 已生效：%s" % detail)
+            return {"ready": True, "detail": detail,
+                    "seconds": round(time.monotonic() - t0, 1)}
+        waited = time.monotonic() - t0
+        if waited >= timeout:
+            log("警告：npm 等待 %.0f 秒仍未生效（%s），继续执行 check（只影响 npm 渠道）"
+                % (timeout, detail))
+            return {"ready": False, "detail": detail, "seconds": round(waited, 1)}
+        log("等 npm 生效（已等 %.0f 秒）：%s" % (waited, detail))
+        time.sleep(20)
 
 
 def remote_log_contains(b: Bridge, log_path: str, needle: str) -> bool:
@@ -1245,6 +1381,180 @@ def write_report(path: Path, report: dict) -> None:
                     encoding="utf-8")
 
 
+def publish_one(bridge, apk_info: dict, args, work_token: str, cfg: dict,
+                name: str, glob: str, out_dir: Path,
+                report: dict, report_path: Path) -> dict:
+    """发布单个 APK：远端 3 渠道 → 本地下载 → 本地 Gitee → 等 publish → 远端校验。
+
+    文件名固定为目标名（ime.apk / ime32.apk），所有渠道都用这个名字；
+    任务名后缀直接由文件名得到（ime / ime32）。
+    """
+    suffix = name[:-4] if name.endswith(".apk") else name
+    steps = {}
+    target = {"apk": apk_info, "steps": steps, "ok": False}
+    report["targets"][name] = target
+
+    def save():
+        write_report(report_path, report)
+
+    log("")
+    log("---- 目标 %s（%s）：%s ----" % (name, suffix, apk_info["name"]))
+
+    # 1) 远端发布其他 3 个渠道（npm + GitHub git + pythonanywhere rpc）
+    job = None
+    pub_url = (args.apk_url_32 if name == "ime32.apk" else args.apk_url) or None
+    outcome = "skipped"
+    t0 = time.monotonic()
+    if args.skip_publish_all:
+        log("已跳过 %s 的远端 publish_apk_all.py（%s）"
+            % (name, "--dry-run" if args.dry_run
+               else ("--check-only" if args.check_only else "--skip-publish-all")))
+        if not args.dry_run and not args.check_only and not pub_url:
+            raise FlowError("%s 缺少 --apk-url%s"
+                            % (name, "-32" if name == "ime32.apk" else ""))
+    else:
+        job, pub_url, outcome = resume_or_start_publish(
+            bridge, apk_info, args, work_token, cfg, name, "publish_all_" + suffix)
+        steps["publish_all"] = {
+            "ghfast_url": pub_url,
+            "git_outcome": outcome,
+            "reused": outcome == "reused",
+        }
+        if job is not None:
+            steps["publish_all"].update({
+                "log": job.log_path,
+                "git_seconds": round(job.git_seconds or 0.0, 1),
+            })
+        save()
+        if outcome == "reused":
+            log("%s 上次发布已成功，直接复用其加速链接，未重新上传" % name)
+        else:
+            log("%s 远端 git 链接已就绪，其余渠道继续在远端跑（%s）" % (name, outcome))
+
+    # 2) 本地下载（本地已有同一份就不再重复下；本地文件名固定为目标名）
+    need_local = (not args.skip_download) or (not args.skip_gitee)
+    apk_local = out_dir / name
+    download_info = {"skipped": True}
+    if need_local:
+        if not pub_url:
+            raise FlowError("%s 没有可用的下载链接（远端未打印加速链接且未给 --apk-url%s）"
+                            % (name, "-32" if name == "ime32.apk" else ""))
+        log("%s 本地保存文件名固定为：%s" % (name, apk_local.name))
+        if args.skip_download:
+            log("%s 已跳过下载（--skip-download）" % name)
+            if apk_local.is_file():
+                actual_sha = sha256_file(apk_local)
+                if actual_sha != apk_info["sha256"]:
+                    raise FlowError("本地 %s 的 sha256 与远端不一致：%s != %s"
+                                    % (apk_local, actual_sha[:12],
+                                       apk_info["sha256"][:12]))
+                log("%s 本地 APK 校验一致：%s" % (name, apk_local))
+            download_info = {"skipped": True, "path": str(apk_local),
+                             "reason": "flag"}
+        elif (apk_local.is_file()
+              and apk_local.stat().st_size == apk_info["size"]
+              and sha256_file(apk_local) == apk_info["sha256"]):
+            log("%s 本地已有最新 APK（大小/sha 与远端一致），跳过下载：%s"
+                % (name, apk_local))
+            download_info = {"path": str(apk_local), "size": apk_info["size"],
+                             "sha256": apk_info["sha256"], "skipped": True,
+                             "reason": "local-match"}
+        else:
+            download_info = download_apk(
+                pub_url, apk_info, apk_local, args.download_timeout, work_token)
+            download_info["skipped"] = False
+    steps["download"] = download_info
+    save()
+
+    # 3) 本地上传 Gitee
+    if args.skip_gitee:
+        gitee_info = {"skipped": True}
+        log("%s 已跳过 Gitee 上传（--skip-gitee）" % name)
+    else:
+        if not apk_local.is_file():
+            raise FlowError("%s 需要本地 APK 才能上传 Gitee" % name)
+        gcfg = cfg["gitee"]
+        if args.gitee_repo:
+            gcfg["repo"] = args.gitee_repo.strip()
+        override = (args.gitee_token or os.environ.get("GITEE_TOKEN") or "").strip()
+        if override:
+            gcfg["token"] = override
+        missing = [k for k in ("api", "repo", "tag", "token") if not gcfg.get(k)]
+        if missing:
+            gitee_info = {"skipped": True, "reason": "missing-config",
+                          "missing": missing}
+            log("警告：%s 的 publish_apk.gitee 缺少 %s，跳过 %s 的 Gitee 上传（其余步骤继续）"
+                % (args.rpc_config, ", ".join(missing), name))
+        else:
+            try:
+                slug = repo_slug(gcfg["repo"])
+            except FlowError as exc:
+                gitee_info = {"skipped": True, "reason": "bad-repo"}
+                log("警告：publish_apk.gitee.repo 无法解析（%s），跳过 %s 的 Gitee 上传"
+                    % (exc, name))
+            else:
+                log("Gitee 配置：api=%s repo=%s tag=%s 令牌 ****%s（附件 %s）"
+                    % (gcfg["api"], gcfg["repo"], gcfg["tag"],
+                       gcfg["token"][-4:], name))
+                gitee_info = publish_gitee(
+                    gcfg["token"], slug, gcfg["tag"], gcfg["api"],
+                    apk_local, name, args.gitee_timeout, args.force_gitee)
+                time.sleep(10)
+    steps["gitee"] = gitee_info
+    save()
+
+    # 4) 等远端 publish_all 全部渠道结束
+    if job is not None:
+        seconds_before_final_wait = time.monotonic() - t0
+        publish_rc = job.wait() if job.rc is None else int(job.rc)
+        steps["publish_all"].update({
+            "rc": publish_rc,
+            "seconds": round(time.monotonic() - t0, 1),
+            "seconds_before_final_wait": round(seconds_before_final_wait, 1),
+        })
+        save()
+        if publish_rc != 0:
+            raise FlowError(
+                "%s 远端 publish_apk_all.py --no-gitee 失败（rc=%s），见日志 %s"
+                % (name, publish_rc, job.log_path))
+        apk_info_after = remote_apk_info(bridge, glob)
+        if apk_info_after["sha256"] != apk_info["sha256"]:
+            raise FlowError("%s 发布期间远端 APK 发生变化：%s -> %s"
+                            % (name, apk_info["sha256"][:12],
+                               apk_info_after["sha256"][:12]))
+
+    # 4.5) 等 npm 新版本过安全扫描生效，否则 check 的 npm 渠道读到的是旧版本
+    if (not args.skip_publish_all and not args.skip_check
+            and cfg["npm"].get("package")):
+        steps["npm_wait"] = wait_npm_ready(cfg, name, apk_info["sha256"])
+        save()
+
+    # 5) 远端 check_apk_all.py（能复用/接手上次结果就不重复下载校验）
+    if args.skip_check:
+        check_info = {"skipped": True}
+        log("%s 已跳过远端 check_apk_all.py（--skip-check）" % name)
+    else:
+        check_json_local = out_dir / (
+            "check_apk_all_result.json" if name == "ime.apk"
+            else "check_apk_all_result_%s.json" % suffix)
+        check_info = resume_or_run_check(
+            bridge, apk_info, args, work_token, check_json_local, cfg,
+            name, "check_" + suffix)
+        if check_info.get("rc") != 0:
+            bad = [c["key"] for c in check_info.get("channels", [])
+                   if c.get("verdict") != "一致"]
+            steps["check"] = check_info
+            save()
+            raise FlowError("%s check_apk_all.py 返回 %s，异常渠道：%s；详见 %s"
+                            % (name, check_info.get("rc"),
+                               ",".join(bad) or "未知",
+                               check_info.get("log") or check_info.get("json")))
+    steps["check"] = check_info
+    target["ok"] = True
+    save()
+    return target
+
+
 def run(args) -> int:
     global _LOG_FH
     out_dir = Path(args.out_dir).expanduser()
@@ -1252,7 +1562,6 @@ def run(args) -> int:
     log_path = out_dir / "publish_flow.log"
     _LOG_FH = open(log_path, "w", encoding="utf-8")
     report_path = out_dir / "publish_flow_report.json"
-    check_json_local = out_dir / "check_apk_all_result.json"
 
     work_token = time.strftime("%Y%m%d-%H%M%S") + "-%d" % (int(time.time() * 1000) % 100000)
     if args.check_only:
@@ -1261,23 +1570,38 @@ def run(args) -> int:
         args.skip_download = True
         args.skip_gitee = True
         args.apk_url = ""
+        args.apk_url_32 = ""
+    # 默认只发 64 位 ime.apk；--with-32 才连 32 位 ime32.apk 一起发。
+    targets = PUBLISH_TARGETS if args.with_32 else PUBLISH_TARGETS[:1]
     report = {
         "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "work_token": work_token,
         "rpc": RPC_BASE,
         "steps": {},
+        "targets": {},
         "ok": False,
     }
     bridge = None
     try:
         log("=" * 72)
-        log("APK 发布流程：1188 远端发布 3 渠道 → 远端 ghfast 链接本地下载 → 本地 Gitee → 远端校验")
+        log("APK 发布：%s → 本地下载 → Gitee → 远端校验" % " + ".join(
+            "%s（%s）" % (n, "64 位" if n == "ime.apk" else "32 位")
+            for n, _ in targets))
         log("=" * 72)
 
         bridge = connect_bridge()
         remote_preflight(bridge)
-        apk_info = remote_apk_info(bridge)
-        report["remote_apk"] = apk_info
+        apk_infos = {}
+        for name, glob in targets:
+            try:
+                apk_infos[name] = remote_apk_info(bridge, glob)
+            except FlowError as exc:
+                apk_infos[name] = None
+                report["targets"][name] = {"error": str(exc), "ok": False,
+                                           "steps": {}}
+                log("警告：%s 远端 APK 读取失败：%s" % (name, exc))
+        report["remote_apk"] = apk_infos[targets[0][0]]
+        report["remote_apks"] = apk_infos
         pub_cfg = read_publish_apk_config(Path(args.rpc_config))
         if not pub_cfg["rpc_base"]:
             log("警告：publish_apk.rpc_base 未配置，本次跳过 pythonanywhere RPC 渠道")
@@ -1296,161 +1620,55 @@ def run(args) -> int:
             },
         }
 
-        # 1) 远端发布其他 3 个渠道（npm + GitHub git + pythonanywhere rpc）
-        job = None
-        pub_url = args.apk_url or None
-        outcome = "skipped"
-        t0 = time.monotonic()
-        if args.skip_publish_all or args.dry_run:
-            log("已跳过远端 publish_apk_all.py（%s）"
-                % ("--dry-run" if args.dry_run
-                   else ("--check-only" if args.check_only else "--skip-publish-all")))
-            if not args.dry_run and not args.check_only and not pub_url:
-                raise FlowError("--skip-publish-all 需要用 --apk-url 指定远端已发布的下载链接")
-        else:
-            # 先看有没有刚跑完/仍在远端跑的 publish_all，能接手就不重复上传。
-            job, pub_url, outcome = resume_or_start_publish(
-                bridge, apk_info, args, work_token, pub_cfg)
-            report["steps"]["publish_all"] = {
-                "ghfast_url": pub_url,
-                "git_outcome": outcome,
-                "reused": outcome == "reused",
-            }
-            if job is not None:
-                report["steps"]["publish_all"].update({
-                    "log": job.log_path,
-                    "git_seconds": round(job.git_seconds or 0.0, 1),
-                })
-            write_report(report_path, report)
-            if outcome == "reused":
-                log("上次发布已成功，直接复用其加速链接，未重新上传")
-            else:
-                log("远端 git 链接已就绪，其余渠道继续在远端跑（%s）" % outcome)
-
         if args.dry_run:
-            log("dry-run：预检完成，未执行下载/Gitee/校验")
-            report["ok"] = True
+            missing = [n for n, v in apk_infos.items() if not v]
+            log("dry-run：预检完成，未执行发布/下载/Gitee/校验")
+            report["ok"] = not missing
             report["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             write_report(report_path, report)
-            return 0
+            return 0 if not missing else 2
 
-        # 2) 本地下载（本地已有同一份就不再重复下）
-        need_local = (not args.skip_download) or (not args.skip_gitee)
-        apk_name = None
-        apk_local = None
-        download_info = {"skipped": True}
-        if need_local:
-            if not pub_url:
-                raise FlowError("没有可用的下载链接（远端未打印加速链接且未给 --apk-url）")
-            apk_name = apk_name_from_url(pub_url)
-            apk_local = out_dir / apk_name
-            log("发布文件名：%s" % apk_name)
-            if args.skip_download:
-                log("已跳过下载（--skip-download）")
-                if apk_local.is_file():
-                    actual_sha = sha256_file(apk_local)
-                    if actual_sha != apk_info["sha256"]:
-                        raise FlowError("本地 %s 的 sha256 与远端不一致：%s != %s"
-                                        % (apk_local, actual_sha[:12],
-                                           apk_info["sha256"][:12]))
-                    log("本地 APK 校验一致：%s" % apk_local)
-                download_info = {"skipped": True, "path": str(apk_local),
-                                 "reason": "flag"}
-            elif (apk_local.is_file()
-                  and apk_local.stat().st_size == apk_info["size"]
-                  and sha256_file(apk_local) == apk_info["sha256"]):
-                log("本地已有最新 APK（大小/sha 与远端一致），跳过下载：%s" % apk_local)
-                download_info = {"path": str(apk_local), "size": apk_info["size"],
-                                 "sha256": apk_info["sha256"], "skipped": True,
-                                 "reason": "local-match"}
-            else:
-                download_info = download_apk(
-                    pub_url, apk_info, apk_local, args.download_timeout, work_token)
-                download_info["skipped"] = False
-        report["steps"]["download"] = download_info
-        write_report(report_path, report)
+        # 按 publish_apk.github.key 把本机私钥同步到远端（失败只影响 git 渠道）
+        args.github_key = prepare_github_key(bridge, pub_cfg)
+        report["github"] = {"remote_key": args.github_key}
 
-        # 3) 本地上传 Gitee
-        if args.skip_gitee:
-            gitee_info = {"skipped": True}
-            log("已跳过 Gitee 上传（--skip-gitee）")
-        else:
-            if apk_local is None or apk_name is None:
-                raise FlowError("需要本地 APK 才能上传 Gitee")
-            cfg = pub_cfg["gitee"]
-            if args.gitee_repo:
-                cfg["repo"] = args.gitee_repo.strip()
-            override = (args.gitee_token or os.environ.get("GITEE_TOKEN") or "").strip()
-            if override:
-                cfg["token"] = override
-            missing = [k for k in ("api", "repo", "tag", "token") if not cfg.get(k)]
-            if missing:
-                gitee_info = {"skipped": True, "reason": "missing-config",
-                              "missing": missing}
-                log("警告：%s 的 publish_apk.gitee 缺少 %s，跳过 Gitee 上传（其余步骤继续）"
-                    % (args.rpc_config, ", ".join(missing)))
-            else:
-                try:
-                    slug = repo_slug(cfg["repo"])
-                except FlowError as exc:
-                    gitee_info = {"skipped": True, "reason": "bad-repo"}
-                    log("警告：publish_apk.gitee.repo 无法解析（%s），跳过 Gitee 上传" % exc)
-                else:
-                    log("Gitee 配置：api=%s repo=%s tag=%s 令牌 ****%s"
-                        % (cfg["api"], cfg["repo"], cfg["tag"], cfg["token"][-4:]))
-                    gitee_info = publish_gitee(
-                        cfg["token"], slug, cfg["tag"], cfg["api"],
-                        apk_local, apk_name, args.gitee_timeout, args.force_gitee)
-                    time.sleep(10)
-        report["steps"]["gitee"] = gitee_info
-        write_report(report_path, report)
+        # 逐个包依次走完整流程（默认只有 64 位）。一次只跑一个 publish_all，
+        # 避免两个进程同时改 git 仓库互相打架。
+        failed = []
+        for name, glob in targets:
+            sink = report["targets"].get(name)
+            if sink is not None and sink.get("error"):
+                failed.append(name)
+                continue
+            try:
+                publish_one(bridge, apk_infos[name], args, work_token, pub_cfg,
+                            name, glob, out_dir, report, report_path)
+            except FlowError as exc:
+                log("ERROR（%s）：%s" % (name, exc))
+                rec = report["targets"].setdefault(
+                    name, {"apk": apk_infos[name], "steps": {}})
+                rec["error"] = str(exc)
+                rec["ok"] = False
+                failed.append(name)
+                write_report(report_path, report)
 
-        # 4) 等远端 publish_all 全部渠道结束
-        if job is not None:
-            seconds_before_final_wait = time.monotonic() - t0
-            if job.rc is None:
-                publish_rc = job.wait()
-            else:
-                publish_rc = int(job.rc)
-            report["steps"]["publish_all"].update({
-                "rc": publish_rc,
-                "seconds": round(time.monotonic() - t0, 1),
-                "seconds_before_final_wait": round(seconds_before_final_wait, 1),
-            })
+        first = targets[0][0]
+        report["steps"] = report["targets"].get(first, {}).get("steps", {})
+        report["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        if failed:
+            report["ok"] = False
+            report["error"] = "发布失败：" + ", ".join(failed)
             write_report(report_path, report)
-            if publish_rc != 0:
-                raise FlowError(
-                    "远端 publish_apk_all.py --no-gitee 失败（rc=%s），见日志 %s"
-                    % (publish_rc, job.log_path))
-            apk_info_after = remote_apk_info(bridge)
-            if apk_info_after["sha256"] != apk_info["sha256"]:
-                raise FlowError("发布期间远端 APK 发生变化：%s -> %s"
-                                % (apk_info["sha256"][:12],
-                                   apk_info_after["sha256"][:12]))
-
-        # 5) 远端 check_apk_all.py（能复用/接手上次结果就不重复下载校验）
-        if args.skip_check:
-            check_info = {"skipped": True}
-            log("已跳过远端 check_apk_all.py（--skip-check）")
-            report["steps"]["check"] = check_info
-        else:
-            check_info = resume_or_run_check(
-                bridge, apk_info, args, work_token, check_json_local, pub_cfg)
-            report["steps"]["check"] = check_info
-            write_report(report_path, report)
-            check_rc = check_info.get("rc")
-            if check_rc != 0:
-                bad = [c["key"] for c in check_info.get("channels", [])
-                       if c.get("verdict") != "一致"]
-                raise FlowError("check_apk_all.py 返回 %s，异常渠道：%s；详见 %s"
-                                % (check_rc, ",".join(bad) or "未知",
-                                   check_info.get("log") or check_info.get("json")))
+            log("=" * 72)
+            log("部分失败：%s；报告 %s" % (", ".join(failed), report_path))
+            log("日志：%s" % log_path)
+            return 2
 
         report["ok"] = True
-        report["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         write_report(report_path, report)
         log("=" * 72)
-        log("全部完成：远端 3 渠道发布 → 远端链接本地下载 → 本地 Gitee → 远端 6 渠道校验")
+        log("全部完成：%s 已发布并通过 6 渠道校验"
+            % "、".join(n for n, _ in targets))
         log("报告：%s" % report_path)
         log("日志：%s" % log_path)
         return 0
@@ -1474,11 +1692,16 @@ def run(args) -> int:
 
 def build_args(argv=None):
     ap = argparse.ArgumentParser(
-        description="1188 远端发布 3 渠道 → 远端 ghfast 链接本地下载 → 本地 Gitee → 远端 6 渠道校验")
+        description="APK 发布（默认 64 位 ime.apk，--with-32 追加 32 位 ime32.apk）"
+                    " → 本地下载 → 本地 Gitee → 远端校验")
     ap.add_argument("--out-dir", default=DEFAULT_OUT_DIR, help="本地输出目录")
     ap.add_argument("--remote-python", default="python3", help="远端 Python 命令")
     ap.add_argument("--apk-url", default="",
-                    help="远端已发布的下载链接（仅 --skip-publish-all 时需要）")
+                    help="64 位 ime.apk 的远端已发布下载链接（仅 --skip-publish-all 时需要）")
+    ap.add_argument("--apk-url-32", default="",
+                    help="32 位 ime32.apk 的远端已发布下载链接（仅 --skip-publish-all 时需要）")
+    ap.add_argument("--with-32", action="store_true",
+                    help="同时发布 32 位 ime32.apk（默认只发 64 位 ime.apk）")
     ap.add_argument("--timeout-publish", type=float, default=1800.0,
                     help="远端发布最长等待秒数（默认 1800）")
     ap.add_argument("--timeout-git", type=float, default=600.0,
