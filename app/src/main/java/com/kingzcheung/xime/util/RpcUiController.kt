@@ -391,20 +391,23 @@ object RpcUiController {
 
     /** RPC：构建信息；在基础字段上合并 Python 侧内置模块与 site-packages 摘要。
      *  Python 未启动或 build_extra 失败时只附 python_error，绝不影响基础字段返回。
+     *  sitePackages=false（默认）不扫描 site-packages，只返回内置模块汇总。
      */
     @JvmStatic
-    fun buildInfo(): String {
+    @JvmOverloads
+    fun buildInfo(sitePackages: Boolean = false): String {
         val info = JSONObject()
             .put("version_name", BuildConfig.VERSION_NAME)
             .put("version_code", BuildConfig.VERSION_CODE)
             .put("git_hash", BuildConfig.GIT_HASH)
             .put("source_fingerprint", BuildConfig.SOURCE_FINGERPRINT)
+            .put("build_time", BuildConfig.BUILD_TIME)
         try {
             if (Python.isStarted()) {
                 val extra = JSONObject(
                     Python.getInstance()
                         .getModule("app")
-                        .callAttr("build_extra")
+                        .callAttr("build_extra", sitePackages)
                         .toString()
                 )
                 for (key in extra.keys()) {

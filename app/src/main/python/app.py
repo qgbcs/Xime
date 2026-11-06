@@ -565,38 +565,40 @@ def _py_site_packages(files_dir):
     return result
 
 
-def build_extra():
+def build_extra(site_packages=False):
     """供 Kotlin RpcUiController.buildInfo() 合并的 Python 侧信息。
 
 
-    含内置 py 模块汇总与 filesDir/site-packages 各包的版本/大小/时间/hash。
+    默认只含内置 py 模块汇总；site_packages=True 时才扫描 filesDir/site-packages
+    各包的版本/大小/时间/hash（该扫描较慢且体积大，默认关闭）。
 
     返回 JSON 字符串；任何异常只写入返回值，绝不抛出，避免拖垮 buildInfo。
 
     """
-    try:
-        import runtime_pip
-        files_dir = runtime_pip.FILES_DIR
-    except Exception:
-        files_dir = None
-    if not files_dir:
-        try:
-            from java import jclass
-            files_dir = str(jclass("com.chaquo.python.Python")
-                            .getPlatform().getApplication()
-                            .getFilesDir().toString())
-        except Exception:
-            files_dir = None
     pymod = {}
     try:
         pymod["builtin"] = _py_builtin_summary()
     except Exception:
         pymod["builtin"] = {"error": traceback.format_exc(limit=2)}
-    try:
-        pymod["site_packages"] = (_py_site_packages(files_dir) if files_dir
-                                   else {"exists": False, "entries": []})
-    except Exception:
-        pymod["site_packages"] = {"error": traceback.format_exc(limit=2)}
+    if site_packages:
+        try:
+            import runtime_pip
+            files_dir = runtime_pip.FILES_DIR
+        except Exception:
+            files_dir = None
+        if not files_dir:
+            try:
+                from java import jclass
+                files_dir = str(jclass("com.chaquo.python.Python")
+                                .getPlatform().getApplication()
+                                .getFilesDir().toString())
+            except Exception:
+                files_dir = None
+        try:
+            pymod["site_packages"] = (_py_site_packages(files_dir) if files_dir
+                                       else {"exists": False, "entries": []})
+        except Exception:
+            pymod["site_packages"] = {"error": traceback.format_exc(limit=2)}
     try:
         return json.dumps({"python": pymod}, ensure_ascii=False)
     except Exception:

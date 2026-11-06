@@ -1,7 +1,9 @@
 import com.android.build.gradle.internal.api.BaseVariantOutputImpl
 import org.gradle.api.tasks.Sync
 import java.security.MessageDigest
+import java.text.SimpleDateFormat
 import java.util.Base64
+import java.util.Date
 import java.util.Properties
 
 plugins {
@@ -215,6 +217,11 @@ android {
         // 构建信息
         buildConfigField("String", "GIT_HASH", "\"${getGitHash()}\"")
         buildConfigField("String", "SOURCE_FINGERPRINT", "\"${getSourceFingerprint()}\"")
+        // APK 构建时刻：配置阶段取一次注入 BuildConfig，RPC buildInfo 直接读出
+        buildConfigField(
+            "String", "BUILD_TIME",
+            "\"${SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z").format(Date())}\""
+        )
     }
 
     signingConfigs {
