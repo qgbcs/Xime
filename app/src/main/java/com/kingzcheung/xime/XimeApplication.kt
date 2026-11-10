@@ -69,6 +69,12 @@ class XimeApplication : Application(), ImageLoaderFactory {
             com.kingzcheung.xime.task.NetworkEventMonitor.start(this)
             // 系统广播监听：默认只进 Kotlin 环形缓冲，仅订阅的事件才进入 Python
             com.kingzcheung.xime.task.SystemEventMonitor.start(this)
+            // GPS 事件监听：这里只保存 context，没有 GPS 事件订阅时完全不注册监听（零开销）
+            try {
+                com.kingzcheung.xime.task.LocationEventMonitor.init(this)
+            } catch (t: Throwable) {
+                com.kingzcheung.xime.util.FileLogger.w("XimeApp", "LocationEventMonitor.init 失败: ${t.javaClass.simpleName}")
+            }
             // 最早期：外置设置镜像恢复（外置为准），必须在任何业务读取 kime_settings 之前
             com.kingzcheung.xime.storage.SettingsMirror.reconcile(this)
             startPythonRpc()

@@ -113,6 +113,12 @@ object SystemEventMonitor {
         }
         synchronized(lock) { registered = set }
         FileLogger.i(TAG, "Python 订阅的系统事件: $set")
+        // 把订阅集合转发给 GPS 事件监听器：集合内没有 GPS 事件时它会立即停止监听（零开销）
+        try {
+            LocationEventMonitor.syncRegisteredEvents(set)
+        } catch (t: Throwable) {
+            FileLogger.w(TAG, "转发 GPS 事件订阅失败: ${t.javaClass.simpleName}")
+        }
     }
 
     /** RPC 回读缓冲：返回 JSON 数组，每个元素是一行文本（含毫秒时间戳）。 */
