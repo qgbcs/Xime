@@ -18,7 +18,7 @@ fi
 # ============================================================
 # 注：BUILD_ABIS 可用环境变量覆盖（如 BUILD_ABIS=armeabi-v7a ./debug_build_secexp.sh 出 arm32 包），默认 arm64-v8a。
 unset APPLICATION_ID VERSION_CODE VERSION_NAME APP_NAME
-VERSION_CODE="${VERSION_CODE:-20261103}"
+VERSION_CODE="${VERSION_CODE:-20261111}"
 
 APP_CHINESE_NAME="${APP_CHINESE_NAME:-随手}"
 APP_NAME="${APP_CHINESE_NAME}输入法"
