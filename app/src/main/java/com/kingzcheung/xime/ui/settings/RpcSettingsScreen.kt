@@ -147,7 +147,7 @@ fun RpcSettingsContent(onBack: () -> Unit) {
                         )
                         if (saved) {
                             configPath = configPath.trim()
-                            "已保存，请点击设置页底部的重启应用使配置生效"
+                            "已保存：HTTP RPC 改动已即时生效；MQTT 改动仍需重启应用"
                         } else {
                             "保存失败，请检查配置路径是否可写，并查看运行日志"
                         }

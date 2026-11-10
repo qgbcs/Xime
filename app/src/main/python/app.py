@@ -222,6 +222,13 @@ def save_rpc_settings(settings_json, files_dir=None, config_path=None):
             except FileNotFoundError:
                 pass
             raise
+
+    # 保存即生效：HTTP 开关/端口/地址/路径前缀改动后即时启停，不必重启应用。
+    if any(
+        key in settings
+        for key in ("http_enabled", "http_port", "http_host", "http_key")
+    ):
+        apply_http_rpc()
     return True
 
 
@@ -297,6 +304,91 @@ class MemoryLogProxy:
 
     def flush(self):
         pass
+
+
+# ── HTTP RPC 运行时启停：保存配置或 RPC 调用即时生效，不必重启应用 ──
+_HTTP_LOCK = threading.RLock()
+
+
+def _http_bound_state(server):
+    """从运行中的服务对象读实际绑定 (host, port, key)，用于判断配置是否已生效。"""
+    config = getattr(server, "rpc_config", None) or {}
+    address = getattr(server, "server_address", None) or ("", 0)
+    return str(address[0]), int(address[1]), str(config.get("key", "")).strip("/")
+
+
+def _stop_http_server(delay=0.0):
+    """停掉当前 HTTP RPC 服务；delay>0 时延后执行，先把正在返回的响应发完。"""
+    server = globals().get("http_server")
+    if server is None:
+        return False
+    globals()["http_server"] = None
+
+    def _close():
+        try:
+            server.shutdown()
+            server.server_close()
+            import server_http
+            server_http._rpc_servers.discard(server)
+        except Exception:
+            traceback.print_exc()
+
+    if delay and delay > 0:
+        threading.Timer(delay, _close).start()
+    else:
+        _close()
+    return True
+
+
+def apply_http_rpc(delay=0.0):
+    """按当前 rpc.json 即时启停 HTTP RPC；失败只返回错误，不影响 MQTT 主流程。"""
+    with _HTTP_LOCK:
+        import server_http, server_mqtt
+        config = load_rpc_config(server_mqtt.RPC_CONFIG_PATH)
+        enabled = bool(config.get("http_enabled", False))
+        host = str(config.get("http_host") or "0.0.0.0")
+        port = int(config.get("http_port") or 1144)
+        key = str(config.get("http_key") or "").strip("/")
+        running = globals().get("http_server")
+        if not enabled:
+            return {"ok": True, "enabled": False,
+                    "stopped": _stop_http_server(delay)}
+        if running is not None and _http_bound_state(running) == (host, port, key):
+            return {"ok": True, "enabled": True, "changed": False,
+                    "host": host, "port": port, "key": key}
+        if running is not None:
+            _stop_http_server()
+        try:
+            server = server_http.start_rpc_server(
+                port=port, ip=host, key=key, globals=globals(), locals=locals()
+            )
+        except Exception as error:
+            globals()["http_server"] = None
+            message = f"{type(error).__name__}: {error}"
+            print(f"[app.py] HTTP RPC 启动失败: {message}")
+            return {"ok": False, "enabled": True, "error": message,
+                    "host": host, "port": port}
+        globals()["http_server"] = server
+        print(f"[app.py] HTTP RPC 已启动 http://{host}:{port}/{key}")
+        return {"ok": True, "enabled": True, "changed": True,
+                "host": host, "port": port, "key": key}
+
+
+def set_http_rpc(enabled=None, host=None, port=None, key=None):
+    """RPC：改 http_* 并立即生效，无需重启。例：set_http_rpc(enabled=True, port=1144)。"""
+    payload = {}
+    if enabled is not None:
+        payload["http_enabled"] = bool(enabled)
+    if host is not None:
+        payload["http_host"] = str(host)
+    if port is not None:
+        payload["http_port"] = int(port)
+    if key is not None:
+        payload["http_key"] = str(key)
+    if payload:
+        save_rpc_settings(json.dumps(payload), None)
+    # 从 HTTP 通道关闭时先让本次响应写完，再真正停服
+    return apply_http_rpc(delay=0.8)
 
 
 def start(log_path, files_dir=None):
