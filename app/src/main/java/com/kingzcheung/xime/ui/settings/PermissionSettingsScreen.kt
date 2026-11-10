@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.core.content.ContextCompat
 import com.kingzcheung.xime.service.BackgroundCaptureService
+import com.kingzcheung.xime.service.XimeAccessibilityService
 import com.kingzcheung.xime.settings.SettingsPreferences
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -93,7 +94,8 @@ fun PermissionSettingsContent(onBack: () -> Unit) {
             "write_settings" to Settings.System.canWrite(context),
             "battery" to isIgnoringBatteryOptimizations(context),
             "all_files" to isAllFilesAccessGranted(context),
-            "install" to isInstallUnknownAppsGranted(context)
+            "install" to isInstallUnknownAppsGranted(context),
+            "accessibility" to XimeAccessibilityService.isConnected()
         )
     }
 
@@ -113,6 +115,7 @@ fun PermissionSettingsContent(onBack: () -> Unit) {
         specialGranted["battery"] = isIgnoringBatteryOptimizations(context)
         specialGranted["all_files"] = isAllFilesAccessGranted(context)
         specialGranted["install"] = isInstallUnknownAppsGranted(context)
+        specialGranted["accessibility"] = XimeAccessibilityService.isConnected()
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -205,6 +208,18 @@ fun PermissionSettingsContent(onBack: () -> Unit) {
                 "package:${context.packageName}".toUri()
             )
             runCatching { settingsLauncher.launch(fallback) }
+        }
+    }
+
+    fun launchAccessibilitySettings() {
+        // 无障碍无法由应用自动授权，只能跳系统页面由用户打开开关；
+        // Android 13+ 侧载包若开关置灰，需先在应用信息里「允许受限制的设置」。
+        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            settingsLauncher.launch(intent)
+        } catch (e: ActivityNotFoundException) {
+            launchSettings(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
         }
     }
 
@@ -342,6 +357,12 @@ fun PermissionSettingsContent(onBack: () -> Unit) {
                         }
                     }
                 )
+                SpecialPermissionItem(
+                    title = "辅助功能（无障碍）",
+                    granted = specialGranted["accessibility"] == true,
+                    subtitle = "远程 RPC 读取界面/模拟点击依赖此项；Android 13+ 侧载包需先在应用信息里允许受限制的设置",
+                    onClick = { launchAccessibilitySettings() }
+                )
             }
 
             SettingsSection(title = "后台访问") {
@@ -395,11 +416,16 @@ fun PermissionSettingsContent(onBack: () -> Unit) {
 }
 
 @Composable
-private fun SpecialPermissionItem(title: String, granted: Boolean, onClick: () -> Unit) {
+private fun SpecialPermissionItem(
+    title: String,
+    granted: Boolean,
+    subtitle: String? = null,
+    onClick: () -> Unit
+) {
     SettingsItem(
         icon = Icons.TwoTone.Security,
         title = title,
-        subtitle = if (granted) "已授权" else "未授权 · 点击打开系统设置",
+        subtitle = subtitle ?: if (granted) "已授权" else "未授权 · 点击打开系统设置",
         onClick = onClick,
         showArrow = true
     )
