@@ -69,7 +69,10 @@ class XimeApplication : Application(), ImageLoaderFactory {
             com.kingzcheung.xime.task.NetworkEventMonitor.start(this)
             // 系统广播监听：默认只进 Kotlin 环形缓冲，仅订阅的事件才进入 Python
             com.kingzcheung.xime.task.SystemEventMonitor.start(this)
-            // GPS 事件监听：这里只保存 context，没有 GPS 事件订阅时完全不注册监听（零开销）
+            // GPS 事件监听：这里只保存 context，没有 GPS 事件订阅时完全不注册监听（零开销）。
+            // 必须赶在 startPythonRpc() 之前：Python 启动后 task_manager 会立即同步
+            // 订阅集合，那时 LocationEventMonitor 需要已有 context 才能拉起定位。
+            // 单独 try/catch：初始化失败只打日志，绝不能阻断 app 启动与 MQTT/HTTP 主流程。
             try {
                 com.kingzcheung.xime.task.LocationEventMonitor.init(this)
             } catch (t: Throwable) {

@@ -48,7 +48,54 @@ object LocationEventMonitor {
     private const val PENDING_MAX = 64
     private const val CONFIG_FILE = "location_events.json"
 
-    /** 全部 GPS 事件名（供订阅过滤与文档提示）。 */
+    /**
+     * 全部 GPS 事件名（订阅过滤 + 对外文档）。
+     *
+     * ## 设计意图：Kotlin 只当“传感器前端”，业务判断留给 Python
+     * 一个 LocationListener、一份锚点/去抖状态、一份全局配置，事件语义固定。
+     * 这样多任务增删时不需要在 Kotlin 侧为每个订阅者维护锚点、精度补偿和
+     * 定时器，耗电与出错面最小；代价见下面“阈值是全局的”。
+     *
+     * ## 零开销的边界
+     * - [init] 只保存 applicationContext：不建线程、不注册监听、不读配置；
+     * - [emit] 先查 [subscribed]，未订阅的事件直接丢弃，不跨语言进 Python；
+     * - 订阅集合为空时 [applySubscriptions] 注销定位/GNSS/传感器并退出线程。
+     * 因此没有 GPS 任务时，本对象的固定成本只有一次 context 赋值。
+     *
+     * ## 阈值是全局的（最容易误用的点）
+     * move_meters / still_meters / distance_travelled_interval_m 等都是**全局**
+     * 字段，不是每个任务的私有参数；[configure] 改一次，所有订阅该事件的任务
+     * 一起变化。两个任务同时订阅 location_moved 时触发点完全重合，无法一个
+     * 500m 一个 2000m。需要多阈值时请用两个语义不同的事件（计数器互相独立）：
+     * - location_moved      锚点式：距**上次触发点** >= max(move_meters, 两处精度和)
+     *                       时触发，并把锚点移到当前点；折返（A→B→A）各算一次；
+     * - distance_travelled  累计式：两个有效定位之间的步长一直累加，每满
+     *                       distance_travelled_interval_m 触发一次，绕圈/来回
+     *                       都计入；payload 没有经纬度。
+     * 例：500m 与 2000m 同时生效 → location_moved(500) + distance_travelled(2000)。
+     *
+     * ## 事件与 payload
+     * 公共字段：ts（[emit] 补的 epoch 毫秒），其余按事件（没有即不出现）：
+     * - location_provider_enabled / location_provider_disabled：
+     *     provider、enabled
+     * - location_first_fix：lat、lon、acc、provider、since_start_ms
+     * - location_changed：lat、lon、acc、provider、dist_m（距锚点，仅参考）、
+     *     speed、bearing；受 changed_min_ms 节流，用于粗粒度持续上报
+     * - location_moved：lat、lon、acc、provider、dist_m（距旧锚点）、
+     *     since_ts（旧锚点时间）、speed、bearing、distance_total_m（本次监听累计）
+     * - location_still：lat、lon、acc、still_seconds、since_ts（tick 驱动）
+     * - location_lost：last_ts、ago_s、lat、lon、acc、provider（tick 驱动）
+     * - location_accuracy_changed：lat、lon、acc、previous_acc、delta_m、provider
+     * - geofence_enter / geofence_exit：fence_id、lat、lon、distance_m、radius_m
+     * - geofence_dwell：fence_id、lat、lon、dwell_s、radius_m（tick 驱动）
+     * - activity_changed：activity、previous、speed、duration_s；
+     *     activity_started / activity_stopped：activity、speed、duration_s
+     * - gnss_started / gnss_stopped：provider；gnss_first_fix：ttff_ms
+     * - satellite_status_changed：used_in_fix、visible、avg_cn0、max_cn0
+     * - significant_motion：sensor（一次性唤醒，触发后重新 arm）
+     * - distance_travelled：distance_m（本次步进=interval_m）、interval_m、
+     *     distance_total_m
+     */
     private val ALL_EVENTS = setOf(
         // 1. 开关/权限
         "location_provider_enabled",
@@ -229,7 +276,18 @@ object LocationEventMonitor {
 
     /**
      * 合并配置并持久化；运行中会重启监听使阈值/围栏立即生效。
-     * 参数写错只影响对应键（回落默认值），不会崩溃。
+     *
+     * 语义约定（与 AGENTS.md 的“边缘功能只降级”一致）：
+     * - 只做深合并：patch 里出现的键覆盖旧值，没出现的键保持原值；
+     * - 参数写错/类型不对只影响对应键（[mergeConfig] 逐键回落），整体异常则
+     *   保持原配置并返回旧值，绝不向调用方抛异常；
+     * - 配置是**全局**的：所有订阅者共享同一份参数，见 [ALL_EVENTS] 注释；
+     * - 持久化到 filesDir/location_events.json，重启后由 [loadConfigLocked] 复用。
+     *
+     * 典型用法（Python RPC）：
+     * ```
+     * LocationEventMonitor.configure('{"move_meters":500,"min_distance_m":100}')
+     * ```
      */
     @JvmStatic
     fun configure(json: String?): String {
@@ -375,6 +433,14 @@ object LocationEventMonitor {
     // 订阅驱动启停
     // ------------------------------------------------------------------ //
 
+    /**
+     * 订阅集合变化时启停监听器（唯一入口是 [syncRegisteredEvents]）。
+     *
+     * 采用“全量重建”而不是增量注册/注销：定位、GNSS、传感器、tick 之间互相
+     * 依赖（GNSS 只在勾了卫星事件时需要，tick 只在静止/丢失/围栏停留时需要），
+     * 增量维护的状态组合太多、容易漏注销；集合变化时 stop→start 保证运行状态
+     * 与订阅严格一致，重建成本只有几毫秒。
+     */
     private fun applySubscriptions(gps: Set<String>) {
         synchronized(lock) {
             if (gps == subscribed) return
@@ -573,6 +639,10 @@ object LocationEventMonitor {
 
     private fun registerLocationUpdates(lm: LocationManager, h: Handler) {
         val cfg = synchronized(lock) { config }
+        // min_time_ms / min_distance_m 是给 LocationManager 的“回调频率下限”，
+        // 不是事件阈值。它们必须小于对应的 move_meters，否则可能永远等不到能
+        // 触发事件的定位回调（例如默认 min_distance_m=1000 时，500m 阈值形同失效）。
+        // 取值是全局的：所有订阅者共用同一个定位回调频率。
         val minTime = cfg.optLong("min_time_ms", 60000L).coerceAtLeast(0L)
         val minDistance = cfg.optDouble("min_distance_m", 1000.0).toFloat()
         val wanted = ArrayList<String>()
@@ -667,6 +737,12 @@ object LocationEventMonitor {
         val speed = if (loc.hasSpeed()) loc.speed.toDouble() else computeSpeed(stepM, sinceLastFix)
         val bearing = if (loc.hasBearing()) loc.bearing.toDouble() else 0.0
 
+        // ---- 位移事件（锚点式，全局阈值） ----
+        // move_meters 是全局配置，所有订阅 location_moved 的任务共用；锚点也全局
+        // 只有一个，所以无法让两个任务分别用 500m / 2000m（见 [ALL_EVENTS]）。
+        // 实际阈值取 max(配置值, 旧锚点精度+本次精度)：两次定位都很差时（如室内
+        // 200m+200m）要求多走一点，避免把精度抖动当成真实位移。
+        // 触发后锚点立刻移到当前点，因此 A→B→A 的折返会被计成两次位移。
         val moveMeters = cfg.optDouble("move_meters", 1000.0)
         val stillMeters = cfg.optDouble("still_meters", 50.0)
         val moveThreshold = maxOf(moveMeters, anchorAcc + acc)
@@ -922,6 +998,20 @@ object LocationEventMonitor {
     // 里程
     // ------------------------------------------------------------------ //
 
+    /**
+     * 累计里程事件：与 location_moved 的锚点计数**完全独立**。
+     *
+     * distanceAccum 只累加“被接受的定位”之间的步长（已过精度过滤与 5s/50m
+     * 抖动去重），每满一个 interval 就发一次并扣减，因此：
+     * - 绕圈、折返、来回走都会计入（和“离起点多远”无关）；
+     * - 一次定位跨度过大时（例如隧道出来 3km）while 会连续补发多条，调用方
+     *   按条数计里程即可；
+     * - payload 只有距离，没有经纬度；需要坐标请改用 location_moved，或在
+     *   Python 任务里自己记录最后位置。
+     *
+     * 这就是“同一信号要多个阈值”的推荐解法之一：500m 用 location_moved，
+     * 2000m 用 distance_travelled，两个计数器同时运行、互不影响。
+     */
     private fun checkDistanceTravelled(cfg: JSONObject) {
         if (!subscribed.contains("distance_travelled")) return
         val interval = cfg.optDouble("distance_travelled_interval_m", 5000.0)
@@ -1182,6 +1272,15 @@ object LocationEventMonitor {
         }
     }
 
+    /**
+     * 事件投递唯一出口：补 ts、入待发队列、逐条投给 Python。
+     *
+     * - 未订阅直接 return：这是“未订阅零开销”的最后一道闸；
+     * - 入队而不是直接跨语言调用：Python 未启动/正在重启时保留在 [pending]，
+     *   5s 后由 [scheduleRetry] 重投，避免定位回调线程被 Python 阻塞；
+     * - 队列上限 [PENDING_MAX]，满了丢最旧，宁可丢事件也不让内存无界增长；
+     * - 任何异常只打日志，绝不影响定位回调与主流程。
+     */
     private fun emit(name: String, payload: JSONObject) {
         try {
             if (!subscribed.contains(name)) return

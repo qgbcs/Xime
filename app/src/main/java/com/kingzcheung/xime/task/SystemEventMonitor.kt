@@ -113,7 +113,11 @@ object SystemEventMonitor {
         }
         synchronized(lock) { registered = set }
         FileLogger.i(TAG, "Python 订阅的系统事件: $set")
-        // 把订阅集合转发给 GPS 事件监听器：集合内没有 GPS 事件时它会立即停止监听（零开销）
+        // 把订阅集合原样转发给 GPS 事件监听器（不只是系统广播事件名）：
+        // Python 侧只有这一条订阅通道，GPS 事件名混在同一个集合里，由
+        // LocationEventMonitor 自己按 ALL_EVENTS 过滤；集合内没有 GPS 事件时
+        // 它会立即注销监听并退出线程（零开销）。
+        // 单独 try/catch：GPS 转发失败只降级，不能影响系统广播事件的订阅。
         try {
             LocationEventMonitor.syncRegisteredEvents(set)
         } catch (t: Throwable) {

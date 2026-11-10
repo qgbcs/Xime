@@ -473,7 +473,7 @@ def remove_task(task_id):
     if existed:
         _sync_system_events()
     return {"ok": existed}
-
+del_task=remove_task
 
 def pause_task(task_id):
     with _LOCK:

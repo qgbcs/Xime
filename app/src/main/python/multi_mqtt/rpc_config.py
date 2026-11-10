@@ -29,7 +29,7 @@ import stat
 import tempfile
 import threading
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from ecdsa import VerifyingKey
 
@@ -85,6 +85,29 @@ DEFAULT_GLOBAL_TOPIC_URL_LIST = [
 # 两个键均可在 rpc.json 覆盖，并在运行期经 rpc_config(...) 热更新。
 DEFAULT_STATS_PRINT_INTERVAL = ConnectionQualityStats.PRINT_INTERVAL
 DEFAULT_STATS_PING_INTERVAL = ConnectionQualityStats.PING_INTERVAL
+
+# --- [字段别名] 与 client/client_mqtt.py 的 alias_xxx 同风格 ---
+# 所有 rpc_config(...) 入口（模块级 rpc_config / 实例级 gms.rpc_config /
+# HTTP RPC / MQTT RPC）都先经 normalize_rpc_updates() 归一化，因此别名在
+# 任何入口都等价于规范键。broker_list_add/del 还接受
+# "[user:pass@]host[:port]" 字符串或单条 (host, port, auth)，口径与
+# client 的 --broker_add 一致（缺端口默认 1883）。
+RPC_CONFIG_ALIASES = {
+    "broker_list": ("brokers", "bl"),
+    "broker_list_add": ("add_broker", "add_brokers", "broker_add", "badd", "add"),
+    "broker_list_del": ("del_broker", "del_brokers", "broker_del", "bdel", "del"),
+    "request_topic": ("topic", "t", "q", "request"),
+    "pub_key": ("public_key", "pubkey", "pub"),
+    "global_topic_url_list": ("report_urls", "urls", "gul"),
+    "global_topic_list": ("report_topic", "gtl"),
+    "global_topic_list_interval": ("gtl_interval",),
+    "global_topic_list_idle_threshold": ("gtl_idle_threshold", "idle_threshold"),
+    "global_topic_list_check_interval": ("gtl_check_interval", "gtl_tick"),
+    "global_topic_list_publish_kwargs": ("gtl_publish_kwargs", "publish_kwargs"),
+    "stats_print_interval": ("print_interval", "stats_print", "spi"),
+    "stats_ping_interval": ("ping_interval", "stats_ping", "sgi"),
+    "client_stats_print_interval": ("client_print_interval", "cspi"),
+}
 
 
 def _default_rpc_config():
@@ -151,6 +174,28 @@ def _normalize_broker_list(brokers, name, allow_empty=False):
 
 def _broker_identity(broker):
     return broker[0].casefold(), broker[1]
+
+
+def _broker_identities(entries):
+    """把 broker 条目序列提取成身份集合；非法/非条目项直接跳过，绝不抛异常。"""
+    identities = set()
+    for entry in entries or ():
+        if (isinstance(entry, (list, tuple)) and len(entry) >= 2
+                and isinstance(entry[0], str)):
+            identities.add(_broker_identity(entry))
+    return identities
+
+
+def _without_broker_identities(entries, identities):
+    """剔除指定身份的条目，其它条目原样保留（含非法项，交给后续校验兜底）。"""
+    kept = []
+    for entry in entries or ():
+        if (isinstance(entry, (list, tuple)) and len(entry) >= 2
+                and isinstance(entry[0], str)
+                and _broker_identity(entry) in identities):
+            continue
+        kept.append(entry)
+    return kept
 
 
 def _normalize_positive_seconds(value, name):
@@ -268,6 +313,13 @@ def _validate_rpc_config(config):
         result["broker_list_del"], "broker_list_del", allow_empty=True
     )
     deleted = {_broker_identity(broker) for broker in brokers_del}
+    # 删除只作用于被点名的那条：同一身份若还留在 broker_list_add（例如旧的
+    # add_broker 记录或 rpc.json 里的残留行），一并剔除，避免 del 删完又被
+    # add 原样加回来；其它身份完全不动。
+    brokers_add = [
+        broker for broker in brokers_add
+        if _broker_identity(broker) not in deleted
+    ]
     effective_brokers = [
         broker for broker in broker_base
         if _broker_identity(broker) not in deleted
@@ -683,10 +735,11 @@ def load_broker_list(path=None, module=None, broker_add=None):
     屏蔽（见 filter_broker_list）。每次调用现读文件、不缓存，任何解析问题
     只告警回落，绝不阻断启动。
 
-    broker_add 给定时（CLI ``--broker_add host:port`` 显式条目，字符串或
-    (host, port) 元组）强制加入最终列表，优先级最高：绕过 broker_list_no
-    屏蔽与 broker_list_del 删除；同身份已在列表则不动，合成表（屏蔽前）
-    有同身份条目则补回原条目（保留认证），否则追加纯 (host, port)。
+    broker_add 给定时（CLI ``--broker_add`` 显式条目，字符串或
+    (host, port[, auth]) 元组）强制加入最终列表，优先级最高：绕过
+    broker_list_no 屏蔽与 broker_list_del 删除；同身份已在列表则不动，
+    合成表（屏蔽前）有同身份条目则补回原条目（保留认证），否则追加。
+    字符串支持 ``[user:pass@]host[:port]``，缺端口默认 1883。
     """
     composed = load_rpc_config(path)["broker_list"]
     result = filter_broker_list(composed, module, path=path)
@@ -695,33 +748,143 @@ def load_broker_list(path=None, module=None, broker_add=None):
     return _force_broker_list(result, composed, broker_add)
 
 
-def parse_broker_add(spec):
-    """解析 ``--broker_add`` 的 "host:port" 条目 -> (host, port)。
+def _split_broker_host_port(text):
+    """拆 ``host[:port]``，支持 ``[IPv6]:port``；非法返回 (None, None)。"""
+    text = text.strip()
+    if not text:
+        return None, None
+    if text.startswith("["):
+        end = text.find("]")
+        if end < 0:
+            return None, None
+        host = text[1:end].strip()
+        rest = text[end + 1:].strip()
+        if rest and not rest.startswith(":"):
+            return None, None
+        port_text = rest[1:].strip() if rest else ""
+    else:
+        host, sep, port_text = text.rpartition(":")
+        if not sep:
+            host, port_text = text, ""
+        if ":" in host:
+            # 裸 IPv6 无法区分哪一段是端口，要求加方括号
+            return None, None
+        host, port_text = host.strip(), port_text.strip()
+    if not host:
+        return None, None
+    if not port_text:
+        return host, 1883
+    if not port_text.isdecimal():
+        return None, None
+    port = int(port_text)
+    if not 1 <= port <= 65535:
+        return None, None
+    return host, port
 
-    无端口时默认 1883；host 允许含冒号的 IPv6（rpartition(":") 拆最后一段，
-    与 broker_list_no 的键解析同口径）。非法输入告警返回 None，绝不抛异常。
+
+def parse_broker_add(spec):
+    """解析 broker 条目字符串（CLI --broker_add / rpc_config 别名共用）。
+
+    支持（``mqtt://`` 前缀可省略，缺端口默认 1883）::
+
+        host[:port]                     "broker.codenow.cn" / "192.168.1.20"
+        user:password@host[:port]       "appID:secretKey@bemfa.com:9501"
+        token@host[:port]               用户名=token，密码为空
+        mqtt://user:pass@host:port      "mqtt://appID:secretKey@bemfa.com:9501"
+        mqtt://[2001:db8::1]:1883       IPv6 必须加方括号
+
+    用户名/密码按 URI 规则做百分号解码（密码里的 ``:`` 写成 ``%3A``）。
+    非法输入告警返回 None，绝不抛异常。
     """
     if not isinstance(spec, str) or not spec.strip():
         logger.warning("broker_add 条目 %r 非法，已跳过", spec)
         return None
-    host, sep, port_text = spec.strip().rpartition(":")
-    host = host.strip()
-    port_text = port_text.strip()
-    if not sep:
-        host, port_text = spec.strip(), ""
-    if not host:
+    text = spec.strip()
+    if "://" in text:
+        scheme, _, rest = text.partition("://")
+        if scheme.strip().lower() != "mqtt":
+            logger.warning("broker_add 条目 %r 协议不支持（仅 mqtt://），已跳过", spec)
+            return None
+        text = rest.strip()
+
+    auth = None
+    if "@" in text:
+        userinfo, _, text = text.rpartition("@")
+        username, separator, password = userinfo.partition(":")
+        username = unquote(username).strip()
+        password = unquote(password) if separator else ""
+        if not username:
+            logger.warning("broker_add 条目 %r 用户名不能为空，已跳过", spec)
+            return None
+        auth = [username, password]
+
+    host, port = _split_broker_host_port(text)
+    if host is None:
         logger.warning("broker_add 条目 %r 非法，已跳过", spec)
         return None
-    if not port_text:
-        return (host, 1883)
-    if not port_text.isdecimal():
-        logger.warning("broker_add 条目 %r 端口非法，已跳过", spec)
-        return None
-    port = int(port_text)
-    if not 1 <= port <= 65535:
-        logger.warning("broker_add 条目 %r 端口超出范围，已跳过", spec)
-        return None
-    return (host, port)
+    return (host, port, auth) if auth is not None else (host, port)
+
+
+def _canonical_rpc_key(name):
+    """别名 -> 规范键；不是已知字段返回 None。"""
+    for canonical, aliases in RPC_CONFIG_ALIASES.items():
+        if name == canonical or name in aliases:
+            return canonical
+    return None
+
+
+def _parse_explicit_broker_spec(spec):
+    """显式输入的 broker 字符串：非法直接报错（不被 parse_broker_add 静默跳过）。"""
+    entry = parse_broker_add(spec)
+    if entry is None:
+        raise ValueError(f"broker 条目非法: {spec!r}（应为 [user:pass@]host[:port]）")
+    return entry
+
+
+def _normalize_broker_alias_value(value):
+    """broker_list_add/del 的简写形式归一化。
+
+    接受 ``"[user:pass@]host[:port]"``、``["host:port", ...]``、
+    单条 ``(host, port[, auth])``；其它形态（条目列表、None、空列表）
+    原样返回，交给严格校验判定。
+    """
+    if isinstance(value, str):
+        return [_parse_explicit_broker_spec(value)]
+    if isinstance(value, tuple):
+        value = list(value)
+    if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
+        return [_parse_explicit_broker_spec(item) for item in value]
+    if (isinstance(value, list) and 2 <= len(value) <= 3
+            and isinstance(value[0], str)
+            and not isinstance(value[1], (list, tuple, dict))):
+        return [value]                   # 单条 (host, port[, auth]) 包成列表
+    return value
+
+
+def normalize_rpc_updates(updates):
+    """把 rpc_config(...) 的字段别名归一化为规范键。
+
+    只在显式输入入口调用（模块级 / 实例级 rpc_config），rpc.json 文件内容
+    不走这里。同一字段同时给出多个取值不同的别名视为冲突，直接报错，
+    避免静默取其中之一。
+    """
+    if not isinstance(updates, dict):
+        return updates
+    normalized = {}
+    sources = {}
+    for key, value in updates.items():
+        canonical = _canonical_rpc_key(key)
+        if canonical is None:
+            normalized[key] = value      # 未知键保留，由严格校验统一告警
+            continue
+        if canonical in sources and normalized[canonical] != value:
+            raise ValueError(
+                f"rpc_config 收到同一字段的冲突别名: {sources[canonical]} 与 {key}")
+        if canonical in ("broker_list_add", "broker_list_del"):
+            value = _normalize_broker_alias_value(value)
+        normalized[canonical] = value
+        sources[canonical] = key
+    return normalized
 
 
 def _force_broker_list(result, composed, broker_add):
@@ -884,6 +1047,16 @@ def _write_rpc_config_updates(updates, path=None, force_write=False):
         # 校验用净化后的配置（脏键回落默认值），写回仍以用户文件的原始键为准
         source = _sanitize_rpc_document(stored, config_path)
         source.update(updates)
+        # 与内存合并同一套镜像规则：显式 add 的身份撤销落盘的旧 del，
+        # 显式 del 的身份从落盘的 add 行里摘掉，保证重启后状态一致。
+        if "broker_list_add" in updates:
+            source["broker_list_del"] = _without_broker_identities(
+                source.get("broker_list_del", ()),
+                _broker_identities(updates["broker_list_add"]))
+        if "broker_list_del" in updates:
+            source["broker_list_add"] = _without_broker_identities(
+                source.get("broker_list_add", ()),
+                _broker_identities(updates["broker_list_del"]))
         normalized = _normalize_rpc_config(source)
         serialized = _json_rpc_config(normalized)
         patch = {}
@@ -894,6 +1067,12 @@ def _write_rpc_config_updates(updates, path=None, force_write=False):
                 patch[key] = ""
             elif key in serialized:
                 patch[key] = serialized[key]
+        # add / del 是一对镜像记录：手动 del 掉的身份要同步从落盘的 add 行里
+        # 摘掉（手动 add 的身份同理从 del 行摘掉），否则重启读文件时旧 add
+        # 会把刚删掉的 broker 又加回来。两个键一起写，其它条目原样保留。
+        if "broker_list_add" in updates or "broker_list_del" in updates:
+            patch["broker_list_add"] = serialized["broker_list_add"]
+            patch["broker_list_del"] = serialized["broker_list_del"]
         # 文本级按键改写：只动被改键的一行，保留用户手写缩进与其余内容
         update_json_document(config_path, patch, force_write=force_write)
 
@@ -1013,9 +1192,21 @@ def _merge_rpc_updates(current, updates):
 
     broker_list 走 _broker_list_base 语义：基线里 broker_list 是"生效结果"，
     叠加时要先还原成 base，再按 broker_list_add / broker_list_del 重新合成。
+
+    add / del 只影响被点名的那条：本次显式 add 的身份会从历史 del 里撤销
+    （删掉后再加回来要能生效），本次显式 del 的身份会从历史 add 里撤销
+    （加进去的条目要能真正删掉），其它身份的 add/del 记录原样保留。
     """
     merged = dict(current)
     merged["broker_list"] = merged["_broker_list_base"]
     if "broker_list" in updates:
         merged["_broker_list_base"] = updates["broker_list"]
+    if "broker_list_add" in updates:
+        merged["broker_list_del"] = _without_broker_identities(
+            merged.get("broker_list_del", ()),
+            _broker_identities(updates["broker_list_add"]))
+    if "broker_list_del" in updates:
+        merged["broker_list_add"] = _without_broker_identities(
+            merged.get("broker_list_add", ()),
+            _broker_identities(updates["broker_list_del"]))
     return _normalize_rpc_config({**merged, **updates})
