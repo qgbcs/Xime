@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """把 GitHub Release 的正文与附件同步到 GitCode Release。
 
-GitCode 的 tag 由其代码镜像自动同步，本脚本只负责 release 页面与附件。
+GitCode 的 tag 可由代码镜像自动同步（每日一次），本脚本负责 release 页面与附件：
+Release 不存在时用 v5 POST 创建，已存在时更新正文并补齐附件。
+创建偶尔会被 GitCode 以「镜像仓库限制」拒绝，通常是 tag 还没镜像到位，重跑即可。
 仅使用 Python 3 标准库，可在本地或 GitHub Actions 中直接运行。
 """
 
@@ -21,6 +23,7 @@ import urllib.parse
 import urllib.request
 
 GC_API = "https://api.gitcode.com/api/v5"
+GC_WEB = "https://gitcode.com"
 GH_API = "https://api.github.com"
 UA = "xime-release-sync"
 
@@ -41,6 +44,24 @@ def _retry_after(headers):
 
 class SyncError(RuntimeError):
     pass
+
+
+class MirrorRepoError(SyncError):
+    """GitCode v5 Release 接口拒绝只读镜像仓库，且 v2 Web API 兜底也失败。"""
+
+
+def _is_mirror_repo_error(exc: SyncError) -> bool:
+    return "image repository" in str(exc).lower()
+
+
+def _is_auth_rejected(exc: SyncError) -> bool:
+    """v2 Web API 拒绝令牌：401/403 或 425 TOKEN_INVALID_ERROR。
+
+    v2 走的是网页登录态凭据，CI 里的 GITCODE_TOKEN 是 v5 API 令牌，在 v2 侧会被判无效。
+    """
+    message = str(exc)
+    upper = message.upper()
+    return "TOKEN_INVALID" in upper or "HTTP 401" in message or "HTTP 403" in message
 
 
 def _rate_limit_message(headers):
@@ -210,10 +231,58 @@ def gc_release(owner, repo, tag, token):
         raise
 
 
+def gc_write_release_v2(owner, repo, tag, name, body, status, token, target_commitish=None):
+    """v5 Release 接口拒绝只读镜像仓库时的兜底：走 Web 端 /api/v2 接口创建。"""
+    info = _http(f"{GC_API}/repos/{owner}/{repo}", token=token)
+    repo_id = info.get("id")
+    if not repo_id:
+        raise SyncError(f"无法获取 GitCode 仓库 ID: {info}")
+    payload = {
+        "tag_name": tag,
+        "name": name,
+        "description": body,
+        "repoId": repo_id,
+        "links": [],
+        "assets": [],
+    }
+    if target_commitish:
+        payload["ref"] = target_commitish
+    if status:
+        payload["release_status"] = status
+    try:
+        _http(
+            f"{GC_WEB}/api/v2/projects/{repo_id}/releases",
+            method="POST",
+            token=token,
+            payload=payload,
+        )
+    except SyncError as exc:
+        if _is_mirror_repo_error(exc):
+            raise _mirror_repo_error(owner, repo) from exc
+        if _is_auth_rejected(exc):
+            # 两个接口凭据体系不同：v5 认 API 令牌，v2 只认网页登录会话，所以这条兜底在 CI 里
+            # 基本走不通。真正原因通常是 tag 还没镜像到 GitCode，等下一轮巡检即可，无需改令牌。
+            raise MirrorRepoError(
+                f"v5 创建 Release 被拒、v2 Web API 兜底也不可用（{str(exc).strip()}）。"
+                f"常见原因是 {owner}/{repo} 上该 tag 尚未镜像完成；v2 接口只认网页登录会话，"
+                "CI 里的 GITCODE_TOKEN 是 v5 API 令牌，兜底走不通。"
+                "下一次巡检会自动重试；若长期都是这条提示，再考虑把 GITCODE_RELEASE_REPO "
+                "指向普通仓库。"
+            ) from exc
+        raise
+    print("  Release 已通过 v2 Web API 创建")
+    return "created"
+
+
 def gc_write_release(owner, repo, tag, name, body, status, token, target_commitish=None):
     """GitCode 更新 Release 只支持 PATCH（PUT 返回 404 Route Not Found）。"""
     base = f"{GC_API}/repos/{owner}/{repo}/releases"
-    existing = gc_release(owner, repo, tag, token)
+    try:
+        existing = gc_release(owner, repo, tag, token)
+    except SyncError as exc:
+        if _is_mirror_repo_error(exc):
+            raise _mirror_repo_error(owner, repo) from exc
+        raise
     payload = {"tag_name": tag, "name": name, "body": body}
     if status:
         payload["release_status"] = status
@@ -227,20 +296,42 @@ def gc_write_release(owner, repo, tag, name, body, status, token, target_commiti
             )
             return "updated"
         except SyncError as exc:
+            if _is_mirror_repo_error(exc):
+                # Release 已在网页建好，只是正文改不了：继续传附件比整版跳过有用
+                print(f"  ! 镜像仓库不允许改 Release 正文，继续同步附件: {exc}")
+                return "update-failed"
             # 正文更新失败不应连累附件
             print(f"  ! 更新 Release 信息失败，继续同步附件: {exc}")
             return "update-failed"
 
     try:
         _http(base, method="POST", token=token, payload=payload)
-    except SyncError:
+    except SyncError as exc:
+        if _is_mirror_repo_error(exc):
+            # v5 对镜像仓库的 POST 有限制；Web 端 v2 接口通常仍可创建
+            print("  v5 Release 接口拒绝镜像仓库，尝试 v2 Web API…")
+            return gc_write_release_v2(owner, repo, tag, name, body, status, token, target_commitish)
         # tag 尚未同步到 GitCode 时，用它建 tag
         if not target_commitish:
             raise
         payload["target_commitish"] = target_commitish
-        _http(base, method="POST", token=token, payload=payload)
+        try:
+            _http(base, method="POST", token=token, payload=payload)
+        except SyncError as retry_exc:
+            if _is_mirror_repo_error(retry_exc):
+                print("  v5 Release 接口拒绝镜像仓库，尝试 v2 Web API…")
+                return gc_write_release_v2(owner, repo, tag, name, body, status, token, target_commitish)
+            raise
         print(f"  tag {tag} 此前不存在，已基于 {target_commitish} 创建")
     return "created"
+
+
+def _mirror_repo_error(owner: str, repo: str) -> MirrorRepoError:
+    return MirrorRepoError(
+        f"GitCode 拒绝了在 {owner}/{repo} 上创建 Release（返回信息提到镜像仓库限制）。"
+        "如果该仓库的代码镜像还没跑到这个 tag，等下一轮巡检会重试；"
+        "若持续出现，可把 GITCODE_RELEASE_REPO 指向普通仓库（--gitcode-repo）。"
+    )
 
 
 def gc_delete_asset(owner, repo, tag, asset_id, token):
@@ -363,22 +454,43 @@ def sync_release(args, tag, release=None):
 
     print(f"  Release: {'更新' if existing else '创建'} | 附件 {len(todo)}/{len(assets)} 待上传")
     planned_bytes = sum(int(asset.get("size") or 0) for asset, _ in todo)
+
+    # 定时巡检：Release 已建好且附件齐全就不用再碰它，省得每天刷一遍正文
+    if args.skip_synced and existing and not todo:
+        print("  已同步，跳过")
+        return "skipped", 0, 0
+
     if args.dry_run:
         for asset, current in todo:
             flag = "覆盖" if current else "新增"
             print(f"    [{flag}] {asset['name']} ({asset['size'] / 1048576:.1f} MB)")
         return "dry-run", planned_bytes, len(todo)
 
-    action = gc_write_release(
-        args.gitcode_owner,
-        args.gitcode_repo,
-        tag,
-        name,
-        body,
-        status,
-        args.token,
-        target_commitish=release.get("target_commitish"),
-    )
+    try:
+        action = gc_write_release(
+            args.gitcode_owner,
+            args.gitcode_repo,
+            tag,
+            name,
+            body,
+            status,
+            args.token,
+            target_commitish=release.get("target_commitish"),
+        )
+    except MirrorRepoError as exc:
+        prefix = "::warning::" if os.environ.get("GITHUB_ACTIONS") else "  ! "
+        print(f"{prefix}{exc}")
+        print("  ! 跳过本版本的 GitCode Release 同步")
+        return "unsupported", 0, 0
+    except SyncError as exc:
+        # GitCode 的代码镜像每天才拉一次，巡检时 tag 可能还没到，创建 Release 自然失败；
+        # 这属于预期延迟，本轮跳过、等下一次巡检重试，不要把每日任务跑红。
+        if not args.skip_synced:
+            raise
+        prefix = "::warning::" if os.environ.get("GITHUB_ACTIONS") else "  ! "
+        print(f"{prefix}{tag} 本轮创建 Release 失败（GitCode 可能还没镜像到该 tag）: {exc}")
+        print("  ! 已跳过，下一次巡检会重试")
+        return "skipped", 0, 0
     print(f"  Release {action}")
 
     failed = 0
@@ -423,7 +535,10 @@ def parse_args(argv=None):
     parser.add_argument("--tag-filter", default=r"^v\d+\.\d+\.\d+$",
                         help="批量同步时只处理匹配此正则的 tag，默认仅正式版；传空字符串关闭过滤")
     parser.add_argument("--github-repo", default="ximeiorg/Xime")
-    parser.add_argument("--gitcode-repo", default="ximeiorg/Xime")
+    parser.add_argument("--gitcode-repo",
+                        # CI 里未配置仓库变量时环境变量存在但为空串，需按「未设置」处理
+                        default=os.environ.get("GITCODE_RELEASE_REPO") or "ximeiorg/Xime",
+                        help="GitCode 的 owner/repo；必须是普通仓库，只读镜像仓库不支持 Release")
     parser.add_argument("--github-token", default=os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN", ""),
                         help="GitHub 令牌，读取 GITHUB_TOKEN / GH_TOKEN；本地批量同步必需，否则会触发 60 次/小时的限流")
     parser.add_argument("--token", default=os.environ.get("GITCODE_TOKEN", ""),
@@ -433,13 +548,28 @@ def parse_args(argv=None):
     parser.add_argument("--exclude", action="append", default=[], help="排除文件名正则，可重复")
     parser.add_argument("--no-banner", action="store_true", help="正文不插入镜像说明")
     parser.add_argument("--dry-run", action="store_true", help="只打印计划，不写入")
+    parser.add_argument("--skip-synced", action="store_true",
+                        help="GitCode 上该 Release 已存在且附件齐全时直接跳过（定时巡检用）")
     args = parser.parse_args(argv)
 
-    if "/" not in args.gitcode_repo:
-        parser.error("--gitcode-repo 需要 owner/repo 格式")
+    # 允许 CI 变量带首尾空白或尾斜杠；URL / SSH 形式直接拒绝，避免后面 API 层报看不懂的错
+    repo = args.gitcode_repo.strip().rstrip("/")
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    if "://" in repo or repo.startswith("git@"):
+        parser.error(
+            "--gitcode-repo 只需 owner/repo，不要带协议或域名"
+            f"（当前为 {args.gitcode_repo!r}）"
+        )
+    if "/" not in repo:
+        parser.error(
+            "--gitcode-repo 需要 owner/repo 格式"
+            f"（当前为 {args.gitcode_repo!r}；"
+            "可设置仓库变量 GITCODE_RELEASE_REPO 或传 --gitcode-repo 指定）"
+        )
     if sum([bool(args.tag), args.all, bool(args.last), bool(args.since)]) > 1:
         parser.error("--tag / --all / --last / --since 只能选一个")
-    args.gitcode_owner, args.gitcode_repo = args.gitcode_repo.split("/", 1)
+    args.gitcode_owner, args.gitcode_repo = repo.split("/", 1)
     args.exclude_regex = [re.compile(p) for p in args.exclude]
     args.tag_regex = re.compile(args.tag_filter) if args.tag_filter else None
     if not args.token and not args.dry_run:
@@ -486,7 +616,7 @@ def main(argv=None):
     if len(targets) > 1:
         print(f"待处理 {len(targets)} 个 Release: {', '.join(t or 'latest' for t, _ in targets)}")
 
-    done = skipped = 0
+    done = skipped = unsupported = 0
     total_bytes = total_files = 0
     failures = []
     for tag, release in targets:
@@ -496,6 +626,8 @@ def main(argv=None):
             total_files += nfiles
             if result == "skipped":
                 skipped += 1
+            elif result == "unsupported":
+                unsupported += 1
             else:
                 done += 1
         except SyncError as exc:
@@ -504,7 +636,7 @@ def main(argv=None):
 
     if len(targets) > 1:
         verb = "预计上传" if args.dry_run else "已上传"
-        print(f"\n完成：成功 {done}，跳过 {skipped}，失败 {len(failures)}")
+        print(f"\n完成：成功 {done}，跳过 {skipped}，镜像不支持 {unsupported}，失败 {len(failures)}")
         print(f"{verb} {total_files} 个附件，共 {total_bytes / 1073741824:.2f} GB")
     for item in failures:
         print(f"  失败 {item}", file=sys.stderr)

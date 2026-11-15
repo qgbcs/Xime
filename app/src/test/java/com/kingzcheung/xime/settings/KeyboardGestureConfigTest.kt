@@ -28,6 +28,24 @@ class KeyboardGestureConfigTest {
         assertEquals("!", kc.swipeUp!!.value)
         assertEquals(GestureAction.COMMIT, kc.swipeLeft!!.action)
         assertEquals("?", kc.swipeLeft!!.value)
+        // 简写不是显式 action，字母区仍需保持按键路由
+        assertFalse(kc.swipeUp!!.explicitAction)
+        assertFalse(kc.swipeLeft!!.explicitAction)
+    }
+
+    @Test
+    fun `显式 action 与槽位默认动作可区分`() {
+        val kc = parse("""
+            a:
+              swipe_up: { action: commit, value: "~" }
+              swipe_down: { value: "~" }
+              tap: "a"
+        """.trimIndent())["a"]!!
+        assertTrue(kc.swipeUp!!.explicitAction)
+        assertEquals(GestureAction.COMMIT, kc.swipeUp!!.action)
+        assertFalse(kc.swipeDown!!.explicitAction)
+        assertEquals(GestureAction.COMMIT, kc.swipeDown!!.action)
+        assertFalse(kc.tap!!.explicitAction)
     }
 
     @Test
@@ -389,6 +407,90 @@ class KeyboardGestureConfigTest {
         val binding = parse("q: { tap: { value: \"q\", bubble: false }, swipe_up: { value: \"1\", bubble: true } }")["q"]!!
         assertFalse(binding.tap!!.bubble)
         assertTrue(binding.swipeUp!!.bubble)
+    }
+
+    // ── 按键级外观覆盖（corner_radius / background） ──
+
+    @Test
+    fun `按键级圆角与背景可解析`() {
+        val kc = parse(
+            """enter: { tap: "enter", corner_radius: 14, background: 0x9FEF86, background_dark: 0x2F5A2F }"""
+        )["enter"]!!
+        assertEquals(14, kc.cornerRadius)
+        assertEquals(KeyColor.Hex(0x9FEF86L), kc.background)
+        assertEquals(KeyColor.Hex(0x2F5A2FL), kc.backgroundDark)
+    }
+
+    @Test
+    fun `按键级背景支持主题色记号`() {
+        assertEquals(KeyColor.Token("accent"), parse("""q: { background: accent }""")["q"]!!.background)
+        assertEquals(KeyColor.Token("primary"), parse("""q: { background: theme.primary }""")["q"]!!.background)
+        assertEquals(KeyColor.Token("special"), parse("""q: { background: SPECIAL }""")["q"]!!.background)
+        assertNull(parse("""q: { background: not-a-color }""")["q"]!!.background)
+    }
+
+    @Test
+    fun `按键级外观未配置时保持默认`() {
+        val kc = parse("""q: { tap: "q" }""")["q"]!!
+        assertNull(kc.cornerRadius)
+        assertNull(kc.background)
+        assertNull(kc.backgroundDark)
+    }
+
+    @Test
+    fun `按键级背景支持带透明度与非法值忽略`() {
+        val kc = parse(
+            """q: { background: 0x80FFFFFF, background_dark: "not-a-color", corner_radius: "x" }"""
+        )["q"]!!
+        assertEquals(KeyColor.Hex(0x80FFFFFFL), kc.background)
+        assertNull(kc.backgroundDark)
+        assertNull(kc.cornerRadius)
+    }
+
+    // ── 外观-only 覆盖的合并规则 ──
+
+    @Test
+    fun `只写外观覆盖时保留默认手势`() {
+        val default = """
+            keyboard:
+              qwerty:
+                keys:
+                  q: { tap: "q", swipe_up: "1", long_press: { display: bubble, values: ["q", "Q"] } }
+        """.trimIndent()
+        val custom = """
+            keyboard:
+              qwerty:
+                keys:
+                  q: { corner_radius: 20, background: 0xFFFF7043 }
+        """.trimIndent()
+        val (zh, _) = KeysConfigHelper.parseKeyboardGestureTexts(default, custom)!!
+        val q = zh["q"]!!
+        assertEquals("q", q.tap!!.value)
+        assertEquals("1", q.swipeUp!!.value)
+        assertEquals(2, q.longPress!!.values.size)
+        assertEquals(20, q.cornerRadius)
+        assertEquals(KeyColor.Hex(0xFFFF7043L), q.background)
+    }
+
+    @Test
+    fun `写行为字段时仍整体替换默认手势`() {
+        val default = """
+            keyboard:
+              qwerty:
+                keys:
+                  q: { tap: "q", swipe_up: "1", long_press: { display: bubble, values: ["q", "Q"] } }
+        """.trimIndent()
+        val custom = """
+            keyboard:
+              qwerty:
+                keys:
+                  q: { tap: "x" }
+        """.trimIndent()
+        val (zh, _) = KeysConfigHelper.parseKeyboardGestureTexts(default, custom)!!
+        val q = zh["q"]!!
+        assertEquals("x", q.tap!!.value)
+        assertNull(q.swipeUp)
+        assertNull(q.longPress)
     }
 
     // ── 辅助 ──

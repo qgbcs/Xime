@@ -2221,6 +2221,10 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         keyRouter.handleKeyPress(key, false)
     }
 
+    override fun cycleSchema() {
+        schemaController.cycleSchema()
+    }
+
     override fun commitText(text: String) {
         // 剪贴板历史搜索态：RIME 上屏（拼音候选/空格首选/标点/英文键）一律重定向到搜索框，
         // 绝不写入宿主输入框；同时跳过联想学习，避免搜索词污染用户语言模型。

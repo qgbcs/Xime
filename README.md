@@ -74,7 +74,7 @@ git merge upstream/main        # 或合并最近的 nightly tag
 
 1. **`xime.yaml` 冲突：先取上游整份，再重放个人差异。** 只补三处：`swipe_up → long_press.values`、主题名、`common_symbols` 紧凑段。
    **千万不要保留缺段的旧配置**：`PanelKeyboardLayout` 取不到 `number` / `common_symbols` / `t9` 段时直接渲染空 `Box`，表现就是 `?123` 面板一片空白。
-2. **Kotlin 冲突：以上游为准**，只在 `KeyboardViewModel.dispatch` 保留 `applySchemaLayout(action, schemaId)` 那几行。
+2. **Kotlin 冲突：先以上游为基底，再重放本分支的个人改动**。本分支已不止 `KeyboardViewModel.dispatch` 的 `applySchemaLayout` 补丁，还有 RPC 日志面板、WebDAV 同步、权限引导、快捷发送等个人功能；整文件取上游会把这些定义删掉，表现是别处大量 `Unresolved reference`。推荐：`git checkout --theirs <file>` 取上游，再 `git diff <merge-base> HEAD -- <file> | git apply --3way` 把个人差异重放回来，冲突处两边都保留。
 3. **`strings.xml` 冲突：以上游为准**，只保留 `app_name` 引用与 subtype 标签的变量化。
 4. 除个人独有文件（`qgb_device_test.py`、个人脚本/文档）外，**不要整文件“用我的版本”覆盖**——这是以后每次同步都能顺利的关键。
 
@@ -85,6 +85,17 @@ python3 -c "import yaml;yaml.safe_load(open('app/src/main/assets/xime.yaml'))"  
 ./debug_build_secexp.sh                                                         # 2. 构建
 python3 scripts/qgb_device_test.py --skip-install --serial <序列号> --expect-version <VERSION_CODE>  # 3. 真机回归
 ```
+
+### 本次跟进经验（2026-11-16，合入 main 8c72c49）
+
+- 冲突 31 个文件，Kotlin 占 21 个；`xime.yaml` 只有 `common_symbols` 两处冲突，说明“取上游整份再重放”依然最省事。
+- 个人改动不能“以上游为准”一刀切：`SettingsPreferences` 一次丢了 200 多行个人 API，导致 `MainActivity`、`ClipboardManager` 等十几处 `Unresolved reference`。按第 2 条 checkout --theirs + apply --3way 重放，比逐个 hunk 手抄可靠。
+- `git apply --3way` 的冲突多是“两边在同一位置插入”，机械地两边都留会吃掉共享的收尾括号（本次 `setFuzzyPinyinRules` 缺 `}`、`bumpClipboardSyncPeersRevision` 缺 `.apply()` 和 `}`），编译器只会报一堆莫名的 `Unresolved reference`。保留两边后务必做括号配平检查。
+- 上游新增 API 要在 qgb 侧补齐：`RimeConfigHelper.ensureBuiltinSchemaFiles`（english 方案补齐）、`ImeSchemaController.cycleSchema` + 顶层 `nextSchemaId`、`XimeInputMethodService.override fun cycleSchema()`。
+- 运行期坑：`Application.getProcessName()` 是 API 28，Android 8.1（API 27，minSdk 27）启动即 `NoSuchMethodError`。`preInitializeRimeEngine()` 必须用本分支已有的 `isMainProcess()` 兼容实现。
+- 子模块：上游新增 `third_party/libximep2p`，需 `git submodule update --init --depth 1 third_party/libximep2p`；`app/src/main/assets/rime` 跟随上游提交（本次 ee57fa7）。
+- 上游改了 `.github/workflows/build.yml`、本分支已删（改用 `workflows-minilulubai`），继续 `git rm` 保持删除。
+- 验证链路：yaml 校验（`common_symbols` 行键数 10/10/9/6）→ 构建 → upgit + ghfast 下载 → `adb install -r` → `monkey` 启动看 `FATAL EXCEPTION` → `ime set` 后看 `XimeRime` 日志部署成功。
 
 ---
 

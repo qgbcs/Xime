@@ -42,6 +42,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -180,6 +181,9 @@ fun KeyboardLayout(
     var landscapeSplitKeyboardEnabled by remember {
         mutableStateOf(SettingsPreferences.isLandscapeSplitKeyboardEnabled(context))
     }
+    var letterSizeLevel by remember(context) {
+        mutableIntStateOf(SettingsPreferences.getQwertyLetterSizeLevel(context))
+    }
 
     // 监听设置变化
     DisposableEffect(context) {
@@ -190,6 +194,8 @@ fun KeyboardLayout(
                     SettingsPreferences.KEY_LANDSCAPE_SPLIT_KEYBOARD_ENABLED ->
                         landscapeSplitKeyboardEnabled =
                             SettingsPreferences.isLandscapeSplitKeyboardEnabled(context)
+                    SettingsPreferences.KEY_QWERTY_LETTER_SIZE_LEVEL ->
+                        letterSizeLevel = SettingsPreferences.getQwertyLetterSizeLevel(context)
                 }
             }
         prefs.registerOnSharedPreferenceChangeListener(listener)
@@ -246,6 +252,7 @@ fun KeyboardLayout(
 
     CompositionLocalProvider(
         LocalKeyCornerRadius provides qwertyCornerRadius,
+        LocalQwertyLetterScale provides (SettingsPreferences.qwertyLetterSizePercent(letterSizeLevel) / 100f),
         // 键面提示档与主键盘同一规则（退格的「清空」等提示的放大倍率与画法）
         LocalSwipeHintCorner provides swipeHintCornerFor(isLandscape, tabletParams),
         // 平板键面提示统一放大（字母上标/退格"清空"等所有键组件一致），手机为 1f
@@ -326,6 +333,7 @@ fun KeyboardLayout(
                         suppressCursorMove = suppressCursorMove,
                         processSwipeState = { state, bounds -> processSwipeState(state, bounds) },
                         configVersion = cfgVer,
+                        isDarkTheme = uiState.isDarkTheme,
                     )
                     // 行数由 layout.rows 驱动（最多 5 行，含可选数字行）；语音模式用固定占位行
                     if (isVoiceMode && !isVoiceSticky) {
@@ -454,8 +462,9 @@ internal fun invokeKeyAction(
 /**
  * 可上屏键（字母/数字等）的手势动作分发。
  *
- * - 未配置动作、COMMIT、SEND_RIME → 走 [onKeyPress]（沿用输入法组合/候选语义；调用方传入
- *   已按 shift 处理过的 [fallbackValue]，避免绕过大小写）；
+ * - 未配置动作、槽位默认的 COMMIT、SEND_RIME → 走 [onKeyPress]（沿用输入法组合/候选语义；
+ *   调用方传入已按 shift 处理过的 [fallbackValue]，避免绕过大小写）；
+ * - **显式** `action: commit` → 走 [onCommitText] 直接上屏，不经过引擎；
  * - NONE → 视为未绑定，不触发；
  * - 其余动作（复制/粘贴/光标移动/面板切换等）→ [invokeKeyAction]。
  */
@@ -466,9 +475,24 @@ internal fun dispatchKeyActionOrPress(
     onCommitText: ((String) -> Unit)?,
     onGestureAction: ((GestureAction, String) -> Unit)?,
 ) {
-    when (action?.action) {
-        null, GestureAction.COMMIT, GestureAction.SEND_RIME -> fallbackValue?.let(onKeyPress)
+    if (action == null) {
+        fallbackValue?.let(onKeyPress)
+        return
+    }
+    when (action.action) {
+        null -> fallbackValue?.let(onKeyPress)
         GestureAction.NONE -> Unit
+        GestureAction.COMMIT -> {
+            if (action.explicitAction) {
+                // 显式 commit 的语义就是直接上屏；值缺失时依次回退 label、按键默认值
+                val text = action.value.ifEmpty { action.label }.ifEmpty { fallbackValue.orEmpty() }
+                if (text.isNotEmpty()) (onCommitText ?: onKeyPress)(text)
+            } else {
+                // 槽位默认 commit（字符串简写 / 只写 value）：保持按键路由语义
+                fallbackValue?.let(onKeyPress)
+            }
+        }
+        GestureAction.SEND_RIME -> fallbackValue?.let(onKeyPress)
         else -> invokeKeyAction(action, onKeyPress, onCommitText, onGestureAction)
     }
 }
@@ -504,7 +528,8 @@ internal fun dispatchLongPressSelection(
  * - 未配置 swipe_up 且无旧默认表取值 → 返回 null（不检测上滑）；
  * - `action: none` → 生成空处理器「吸收」上滑（不上屏），与下滑/左右滑一致，
  *   避免竖向拖拽被落点点击判定误打出一个字符；
- * - 其余交给 [dispatchKeyActionOrPress]（COMMIT/未配置 → 原有上滑上屏；其它动作 → 手势分发）。
+ * - 其余交给 [dispatchKeyActionOrPress]（显式 commit / 各动作 → 手势分发；
+ *   槽位默认 commit/未配置 → 原有上滑按键路由）。
  */
 internal fun swipeUpHandlerFor(
     swipeUp: KeyAction?,
@@ -568,7 +593,7 @@ internal fun functionKeyGestures(
 }
 
 /** 一行内的共享渲染参数（颜色/回调等），供行循环与功能键组件复用；主键盘与面板渲染共用。 */
-internal class QwertyRowEnv(
+internal data class QwertyRowEnv(
     val isAsciiMode: Boolean,
     val isShifted: Boolean,
     val shiftMode: ShiftMode,
@@ -598,10 +623,12 @@ internal class QwertyRowEnv(
     val landscape: Boolean = false,
     val fontSize: TextUnit = TextUnit.Unspecified,
     val swipeFontSize: TextUnit = 9.sp,
-    /** 面板文本功能键字号（返回/123/符号/确定/空格）；null = KeyButton 默认字号。主键盘不使用。 */
+    /** 面板文本功能键字号（返回/123/符号/空格）；null = KeyButton 默认字号。主键盘不使用。 */
     val ctrlFontSize: TextUnit? = null,
     /** 手势/宽度配置来源段名（主键盘 = "qwerty"；面板 = number / common_symbols…）。 */
     val section: String = "qwerty",
+    /** 当前是否暗色主题：按键级 background_dark 按此选择。 */
+    val isDarkTheme: Boolean = false,
 )
 
 /** 功能键列宽：显式 `keys.<id>.width` 优先，否则内置默认。 */
@@ -870,6 +897,7 @@ private fun QwertyRow(
                     onGestureAction = env.onGestureAction,
                     configVersion = env.configVersion,
                     compactButton = env.landscape,
+                    isDarkTheme = env.isDarkTheme,
                 )
                 i = j
             }
@@ -892,39 +920,45 @@ internal val RENDERED_FUNCTION_KEY_IDS: Set<String> = setOf(
 
 @Composable
 internal fun FunctionKeyCell(id: String, env: QwertyRowEnv, modifier: Modifier) {
-    when (id) {
-        "shift" -> ShiftCell(env, modifier)
-        "caps" -> CapsCell(env, modifier)
-        "shift_left" -> ShiftCell(env, modifier, id = "shift_left")
-        "shift_right" -> ShiftCell(env, modifier, id = "shift_right")
-        "delete" -> DeleteCell(env, modifier)
-        "mode_change" -> ModeChangeCell(env, modifier)
-        "comma" -> CommaCell(env, modifier)
-        "space" -> SpaceCell(env, modifier)
-        "earth" -> EarthCell(env, modifier)
-        "enter" -> EnterCell(env, modifier, env.ctrlFontSize)
-        "symbol" -> PanelActionCell(
-            "symbol", GestureAction.TOGGLE_SYMBOLS, "", rememberVectorPainter(Icons.TwoTone.KeyboardAlt), env, modifier,
-        )
-        "emoji" -> PanelActionCell(
-            "emoji", GestureAction.SWITCH_ROUTE, "emoji", rememberVectorPainter(Icons.Filled.EmojiEmotions), env, modifier,
-        )
-        "voice" -> PanelActionCell(
-            "voice", GestureAction.VOICE, "", rememberVectorPainter(Icons.Filled.Mic), env, modifier,
-        )
-        "tab" -> PanelActionCell(
-            "tab", GestureAction.TAB, "", rememberVectorPainter(Icons.AutoMirrored.Filled.KeyboardTab), env, modifier,
-        )
-        "cursor_left" -> CursorMoveCell(-1, env, modifier)
-        "cursor_right" -> CursorMoveCell(1, env, modifier)
-        // 面板专用功能键（数字/常用符号键盘；行为内置，与旧硬编码面板一致）
-        "back" -> PanelBackCell(env, modifier)
-        "back_right" -> PanelBackCell(env, modifier, id = "back_right")
-        "number" -> PanelTextCell("number", "123", "number", special = true, env, modifier)
-        "open_symbols" -> PanelTextCell("open_symbols", stringResource(R.string.keyboard_symbol), "symbol", special = true, env, modifier)
-        "space_bar" -> PanelTextCell("space_bar", stringResource(R.string.keyboard_space), "space", special = true, env, modifier)
-        "space_key" -> PanelTextCell("space_key", stringResource(R.string.keyboard_space), "space", special = false, env, modifier)
-        else -> FileLogger.w("XimeKeyboard", "功能键 id \"$id\" 没有对应组件，该键不会显示：请改用受支持的 id")
+    // 按键级外观覆盖：只影响当前键，未配置时 keyEnv === env、圆角沿用外层
+    val style = keyStyleOverride(env.section, id, env.isAsciiMode, env.isDarkTheme)
+    val keyEnv = env.withKeyStyle(style)
+    val radius = style.cornerRadius ?: LocalKeyCornerRadius.current
+    CompositionLocalProvider(LocalKeyCornerRadius provides radius) {
+        when (id) {
+            "shift" -> ShiftCell(keyEnv, modifier)
+            "caps" -> CapsCell(keyEnv, modifier)
+            "shift_left" -> ShiftCell(keyEnv, modifier, id = "shift_left")
+            "shift_right" -> ShiftCell(keyEnv, modifier, id = "shift_right")
+            "delete" -> DeleteCell(keyEnv, modifier)
+            "mode_change" -> ModeChangeCell(keyEnv, modifier)
+            "comma" -> CommaCell(keyEnv, modifier)
+            "space" -> SpaceCell(keyEnv, modifier)
+            "earth" -> EarthCell(keyEnv, modifier)
+            "enter" -> EnterCell(keyEnv, modifier)
+            "symbol" -> PanelActionCell(
+                "symbol", GestureAction.TOGGLE_SYMBOLS, "", rememberVectorPainter(Icons.TwoTone.KeyboardAlt), keyEnv, modifier,
+            )
+            "emoji" -> PanelActionCell(
+                "emoji", GestureAction.SWITCH_ROUTE, "emoji", rememberVectorPainter(Icons.Filled.EmojiEmotions), keyEnv, modifier,
+            )
+            "voice" -> PanelActionCell(
+                "voice", GestureAction.VOICE, "", rememberVectorPainter(Icons.Filled.Mic), keyEnv, modifier,
+            )
+            "tab" -> PanelActionCell(
+                "tab", GestureAction.TAB, "", rememberVectorPainter(Icons.AutoMirrored.Filled.KeyboardTab), keyEnv, modifier,
+            )
+            "cursor_left" -> CursorMoveCell(-1, keyEnv, modifier)
+            "cursor_right" -> CursorMoveCell(1, keyEnv, modifier)
+            // 面板专用功能键（数字/常用符号键盘；行为内置，与旧硬编码面板一致）
+            "back" -> PanelBackCell(keyEnv, modifier)
+            "back_right" -> PanelBackCell(keyEnv, modifier, id = "back_right")
+            "number" -> PanelTextCell("number", "123", "number", special = true, keyEnv, modifier)
+            "open_symbols" -> PanelTextCell("open_symbols", stringResource(R.string.keyboard_symbol), "symbol", special = true, keyEnv, modifier)
+            "space_bar" -> PanelTextCell("space_bar", stringResource(R.string.keyboard_space), "space", special = true, keyEnv, modifier)
+            "space_key" -> PanelTextCell("space_key", stringResource(R.string.keyboard_space), "space", special = false, keyEnv, modifier)
+            else -> FileLogger.w("XimeKeyboard", "功能键 id \"$id\" 没有对应组件，该键不会显示：请改用受支持的 id")
+        }
     }
 }
 
@@ -1226,8 +1260,12 @@ private fun SpaceCell(env: QwertyRowEnv, modifier: Modifier) {
     )
 }
 
+/**
+ * 回车键。字号不再由面板单独传参，统一走 [SwipeableKeyButton] 默认规则，
+ * 保证全键盘、数字面板、常用符号面板的「确定/换行」字号一致。
+ */
 @Composable
-private fun EnterCell(env: QwertyRowEnv, modifier: Modifier, fontSize: TextUnit? = null) {
+private fun EnterCell(env: QwertyRowEnv, modifier: Modifier) {
     val enterBinding = KeysConfigHelper.getGestureFor(env.section, "enter", env.isAsciiMode)
     val enterAction = enterBinding?.tap ?: KeyAction(GestureAction.ENTER)
     val enterKeyValue = enterAction.value.ifEmpty { "enter" }
@@ -1258,7 +1296,6 @@ private fun EnterCell(env: QwertyRowEnv, modifier: Modifier, fontSize: TextUnit?
         shadowEnabled = env.shadowEnabled,
         shadowElevation = env.shadowElevation,
         shadowShapeRadius = env.shadowShapeRadius,
-        fontSize = fontSize ?: androidx.compose.ui.unit.TextUnit.Unspecified,
     )
 }
 
@@ -1685,6 +1722,8 @@ private fun DummyKeyButton(
     )
 }
 
+private val LocalQwertyLetterScale = compositionLocalOf { 1f }
+
 @Composable
 fun KeyboardRowWithConfig(
     keys: List<String>,
@@ -1703,6 +1742,8 @@ fun KeyboardRowWithConfig(
     keyWidths: List<Float>? = null,
     /** 手机横屏紧凑档：改用 [SwipeableKeyButtonLandscape]（主字符与上滑提示垂直堆叠、手势阈值收紧）。 */
     compactButton: Boolean = false,
+    /** 当前是否暗色主题：按键级 background_dark 按此选择。 */
+    isDarkTheme: Boolean = false,
 ) {
     Row(
         modifier = modifier
@@ -1748,6 +1789,13 @@ fun KeyboardRowWithConfig(
                 commitValue
             } else {
                 KeysConfigHelper.getKeyDisplayLabel(key, isAsciiMode)
+            }
+            val labelScale = if (key.length == 1 && key[0].lowercaseChar() in 'a'..'z' &&
+                displayText.length == 1 && displayText[0].lowercaseChar() in 'a'..'z'
+            ) {
+                LocalQwertyLetterScale.current
+            } else {
+                1f
             }
 
             // tap 动作接线：非 COMMIT/SEND_RIME 的动作（复制/粘贴/面板切换等）走手势分发，
@@ -1810,14 +1858,51 @@ fun KeyboardRowWithConfig(
                     selectedLabel, longPressGestureMap, onKeyPress, onCommitText, onGestureAction)
             } }
 
-            if (compactButton) {
-                SwipeableKeyButtonLandscape(
+            // 按键级外观覆盖（keys.<id> 的 corner_radius / background）；未配置时用行级默认
+            val keyStyle = keyStyleOverride("qwerty", key, isAsciiMode, isDarkTheme)
+            val keyBackground = keyStyle.background ?: config.keyBackgroundColor
+            val keyText = keyStyle.textColor ?: config.keyTextColor
+            val keyRadius = keyStyle.cornerRadius ?: LocalKeyCornerRadius.current
+
+            CompositionLocalProvider(LocalKeyCornerRadius provides keyRadius) {
+                if (compactButton) {
+                    SwipeableKeyButtonLandscape(
+                        text = displayText,
+                        // tap.bubble: false → 不弹按压气泡（默认 true，行为与改动前一致）
+                        pressText = displayText.takeIf { tapAction?.bubble ?: true },
+                        onClick = onClick,
+                        backgroundColor = keyBackground,
+                        textColor = keyText,
+                        modifier = Modifier.weight(keyWidths?.getOrNull(index) ?: 1f),
+                        swipeText = swipeUpText,
+                        swipeDownText = swipeDownText,
+                        swipeUpKeyLabel = swipeUpKeyLabel,
+                        swipeDownKeyLabel = swipeDownKeyLabel,
+                        onSwipe = onSwipeUp,
+                        onSwipeDown = onSwipeDown,
+                        onSwipeLeft = onSwipeLeft,
+                        onSwipeRight = onSwipeRight,
+                        onSwipeStateChange = onSwipeStateChange,
+                        onPress = onPress,
+                        onRelease = onRelease,
+                        onLongPressSelect = onLongPressSelect,
+                        longPressItems = longPressLabels,
+                        fontSize = config.fontSize,
+                        labelScale = labelScale,
+                        swipeFontSize = config.swipeFontSize,
+                        shadowEnabled = config.shadowEnabled,
+                        shadowElevation = config.shadowElevation,
+                        shadowShapeRadius = keyStyle.cornerRadius ?: config.shadowShapeRadius,
+                    )
+                } else {
+                SwipeableKeyButton(
+                    layoutMode = KeysConfigHelper.getButtonLayout(isAsciiMode),
                     text = displayText,
                     // tap.bubble: false → 不弹按压气泡（默认 true，行为与改动前一致）
                     pressText = displayText.takeIf { tapAction?.bubble ?: true },
                     onClick = onClick,
-                    backgroundColor = config.keyBackgroundColor,
-                    textColor = config.keyTextColor,
+                    backgroundColor = keyBackground,
+                    textColor = keyText,
                     modifier = Modifier.weight(keyWidths?.getOrNull(index) ?: 1f),
                     swipeText = swipeUpText,
                     swipeDownText = swipeDownText,
@@ -1833,40 +1918,13 @@ fun KeyboardRowWithConfig(
                     onLongPressSelect = onLongPressSelect,
                     longPressItems = longPressLabels,
                     fontSize = config.fontSize,
+                    labelScale = labelScale,
                     swipeFontSize = config.swipeFontSize,
                     shadowEnabled = config.shadowEnabled,
                     shadowElevation = config.shadowElevation,
-                    shadowShapeRadius = config.shadowShapeRadius,
+                    shadowShapeRadius = keyStyle.cornerRadius ?: config.shadowShapeRadius,
                 )
-            } else {
-            SwipeableKeyButton(
-                layoutMode = KeysConfigHelper.getButtonLayout(isAsciiMode),
-                text = displayText,
-                // tap.bubble: false → 不弹按压气泡（默认 true，行为与改动前一致）
-                pressText = displayText.takeIf { tapAction?.bubble ?: true },
-                onClick = onClick,
-                backgroundColor = config.keyBackgroundColor,
-                textColor = config.keyTextColor,
-                modifier = Modifier.weight(keyWidths?.getOrNull(index) ?: 1f),
-                swipeText = swipeUpText,
-                swipeDownText = swipeDownText,
-                swipeUpKeyLabel = swipeUpKeyLabel,
-                swipeDownKeyLabel = swipeDownKeyLabel,
-                onSwipe = onSwipeUp,
-                onSwipeDown = onSwipeDown,
-                onSwipeLeft = onSwipeLeft,
-                onSwipeRight = onSwipeRight,
-                onSwipeStateChange = onSwipeStateChange,
-                onPress = onPress,
-                onRelease = onRelease,
-                onLongPressSelect = onLongPressSelect,
-                longPressItems = longPressLabels,
-                fontSize = config.fontSize,
-                swipeFontSize = config.swipeFontSize,
-                shadowEnabled = config.shadowEnabled,
-                shadowElevation = config.shadowElevation,
-                shadowShapeRadius = config.shadowShapeRadius,
-            )
+                }
             }
         }
     }
@@ -2090,6 +2148,7 @@ private fun LandscapeKeyboardContent(
         landscape = compactStyle,
         fontSize = landscapeFontSize,
         swipeFontSize = landscapeSwipeFontSize,
+        isDarkTheme = uiState.isDarkTheme,
     )
 
     // 行距由外层 provider 统一提供（手机横屏回退 2dp / 平板 4.25dp），此处不再覆盖。
@@ -2141,6 +2200,18 @@ private fun LandscapeKeyboardContent(
 }
 
 
+/**
+ * 空格键抬手是否算作点击（上屏空格）。
+ *
+ * 父层光标手势接管本次横向滑动后，拖拽位移已被父层消费，不能再补一个空格；
+ * 已判为滑动或长按已触发时同理由对应分支处理。见 issue #1262。
+ */
+internal fun shouldCommitSpaceTap(
+    longPressTriggered: Boolean,
+    swipeDirection: String?,
+    cursorGestureActive: Boolean,
+): Boolean = !longPressTriggered && swipeDirection == null && !cursorGestureActive
+
 /** QWERTY 空格键 */
 @Composable
 private fun SpaceKey(
@@ -2177,6 +2248,8 @@ private fun SpaceKey(
     val currentLongPressItems by rememberUpdatedState(longPressItems)
     val currentLongPressDrawableIds by rememberUpdatedState(longPressDrawableIds)
     val view = LocalView.current
+    // 父层光标手势是否已接管本次横向滑动（接管后不再算点击，见 issue #1262）
+    val cursorGestureActive = LocalCursorGestureActive.current
     var buttonBounds by remember { mutableStateOf(Rect(0f, 0f, 0f, 0f)) }
     val currentOnVoiceModeChange by rememberUpdatedState(onVoiceModeChange)
     val currentOnTap by rememberUpdatedState(onTap)
@@ -2261,8 +2334,11 @@ private fun SpaceKey(
                                     }
                                     if (isRelease) {
                                         completed = true
-                                        if (currentOnTap != null) currentOnTap?.invoke()
-                                        else currentOnKeyPress("space")
+                                        // 横向拖动已被父层光标手势接管时，抬手不算点击
+                                        if (!cursorGestureActive.value) {
+                                            if (currentOnTap != null) currentOnTap?.invoke()
+                                            else currentOnKeyPress("space")
+                                        }
                                     }
                                     continue
                                 }
@@ -2293,7 +2369,7 @@ private fun SpaceKey(
                             longPressJob.cancel()
                             onSwipeStateChange?.invoke(SwipeState(), buttonBounds)
                             // 没等到抬手就结束（触摸流取消/协程被重挂）时兜底上屏空格
-                            if (!completed && !triggered) {
+                            if (!completed && !triggered && !cursorGestureActive.value) {
                                 if (currentOnTap != null) currentOnTap?.invoke()
                                 else currentOnKeyPress("space")
                             }
@@ -2332,7 +2408,7 @@ private fun SpaceKey(
 
                     if (dir != null && currentOnSwipe != null) {
                         currentOnSwipe?.invoke(dir)
-                    } else if (!longPressTriggered) {
+                    } else if (shouldCommitSpaceTap(longPressTriggered, dir, cursorGestureActive.value)) {
                         if (currentOnTap != null) currentOnTap?.invoke() else currentOnKeyPress("space")
                     }
                 }

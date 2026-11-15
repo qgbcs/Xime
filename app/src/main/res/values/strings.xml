@@ -83,7 +83,6 @@
     <string name="s_qingxianxiazaishouxiemoxing">请先下载手写模型</string>
     <string name="s_cikubushuzhong_qingshaohouzaiq_7d5ce">词库部署中，请稍后再切换方案</string>
     <string name="s_fanganweibushu_qingzaifangangu_63cf5">方案未部署，请在方案管理中部署后再试</string>
-    <string name="s_yiqiehuanshurufangan">已切换输入方案</string>
     <string name="s_zhengzaixiazai">正在下载 %1$s...</string>
     <string name="s_xiazaichenggong_qingdianjibushu">%1$s 下载成功，请点击部署</string>
     <string name="s_xiazaishibai_2">%1$s 下载失败</string>
@@ -312,18 +311,39 @@
     <string name="s_xitongbanben">系统版本</string>
     <string name="s_shebeixinghao">设备型号</string>
     <string name="s_ximayinsicelve">曦码隐私策略</string>
-    <string name="s_shujushouji">数据收集</string>
-    <string name="s_ximabushoujirenhegerenshenfenx_7e0f8">曦码不收集任何个人身份信息。您的输入内容仅用于提供输入法功能，不会被上传到服务器或分享给第三方。</string>
-    <string name="s_bendicunchu">本地存储</string>
-    <string name="s_ximajiangyonghushezhi_yonghuci_e9dfb">曦码将用户设置、用户词库和剪贴板历史存储在您的设备本地，不会上传到云端。您可以随时清除这些数据。</string>
-    <string name="s_wangluoquanxian">网络权限</string>
-    <string name="s_ximaxuyaowangluoquanxianyongyu_5544d">曦码需要网络权限用于下载联想模型。下载完成后，模型将在本地运行，您的输入内容不会被上传。</string>
-    <string name="s_shuruneirong">输入内容</string>
-    <string name="s_nindesuoyoushuruneirongjinbaoc_31812">您的所有输入内容仅保存在本地设备上。曦码使用开源的 Rime 输入引擎，所有处理均在本地完成。</string>
-    <string name="s_jiantiebangongnengjinzainindes_cfa37">剪贴板功能仅在您的设备本地运行。您可以随时查看、删除或清除剪贴板历史记录。</string>
+    <string name="s_yinsicelvzhaiyao">摘要</string>
+    <string name="s_yinsicelvzhaiyaoshuoming">曦码默认完全离线：输入、联想、词库都在设备本地完成。只有检查更新、访问方案与插件市场、下载模型时会联网。语音识别、AI 写作/翻译、跨设备同步等会外发数据的能力全部是可选项，以插件形式提供，不安装就不会发生。</string>
+    <string name="s_shiyongfanwei">适用范围</string>
+    <string name="s_shiyongfanweishuoming">本策略适用于曦码 Android 客户端，包括输入法服务、设置、方案与插件市场。你自行安装的插件由插件作者或其所接入的服务商提供，其数据处理行为以插件说明与服务商隐私政策为准。</string>
+    <string name="s_shujushouji">我们不收集什么</string>
+    <string name="s_ximabushoujirenhegerenshenfenx_7e0f8">· 不要求注册账号，不收集姓名、手机号、邮箱等身份信息\n· 不读取通讯录、短信、位置、相册（只有你选择图片放入剪贴板时才访问该图片）\n· 不采集设备标识符与广告 ID，不集成广告或行为分析 SDK\n· 不把输入内容上传或备份到我们的服务器——我们没有用于收集这些数据的服务器\n· 不会为训练模型自动上传你的输入；开发者选项中的按键日志默认关闭，只有你主动导出并分享时才会离开设备</string>
+    <string name="s_shuruneirong">输入内容的处理</string>
+    <string name="s_nindesuoyoushuruneirongjinbaoc_31812">按键经 Rime 引擎在本地转换为候选并上屏，全过程不离开设备。智能联想由本地 ONNX 模型离线推理，用户词库与学习记录保存在本机。输入的文本不会写入系统日志，也不会在崩溃时自动上报。</string>
+    <string name="s_bendicunchu">本地存储与保留期</string>
+    <string name="s_ximajiangyonghushezhi_yonghuci_e9dfb">· 设置与用户词库：应用私有目录，保留至你清除或卸载\n· 剪贴板历史：最多 1000 条文本、2000 条快捷发送，可随时清空\n· 调试日志：单文件 5MB、最多 10 个滚动文件；正式版仅记录警告与错误\n· 按键/会话日志：开发者选项，默认关闭；开启后记录按键、输入串与上屏文本（每条最多 64 字符），上限 32MB\n· 下载的模型与输入方案：应用私有目录，可单独删除\n以上数据均位于应用私有目录，其他应用无法读取，卸载应用即全部删除。</string>
+    <string name="s_yingyongquanxian">应用权限</string>
+    <string name="s_yingyongquanxianshuoming">· 振动：按键触感反馈\n· 网络：检查更新、访问市场、下载方案与模型，以及你启用的联网插件\n· 录音：仅在你启动语音输入时使用\n· Wi-Fi 与网络状态：判断网络可用性、局域网直连同步\n· 唤醒锁：下载与同步过程中避免休眠中断\n曦码不申请通讯录、定位、相机、短信等权限。</string>
+    <string name="s_wangluoquanxian">联网与网络访问</string>
+    <string name="s_ximaxuyaowangluoquanxianyongyu_5544d">默认只访问：检查更新（GitHub Releases）、方案与插件市场（index.ximei.me）及其下载地址、联想与语音模型下载源。请求只携带版本号、条目 ID、下载地址等必要信息，不包含输入内容。传输优先使用 HTTPS；应用未强制禁止明文 HTTP，以便连接自建服务，若你填写自定义地址建议使用 HTTPS。</string>
+    <string name="s_kexuanchajian">可选插件</string>
+    <string name="s_kexuanchajianshuoming">语音识别、AI 写作/回复/翻译、词库与剪贴板同步等能力以插件形式提供，需要你主动安装并填写密钥或地址。插件可以读取输入事件（编码、候选、上屏文本）或麦克风音频，并发送到你指定的服务，例如腾讯云、火山引擎、阿里云百炼，或自建的 WebDAV/S3、局域网设备。安装时应用会列出插件声明的能力；插件不随应用更新，具体规则以插件说明与其服务商政策为准。</string>
+    <string name="s_yuyinhemaikefeng">语音与麦克风</string>
+    <string name="s_yuyinhemaikefengshuoming">只有在你点按语音键后才开始录音，停止即结束。使用本地语音模型时，音频在设备内识别、不上传；使用在线语音插件（如腾讯云、火山引擎）时，音频会实时发送给你配置的服务商，并按其政策处理。</string>
+    <string name="s_jiantiebanhetongbu">剪贴板与同步</string>
+    <string name="s_jiantiebangongnengjinzainindes_cfa37">剪贴板历史默认只保存在本机；系统剪贴板仅在键盘显示时读取，用于展示最近条目。同步默认关闭，需安装同步插件（WebDAV、S3、ximed 或局域网直连）；启用后，复制的文本（以及可选的图片）会在你配置的存储或设备之间传输。远端存储的内容对你所选服务的运营方可见，建议使用可信服务并开启 HTTPS。</string>
+    <string name="s_shujugongxiang">数据共享与披露</string>
+    <string name="s_shujugongxiangshuoming">我们不出售、不出租你的个人信息。除以下情形外不向第三方提供：你主动使用插件或同步功能（按你配置的地址传输）；法律法规要求，或司法、行政机关依法提出要求。由于我们不收集你的输入内容，通常也无法向任何一方提供此类数据。</string>
+    <string name="s_shujuanquan">数据安全</string>
+    <string name="s_shujuanquanshuoming">数据保存在应用私有目录，其他应用无权读取；联网传输优先使用 HTTPS/WSS；权限按最小必要原则申请。请注意任何存储与传输都不存在绝对安全，使用自建服务时请自行保管账号、密钥与访问地址。</string>
+    <string name="s_nidekongzhi">你的权利</string>
+    <string name="s_nidekongzhishuoming">你可以随时：在设置中查看与清除词库、剪贴板、日志与已下载模型；关闭联网相关功能；停用或卸载插件；通过备份功能导出词库与设置（保存位置由你选择）；在系统设置中撤回麦克风等权限。清除或卸载后，相应数据无法恢复。</string>
+    <string name="s_weichengnianren">未成年人保护</string>
+    <string name="s_weichengnianrenshuoming">曦码不面向 14 周岁以下儿童单独提供服务，也不会有意收集儿童个人信息。若监护人发现有相关情况，可通过下方渠道联系我们处理。</string>
+    <string name="s_celuegengxin">策略更新与联系</string>
+    <string name="s_celuegengxinshuoming">本策略随功能变化更新，重大变更会在应用内提示。对隐私有疑问或需行使上述权利，可通过 GitHub 仓库 github.com/ximeiorg/Xime 提交 issue，或联系维护者 github.com/kingzcheung。</string>
     <string name="s_kaiyuan">开源</string>
-    <string name="s_ximashikaiyuanruanjian_yuandai_3c8a7">曦码是开源软件，源代码公开可审计。您可以在 GitHub 上查看完整源代码。</string>
-    <string name="s_gengxinriqi_2026nian4yue">更新日期：2026年4月</string>
+    <string name="s_ximashikaiyuanruanjian_yuandai_3c8a7">曦码是开源软件，源代码公开可审计，你可以自行构建并核对上述行为。</string>
+    <string name="s_gengxinriqi_2026nian4yue">更新日期：2026年11月</string>
     <string name="s_yidaoru_gekuaizhao">已导入 %1$s 个快照</string>
     <string name="s_bingwanchenghebing">并完成合并</string>
     <string name="s_yidaoru_tiaocitiao">已导入 %1$s 条词条</string>
@@ -480,6 +500,8 @@
     <string name="s_buchongfanganmabiaozhiwaidecha_f3531">补充方案码表之外的常用短语，随输入方案生效</string>
     <string name="s_tiao">" · %1$s 条"</string>
     <string name="s_fanganzidaidejingtaicibiao_dic_cca30">方案自带的静态词表（.dict.yaml）属于方案本身，请到「输入方案 → 方案词表」查看。</string>
+    <string name="s_zhuyishixiang_5b7c1">注意事项</string>
+    <string name="s_kuozhanfanganzidingyiduan_9a3d2">从方案市场安装的方案，其自带的快捷短语不会随方案卸载自动删除：它们保存在全局的 custom_phrase 中，对所有方案生效。如果某个键突然出现奇怪的首选词，先到「快捷短语」里看看是不是被它占用了。</string>
     <string name="s_kuashebeibanyun_danbencikuyong_176a2">跨设备搬运：单本词库用「用户词库 → 导出/导入文本码表」，与电脑端 rime 同格式；</string>
     <string name="s_duoshebeianshijianchuohebingqi_0f0c1">多设备按时间戳合并请用「同步与备份 → 词库同步」。</string>
     <string name="s_zanwucaijiyangben">暂无采集样本</string>
@@ -533,6 +555,7 @@
     <string name="s_jietu">截图</string>
     <string name="s_bujuyuxianshi">布局与显示</string>
     <string name="s_jianpanbuju">键盘布局</string>
+    <string name="s_qwerty_letter_size">字母键字号</string>
     <string name="s_shitijianpanjiance">实体键盘检测</string>
     <string name="s_guanbihoubujianceshitijianpan_6aaf1">关闭后不检测实体键盘，始终使用屏幕键盘</string>
     <string name="s_hengpingshiyongfentijianpan">横屏使用分体键盘</string>
@@ -732,6 +755,7 @@
     <string name="s_fangwenbeijujue">访问被拒绝</string>
     <string name="s_wangluoshibai">网络失败</string>
     <string name="s_yitingyong">已停用</string>
+    <string name="s_chaoshi">超时</string>
     <string name="s_lianjiezhongduan">连接中断</string>
     <string name="s_you_tiaocuowujilu">有 %1$s 条错误记录</string>
     <string name="s_cuowujilu_tiao">错误记录（%1$s 条）：</string>
@@ -795,6 +819,11 @@
     <string name="s_geshurufangan_gewenjian">%1$s 个输入方案 · %2$s 个文件</string>
     <string name="s_xiezai_2">卸载 (%1$s)</string>
     <string name="s_fanganshichang">方案市场</string>
+    <string name="s_moxingshichang">模型市场</string>
+    <string name="s_qushangdiangengduomoxing">从扩展商店下载智能联想 / 纠错模型</string>
+    <string name="s_chajianshichang">插件市场</string>
+    <string name="s_bujushichang">布局市场</string>
+    <string name="s_qushangdiangengduobuju">从扩展商店下载更多键盘布局</string>
     <string name="s_zanweiqiyongrenhefangan">暂未启用任何方案</string>
     <string name="s_tianjiashurufanganhou_xuyaodia_7ee14">添加输入方案后，需要点击一次「部署方案」进行部署</string>
     <string name="s_meiyouqitakeyongfangan">没有其他可用方案</string>
@@ -835,7 +864,7 @@
     <string name="s_zhinenglianxiang">智能联想</string>
     <string name="s_jiyu_ai_moxingdezhinenglianxia_5cce9">基于 AI 模型的智能联想词预测</string>
     <string name="s_zhinengjiucuo_shiyanxing">智能纠错（实验性）</string>
-    <string name="s_ancuoxianglinjianshigeichujiuz_834ec">按错相邻键时给出纠正候选</string>
+    <string name="s_ancuoxianglinjianshigeichujiuz_834ec">邻键误触时由模型打分纠错</string>
     <string name="s_zaixian_asr_fuwu_xuanzhuangyuy_74a1a">在线 ASR 服务（需安装语音识别插件）</string>
     <string name="s_shujuyutongbu">数据与同步</string>
     <string name="s_tupianjilu_tijixianzhi_zhanyon_fa4c6">图片记录、体积限制、占用清理与剪贴板同步</string>
@@ -1030,4 +1059,106 @@
     <string name="s_wenjianming_shibie_shibai">「%1$s」没能识别出目标词库，请重命名为 &lt;词典名&gt;.txt</string>
     <string name="s_yongmougefangan_daguozi">用某个方案打过字之后，引擎会自动生成对应的 .userdb</string>
     <string name="s_zidingyibeijing">自定义背景</string>
+
+    <!-- 模糊拼音 -->
+    <string name="s_mohupinyin">模糊拼音</string>
+    <string name="s_mohupinyin_jianjie">仅对全拼方案生效：zh/z、n/l、an/ang 等模糊匹配</string>
+    <string name="s_fuzzy_shengmu">声母</string>
+    <string name="s_fuzzy_yunmu">韵母</string>
+    <string name="s_fuzzy_teshu">特殊音节</string>
+    <string name="s_fuzzy_scope_hint">仅对全拼方案生效；双拼、九键、五笔不会被修改。修改后自动应用，可能需要几秒钟。</string>
+    <string name="s_fuzzy_declare_hint">只处理 fuzzy_pinyin.schemas 声明的方案；第三方全拼方案可在 rime/xime.custom.yaml 同路径追加。</string>
+    <string name="s_fuzzy_applying">正在应用…</string>
+    <string name="s_fuzzy_apply">应用</string>
+    <string name="s_fuzzy_pending_apply">有修改未应用，点右上角「应用」后生效。</string>
+    <string name="s_fuzzy_applied_to">已应用到：%1$s</string>
+    <string name="s_fuzzy_none">当前没有可应用的全拼方案</string>
+    <string name="s_fuzzy_transitive_hint">多个开关叠加时可能产生传递匹配；例如同时开启「uan = uang」和「huang = wang」时，wan 也会匹配 huang。</string>
+    <string name="s_fuzzy_apply_failed">应用失败，请稍后重试</string>
+    <string name="s_fuzzy_shiyongfangan">适用方案</string>
+    <string name="s_fuzzy_user_patch_conflict">以下方案已有自定义拼写规则，未自动应用：%1$s</string>
+    <string name="s_fuzzy_rule_z_zh">z = zh</string>
+    <string name="s_fuzzy_rule_c_ch">c = ch</string>
+    <string name="s_fuzzy_rule_s_sh">s = sh</string>
+    <string name="s_fuzzy_rule_g_k">g = k</string>
+    <string name="s_fuzzy_rule_h_f">h = f</string>
+    <string name="s_fuzzy_rule_n_l">n = l</string>
+    <string name="s_fuzzy_rule_r_l">r = l</string>
+    <string name="s_fuzzy_rule_an_ang">an = ang</string>
+    <string name="s_fuzzy_rule_en_eng">en = eng</string>
+    <string name="s_fuzzy_rule_in_ing">in = ing</string>
+    <string name="s_fuzzy_rule_an_ai">an = ai</string>
+    <string name="s_fuzzy_rule_eng_ong">eng = ong</string>
+    <string name="s_fuzzy_rule_ian_iang">ian = iang</string>
+    <string name="s_fuzzy_rule_on_ong">on = ong</string>
+    <string name="s_fuzzy_rule_uan_uang">uan = uang</string>
+    <string name="s_fuzzy_rule_un_ong">un = ong</string>
+    <string name="s_fuzzy_rule_un_iong">un = iong</string>
+    <string name="s_fuzzy_rule_hui_fei">hui = fei</string>
+    <string name="s_fuzzy_rule_huang_wang">huang = wang</string>
+    <string name="s_fuzzy_conflict_n_l_r_l">n = l 与 r = l 同时开启时，n/l/r 会互通。</string>
+    <string name="s_fuzzy_conflict_en_eng_ong">en = eng 与 eng = ong 同时开启时，en/eng/ong 会互通。</string>
+    <string name="s_fuzzy_conflict_un_on_ong">un = ong 与 on = ong 同时开启时，un/on/ong 会互通。</string>
+    <string name="s_fuzzy_conflict_uan_huang">uan = uang 与 huang = wang 同时开启时，wan/wang/huang 会互通。</string>
+
+    <!-- 设备互联（局域网直连） -->
+    <string name="s_shebeihulian">设备互联</string>
+    <string name="s_shebeihulian_shuoming">局域网直连，不经过服务器；两台设备需在同一 WiFi。</string>
+    <string name="s_benjibiaoshi">本机标识</string>
+    <string name="s_peidui">配对</string>
+    <string name="s_xianshipeiduima">显示配对码</string>
+    <string name="s_shurupeiduima">输入配对码</string>
+    <string name="s_peiduima">配对码</string>
+    <string name="s_peiduimatishi">输入对端显示的 6 位配对码</string>
+    <string name="s_dengdaiduifangshuru">等待对端输入配对码…</string>
+    <string name="s_peiduichenggong">配对成功：%1$s</string>
+    <string name="s_peiduishibai">配对失败：%1$s</string>
+    <string name="s_chongxinshengcheng">重新生成</string>
+    <string name="s_yipeiduishebei">已配对设备</string>
+    <string name="s_zanwuyipeiduishebei">还没有已配对设备。先与另一台设备完成配对。</string>
+    <string name="s_yuanshengkuweijiazai">P2P 原生库未加载，当前安装包不包含设备互联能力。</string>
+    <string name="s_qiyongshebeihulian">启用设备互联</string>
+    <string name="s_qiyongshebeihulian_shuoming">在同一 Wi-Fi 下与其他设备直连互传剪贴板，内容端到端加密；已装同步插件时离开局域网会自动改走插件</string>
+    <string name="s_benji">本机</string>
+    <string name="s_shebeimingcheng">设备名称</string>
+    <string name="s_shebeimingcheng_shuoming">配对时在对方设备上显示的名字</string>
+    <string name="s_shebeibiaoqi">设备标识</string>
+    <string name="s_peiduishoubei">配对设备</string>
+    <string name="s_peidui_shuoming">关于配对</string>
+    <string name="s_peidui_shuoming_neirong">配对只建立设备之间的信任关系（认证），不决定同步什么。哪些功能用这条通道，在「剪贴板同步」等对应功能页里勾选。</string>
+    <string name="s_zaijisuanjianshang_xianshi_peiduima">在另一台设备上打开配对界面，选择「输入配对码」，填入上面的数字（60 秒内有效）</string>
+    <string name="s_kaishipeidui">开始配对</string>
+    <string name="s_shurujisuanjianshang_dema">输入配对码</string>
+    <string name="s_zhengzaicha_shebei">正在查找设备…请在对方设备上保持配对界面打开</string>
+    <string name="s_zaijisuanjianshang_daima">生成配对码</string>
+    <string name="s_shebeihulian_yiguanbi">设备互联已关闭：先开启上方开关，再来配对。</string>
+    <string name="s_jiuzhongzhong">（就绪中）</string>
+    <string name="s_yipeiduishebei_shuliang">已配对设备（%1$d）</string>
+    <string name="s_jiechu">解除</string>
+    <string name="s_shuoming_1">• 需要在系统设置中启用本输入法，设备互联依赖输入法服务常驻运行。</string>
+    <string name="s_shuoming_2">• 同步在键盘使用时进行：打开键盘后会自动连上已配对的设备，并取回对方最新的剪贴板内容。</string>
+    <string name="s_shuoming_3">• 剪贴板内容只在两台设备之间加密传输，不经过任何第三方服务器，也不保存历史。</string>
+    <string name="s_shuoming_4">• 只同步纯文本；内容在设备之间端到端加密，默认走局域网直连，不经过服务器。</string>
+    <string name="s_shuoming_5">• 若已安装剪贴板同步插件：离开同一网络或对端离线时自动改走插件，回到局域网后自动切回直连。</string>
+    <string name="s_jintongbuwenzi">仅同步文本</string>
+    <string name="s_lianjie">连接</string>
+    <string name="s_miaohouzidongshixiao">%1$d 秒后失效</string>
+    <string name="s_shanchuipeidui">删除该设备</string>
+
+    <!-- 剪贴板同步传输方式 -->
+    <string name="s_chuanshufangshi">同步通道</string>
+    <string name="s_youxian">优先</string>
+    <string name="s_qingzhishao_gouxuan_yigetongdao">至少勾选一个通道才能同步</string>
+    <string name="s_zidong_tuijian">自动（推荐）</string>
+    <string name="s_zidong_shuoming">优先局域网直连，连不上时自动改走同步插件</string>
+    <string name="s_tongbuchajian">同步插件</string>
+    <string name="s_tongbuchajian_shuoming">通过 WebDAV、ximed 等插件同步</string>
+    <string name="s_juyuwangzhilian">局域网直连</string>
+    <string name="s_juyuwangzhilian_shuoming">不经过服务器，直接连接已配对设备</string>
+
+    <string name="s_weipeidui">未配对设备</string>
+    <string name="s_yipeidui_tai">已配对 %1$d 台</string>
+
+    <string name="s_weiqidong">未启动</string>
+    <string name="s_weilianjiedaoshebei">未连接到设备</string>
 </resources>

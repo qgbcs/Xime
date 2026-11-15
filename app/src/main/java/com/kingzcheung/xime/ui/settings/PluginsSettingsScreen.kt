@@ -125,7 +125,8 @@ fun PluginsSettingsContent(
     onNavigateToPluginMarketDetail: (String) -> Unit = {},
     onNavigateToSpeechToText: () -> Unit = {},
     onNavigateToClipboardSync: () -> Unit = {},
-    onNavigateToBackup: () -> Unit = {}
+    onNavigateToBackup: () -> Unit = {},
+    onNavigateToMarket: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val viewModel: PluginsSettingsViewModel = viewModel()
@@ -188,6 +189,18 @@ fun PluginsSettingsContent(
                             offset = DpOffset(0.dp, 4.dp),
                             shape = RoundedCornerShape(12.dp)
                         ) {
+                            DropdownMenuItem(
+                                text = { Text(tr(R.string.s_chajianshichang)) },
+                                onClick = {
+                                    showMenu = false
+                                    onNavigateToMarket()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.TwoTone.Storefront, null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp))
+                                }
+                            )
                             DropdownMenuItem(
                                 text = { Text(tr(R.string.s_congwenjiananzhuangchajian)) },
                                 onClick = {
@@ -1099,6 +1112,7 @@ internal fun categoryLabel(category: ErrorCategory): String = when (category) {
     ErrorCategory.NETWORK_DENIED -> tr(R.string.s_fangwenbeijujue)
     ErrorCategory.HTTP_ERROR -> tr(R.string.s_wangluoshibai)
     ErrorCategory.TIMEOUT_POISONED -> tr(R.string.s_yitingyong)
+    ErrorCategory.TIMEOUT -> tr(R.string.s_chaoshi)
     ErrorCategory.STREAM_ERROR -> tr(R.string.s_lianjiezhongduan)
     ErrorCategory.OTHER -> tr(R.string.s_qita)
 }

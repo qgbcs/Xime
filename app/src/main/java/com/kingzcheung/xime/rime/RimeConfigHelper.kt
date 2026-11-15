@@ -463,6 +463,52 @@ object RimeConfigHelper {
     }
 
     /**
+     * 老内置安装升级时补齐新增的内置方案文件（当前是 english 方案及其空格 filter）。
+     *
+     * `copyAssetsToRimeDir` 只在 rime 目录为空时整包播种；已有方案内容不会被覆盖，
+     * 所以升级安装必须单独补这些新文件，否则英文方案只存在于 assets、用户永远看不到。
+     * 只对活动包为内置包时执行，避免往第三方方案集里塞内置方案。
+     */
+    fun ensureBuiltinSchemaFiles(context: Context, rimeDir: File): Int =
+        ensureBuiltinSchemaFiles(
+            context = context,
+            rimeDir = rimeDir,
+            activePackageId = SchemeStore.state(context).activePackageId,
+        )
+
+    internal fun ensureBuiltinSchemaFiles(
+        context: Context,
+        rimeDir: File,
+        activePackageId: String,
+    ): Int {
+        if (activePackageId != SchemeFiles.BUILTIN_PACKAGE_ID) {
+            return 0
+        }
+        var restored = 0
+        val englishSchema = File(rimeDir, "english.schema.yaml")
+        val needsEnglishSchema = !englishSchema.isFile || englishSchema.length() == 0L ||
+            !runCatching { englishSchema.readText(Charsets.UTF_8).contains("english_spacing") }
+                .getOrDefault(false)
+        if (needsEnglishSchema) {
+            copyAssetFile(context, "$ASSETS_RIME_DIR/english.schema.yaml", englishSchema)
+            if (englishSchema.isFile && englishSchema.length() > 0L) restored++
+        }
+        for (relative in listOf("english.dict.yaml", "lua/english_spacing.lua")) {
+            val target = File(rimeDir, relative)
+            if (target.isFile && target.length() > 0L) continue
+            copyAssetFile(context, "$ASSETS_RIME_DIR/$relative", target)
+            if (target.isFile && target.length() > 0L) {
+                restored++
+                FileLogger.w(TAG, "Restored upgraded builtin schema file: $relative")
+            }
+        }
+        if (restored > 0) {
+            FileLogger.i(TAG, "ensureBuiltinSchemaFiles: restored $restored english file(s)")
+        }
+        return restored
+    }
+
+    /**
      * 已启用方案引用、但缺 `build/<dict>.table.bin` 的反查词典：librime 只编译方案的
      * 主词典，反查词典要它自己的方案被部署才生成产物。返回 方案 id → 缺失词典名。
      */

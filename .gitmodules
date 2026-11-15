@@ -24,3 +24,6 @@
 [submodule "app/src/main/python/multi_mqtt"]
 	path = app/src/main/python/multi_mqtt
 	url = ../multi_mqtt
+[submodule "third_party/libximep2p"]
+	path = third_party/libximep2p
+	url = https://github.com/ximeiorg/libximep2p.git

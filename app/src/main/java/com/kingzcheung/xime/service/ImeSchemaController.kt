@@ -28,6 +28,13 @@ import kotlinx.coroutines.withContext
  * 中英切换（switchInputMethod）、工具栏编辑动作、键盘高度与浮动模式调整。
  * 共享状态通过 service 引用访问。
  */
+/** 下一个方案 id（循环），列表为空返回 null。 */
+internal fun nextSchemaId(schemaIds: List<String>, currentSchemaId: String): String? {
+    if (schemaIds.isEmpty()) return null
+    val index = schemaIds.indexOf(currentSchemaId)
+    return schemaIds[(index + 1) % schemaIds.size]
+}
+
 internal class ImeSchemaController(private val service: XimeInputMethodService) {
     internal suspend fun switchInputMethod(): Boolean {
         val candState = service.candidateState.value
@@ -268,6 +275,23 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
         if (userPageSize > 0) {
             service.rimeEngine.setPageSize(schemaId, userPageSize)
         }
+    }
+
+    /**
+     * 切到下一个已启用方案（循环）。只有一个方案（或列表尚未就绪）时不做任何事。
+     */
+    internal fun cycleSchema() {
+        val state = service.uiState.value
+        val target = nextSchemaId(state.schemas.map { it.schemaId }, state.currentSchemaId)
+        if (target == null || target == state.currentSchemaId) {
+            FileLogger.i(
+                XimeInputMethodService.TAG,
+                "cycleSchema skipped: current=${state.currentSchemaId}, " +
+                    "enabled=${state.schemas.joinToString { it.schemaId }}"
+            )
+            return
+        }
+        switchSchema(target)
     }
 
     internal fun switchSchema(schemaId: String) {

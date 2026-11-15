@@ -63,6 +63,8 @@ data class SchemaSwitch(
     val options: List<String> = emptyList(),
     val states: List<String> = emptyList(),
     val abbrev: List<String> = emptyList(),
+    /** 方案声明的默认值（`reset`），未声明为 null。 */
+    val reset: Int? = null,
 )
 
 @Serializable
@@ -628,6 +630,28 @@ object SchemaManager {
         return parseSchemaSwitches(file)
     }
 
+    /**
+     * 方案是否声明默认英文（`switches` 中 `ascii_mode` 的 `reset: 1`）。
+     *
+     * 纯英文方案靠这个标记在切换方案/新输入会话时保持英文；
+     * 普通中文方案的 `ascii_mode` 没有 reset 或为 0，不受影响。
+     */
+    fun isAsciiDefaultSchema(context: Context, schemaId: String): Boolean =
+        schemaSwitchReset(context, schemaId, "ascii_mode") == 1
+
+    /**
+     * 读取方案某个 boolean switch 声明的 `reset`（未声明返回 null）。
+     *
+     * 让「进入方案用什么默认状态」由方案 yaml 决定，而不是在 Android 层按方案名硬编码：
+     * `ascii_mode reset: 1` = 默认英文，`ascii_punct reset: 1` = 保留方案自己的标点默认值。
+     */
+    fun schemaSwitchReset(context: Context, schemaId: String, switchName: String): Int? {
+        if (schemaId.isEmpty()) return null
+        return getSchemaSwitches(context, schemaId)
+            .firstOrNull { it.name == switchName }
+            ?.reset
+    }
+
     /** 纯解析：从 .schema.yaml 读取 switches。 */
     internal fun parseSchemaSwitches(file: File): List<SchemaSwitch> {
         return try {
@@ -653,9 +677,14 @@ object SchemaManager {
             ?.items?.mapNotNull { (it as? YamlScalar)?.content }
             .orEmpty()
         val abbrev = parseAbbrev(entry["abbrev"])
+        val reset = (entry["reset"] as? YamlScalar)?.content?.toIntOrNull()
         return when {
-            name.isNotBlank() -> SchemaSwitch(name = name, options = emptyList(), states = states, abbrev = abbrev)
-            options.isNotEmpty() -> SchemaSwitch(name = "", options = options, states = states, abbrev = abbrev)
+            name.isNotBlank() -> SchemaSwitch(
+                name = name, options = emptyList(), states = states, abbrev = abbrev, reset = reset
+            )
+            options.isNotEmpty() -> SchemaSwitch(
+                name = "", options = options, states = states, abbrev = abbrev, reset = reset
+            )
             else -> null
         }
     }
@@ -690,7 +719,7 @@ object SchemaManager {
     }
 
     /** 内置方案（保持默认启用顺序）。 */
-    internal val BUILTIN_SCHEMAS = listOf("wubi86", "wubi86_pinyin", "pinyin_simp", "t9_pinyin")
+    internal val BUILTIN_SCHEMAS = listOf("wubi86", "wubi86_pinyin", "pinyin_simp", "t9_pinyin", "english")
 
     /**
      * 启用方案列表（真相在 prefs，由 [com.kingzcheung.xime.scheme.SchemeStore] 维护）。
@@ -773,18 +802,28 @@ object SchemaManager {
         val headerIdx = lines.indexOfFirst { it.trim() == "schema_list:" }
         if (headerIdx < 0) return text to emptyList()
         var end = headerIdx + 1
+        // 最后一个确定属于块内的行（列表项）。注释/空行先挂起：后面还有列表项就归入
+        // 块内一并剥离，遇到块外键则回退到这里结束——块尾的注释/空行因此原样保留。
+        // 曾因遇注释行直接中断，schema_list 里带分组注释（如「# ── 双拼 ──」）时
+        // 只剥一半，剩余 `- schema:` 条目留在 patch 下使整份 YAML 失效、用户补丁被忽略。
+        var lastItemIdx = headerIdx
         val schemas = mutableListOf<String>()
         while (end < lines.size) {
             val trimmed = lines[end].trim()
             if (trimmed.startsWith("- schema:")) {
                 val id = trimmed.removePrefix("- schema:").trim()
                 if (id.isNotEmpty()) schemas.add(id)
-            } else if (!trimmed.startsWith("-")) {
+                lastItemIdx = end
+            } else if (trimmed.startsWith("-")) {
+                lastItemIdx = end
+            } else if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                // 挂起，等下一行裁决归属
+            } else {
                 break
             }
             end++
         }
-        val rebuilt = lines.subList(0, headerIdx) + lines.subList(end, lines.size)
+        val rebuilt = lines.subList(0, headerIdx) + lines.subList(lastItemIdx + 1, lines.size)
         var result = rebuilt.joinToString(sep)
         if (text.endsWith("\n") && !result.endsWith("\n")) result += sep
         return result to schemas
@@ -1006,6 +1045,8 @@ object SchemaManager {
         schemeId: String,
         fileName: String,
         expectedSha256: String? = null,
+        /** 响应未带 Content-Length 时用于进度回调的总量（来自索引或预探测）。 */
+        expectedTotal: Long = 0L,
         onProgress: (Long, Long) -> Unit = { _, _ -> },
     ): DownloadResult = withContext(Dispatchers.IO) {
         val wakeLock = (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
@@ -1023,7 +1064,8 @@ object SchemaManager {
                     return@withContext DownloadResult(false)
                 }
                 val body = response.body ?: return@withContext DownloadResult(false)
-                val totalBytes = body.contentLength()
+                // chunked 响应没有 Content-Length，用调用方给的总量兜底，否则全程无进度回调
+                val totalBytes = body.contentLength().takeIf { it > 0 } ?: expectedTotal
                 var downloadedBytes = 0L
                 val md = if (!expectedSha256.isNullOrBlank()) MessageDigest.getInstance("SHA-256") else null
                 body.byteStream().use { input ->
