@@ -162,6 +162,13 @@ EVENTS = (
     "keyboard_shown",
     "keyboard_hidden",
     "clipboard_changed",
+    # 输入法事件（ImeEventBridge）：按键合批 / 剪贴板文本 / 语音录音文件
+    # ime_keys        {"items": [[ts, key, shifted], ...], "dropped": n}
+    # clipboard_text  {"ts": ms, "text": str}
+    # speech_recorded {"ts": ms, "path": str, "text": str, "started_ms": ms, "duration_ms": ms}
+    "ime_keys",
+    "clipboard_text",
+    "speech_recorded",
 )
 
 # ---- 任务函数注册表：name -> callable() -> object（少量内置示例函数） ----
@@ -646,11 +653,14 @@ def test_event(event, payload=None):
 
 # ============================ 事件入口（Kotlin 回调） ============================
 
-def fire_event(event_name, payload=None, source="system"):
-    """Kotlin NetworkEventMonitor 的回调入口，也可被 RPC 模拟。
+def fire_event(event_name, payload=None, source="system", record=True):
+    """Kotlin 事件回调入口，也可被 RPC 模拟。
 
     必须快速返回：只记账并入队，匹配任务的执行在串行守护线程完成，
     避免阻塞 Android 网络回调线程 / Chaquopy 调用线程。
+
+    record=False：高频事件（如 ime_keys 按键合批）不写 recent_events 环形
+    缓冲、不 print，避免刷掉系统事件与拖慢调用方；任务派发完全不受影响。
     """
     if isinstance(payload, str):
         try:
@@ -660,15 +670,17 @@ def fire_event(event_name, payload=None, source="system"):
     if not isinstance(payload, dict):
         payload = None if payload is None else {"value": payload}
 
-    rec = {"ts": time.strftime("%H:%M:%S"),
-           "epoch": round(time.time(), 3),
-           "event": str(event_name),
-           "source": source,
-           "payload": payload}
+    if record:
+        rec = {"ts": time.strftime("%H:%M:%S"),
+               "epoch": round(time.time(), 3),
+               "event": str(event_name),
+               "source": source,
+               "payload": payload}
     with _LOCK:
-        _RECENT_EVENTS.append(rec)
-        if len(_RECENT_EVENTS) > _RECENT_MAX:
-            del _RECENT_EVENTS[:-_RECENT_MAX]
+        if record:
+            _RECENT_EVENTS.append(rec)
+            if len(_RECENT_EVENTS) > _RECENT_MAX:
+                del _RECENT_EVENTS[:-_RECENT_MAX]
         if not _LOADED:
             # init 还没载入任务表：先缓存，等 init 末尾按原顺序补发，避免丢事件
             _PRE_INIT_EVENTS.append((str(event_name), payload, source))
@@ -684,8 +696,9 @@ def fire_event(event_name, payload=None, source="system"):
     _ensure_event_worker()
     for tid in matches:
         _EVENT_Q.put((event_name, payload, tid))
-    print(f"[task_manager] event={event_name} source={source} "
-          f"payload={payload} matched={matches}")
+    if record:
+        print(f"[task_manager] event={event_name} source={source} "
+              f"payload={payload} matched={matches}")
     return {"ok": True, "event": event_name, "matched": matches,
             "queue": _EVENT_Q.qsize()}
 

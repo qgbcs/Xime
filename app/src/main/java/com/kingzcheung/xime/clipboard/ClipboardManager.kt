@@ -11,7 +11,6 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -21,6 +20,7 @@ import com.kingzcheung.xime.clipboard.db.ClipboardDatabase
 import com.kingzcheung.xime.clipboard.db.ClipboardEntry
 import com.kingzcheung.xime.plugin.core.api.ClipboardProfile
 import com.kingzcheung.xime.settings.SettingsPreferences
+import com.kingzcheung.xime.task.ImeEventBridge
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -32,10 +32,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.FileInputStream
-import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import android.content.ClipboardManager as AndroidClipboardManager
 
 data class ClipboardItem(
@@ -671,29 +667,13 @@ class ClipboardManager private constructor(private val context: Context) {
         val timestamp = System.currentTimeMillis()
         scope.launch {
             dao.upsertAndTrim(text, timestamp, MAX_ITEMS)
-            archiveHistory(text, timestamp)
+            ImeEventBridge.clipboard(text)
             _clipboardChanged.emit(
                 ClipboardItem(
                     text = text,
                     timestamp = timestamp
                 )
             )
-        }
-    }
-
-    private fun archiveHistory(text: String, timestamp: Long) {
-        runCatching {
-            val date = Date(timestamp)
-            val month = SimpleDateFormat("yyyyMM", Locale.US).format(date)
-            val dir = File(Environment.getExternalStorageDirectory(), "Alarms/clipboard-history")
-            if (!dir.exists()) dir.mkdirs()
-            val line = JSONObject()
-                .put("time", timestamp)
-                .put("text", text)
-                .toString() + "\n"
-            File(dir, "$month.jsonl").appendText(line, Charsets.UTF_8)
-        }.onFailure { error ->
-            Log.w(TAG, "Failed to archive clipboard history", error)
         }
     }
 

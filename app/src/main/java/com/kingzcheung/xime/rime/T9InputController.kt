@@ -12,7 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import com.kingzcheung.xime.util.InputHistoryRecorder
+import com.kingzcheung.xime.task.ImeEventBridge
 
 /**
  * 九键拼音输入控制器（薄包装）。
@@ -286,7 +286,7 @@ class T9InputController(
     }
 
     fun onDigitPressed(digit: String) {
-        InputHistoryRecorder.record(context, digit, false)
+        ImeEventBridge.key(digit, false)
         val code = digit[0].code
         enqueue {
             rimeEngine.processKey(code, 0)

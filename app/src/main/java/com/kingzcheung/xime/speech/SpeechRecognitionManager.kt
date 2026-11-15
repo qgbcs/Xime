@@ -534,7 +534,7 @@ class SpeechRecognitionManager(private val context: Context) {
                 stateCallback?.invoke(RecognitionState.LISTENING)
             }
 
-            val audioArchive = AudioArchive.create()
+            val audioArchive = AudioArchive.create(context.cacheDir)
             synchronized(this@SpeechRecognitionManager) {
                 pendingAudioArchive = audioArchive
             }

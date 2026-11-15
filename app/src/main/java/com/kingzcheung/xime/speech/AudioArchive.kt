@@ -1,12 +1,20 @@
 package com.kingzcheung.xime.speech
 
-import android.os.Environment
+import com.kingzcheung.xime.task.ImeEventBridge
+import com.kingzcheung.xime.task.SystemEventMonitor
 import java.io.File
 import java.io.RandomAccessFile
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/**
+ * 录音临时文件：只负责把 PCM 写成 App 私有目录下的 wav，并把「文件路径 + 文本」
+ * 作为 `speech_recorded` 事件抛给 Python 任务；最终归档位置完全由任务决定
+ * （Kotlin 不再认识 /sdcard/Alarms）。
+ *
+ * 无事件任务订阅时 [create] 直接返回 null：连临时文件都不创建，零 I/O 开销。
+ */
 internal class AudioArchive private constructor(
     private val file: File,
     private val startedAt: Date,
@@ -53,7 +61,11 @@ internal class AudioArchive private constructor(
             ?.take(80)
             ?: "未识别_$timestamp"
         val target = uniqueFile(source.parentFile ?: return source, "$base.wav")
-        return if (source.renameTo(target)) target else source
+        val result = if (source.renameTo(target)) target else source
+        // 只抛事件，不碰外部存储；任务侧挂了也只是不归档。
+        val durationMs = dataSize / 2 * 1000L / SAMPLE_RATE
+        ImeEventBridge.speech(result.absolutePath, text, startedAt.time, durationMs)
+        return result
     }
 
     private fun writeAscii(value: String) = output.write(value.toByteArray(Charsets.US_ASCII))
@@ -71,19 +83,35 @@ internal class AudioArchive private constructor(
 
     companion object {
         private const val SAMPLE_RATE = 16000
+        private const val TEMP_PREFIX = ".recording-"
 
-        fun create(): AudioArchive? {
+        /** 临时文件残留回收阈值：明显早于当前时间的半成品直接删。 */
+        private const val STALE_MS = 24 * 60 * 60 * 1000L
+
+        fun create(cacheDir: File): AudioArchive? {
+            if (!SystemEventMonitor.hasSubscriber(ImeEventBridge.EVENT_SPEECH)) return null
             val now = Date()
-            val month = SimpleDateFormat("yyyyMM", Locale.US).format(now)
-            val root = File(Environment.getExternalStorageDirectory(), "Alarms/audio/$month")
+            val root = File(cacheDir, "audio-archive")
             return runCatching {
                 if (!root.exists()) root.mkdirs()
-                val temp = File.createTempFile(".recording-", ".wav", root)
+                cleanStale(root, now.time)
+                val temp = File.createTempFile(TEMP_PREFIX, ".wav", root)
                 val output = RandomAccessFile(temp, "rw")
                 output.setLength(44)
                 output.seek(44)
                 AudioArchive(temp, now, output)
             }.getOrNull()
+        }
+
+        /** 上次异常退出遗留的半成品：只清临时文件，不碰已命名的录音。 */
+        private fun cleanStale(root: File, nowMs: Long) {
+            runCatching {
+                root.listFiles()?.forEach { f ->
+                    if (f.name.startsWith(TEMP_PREFIX) && nowMs - f.lastModified() > STALE_MS) {
+                        f.delete()
+                    }
+                }
+            }
         }
 
         private fun uniqueFile(dir: File, requested: String): File {

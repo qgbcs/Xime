@@ -11,10 +11,10 @@ import com.kingzcheung.xime.rime.candidateSelectionLeavesComposition
 import com.kingzcheung.xime.rime.canProbeDanglingTail
 import com.kingzcheung.xime.rime.hasRemainingCandidateComposition
 import com.kingzcheung.xime.settings.SettingsPreferences
+import com.kingzcheung.xime.task.ImeEventBridge
 import com.kingzcheung.xime.ui.keyboard.KeyboardLayoutState
 import com.kingzcheung.xime.ui.keyboard.isT9Schema
 import com.kingzcheung.xime.util.FileLogger
-import com.kingzcheung.xime.util.InputHistoryRecorder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -37,7 +37,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
     )
 
     internal fun handleKeyPress(key: String, isShifted: Boolean) {
-        InputHistoryRecorder.record(service, key, isShifted)
+        ImeEventBridge.key(key, isShifted)
         if (service.uiState.value.quickSendFormFocused) {
             when (key) {
                 "enter" -> {

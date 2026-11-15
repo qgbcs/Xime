@@ -63,6 +63,7 @@ GPS / 围栏 / 活动 / GNSS 另有 **20 个**事件，由 `LocationEventMonitor
 | 存储 / USB / 外设 | `media_mounted`、`media_unmounted`、`media_removed`、`media_bad_removal`、`media_eject`、`storage_low`、`storage_ok`、`usb_state_changed` |
 | 系统 / 时间 / 配置 | `shutdown`、`locale_changed`、`time_changed`、`timezone_changed`、`time_tick`、`next_alarm_changed`、`configuration_changed`、`wallpaper_changed`、`user_switched`、`input_method_changed`、`location_mode_changed` |
 | 应用 / 传感器 / 剪贴板 | `package_added`、`package_removed`、`package_replaced`、`light_changed`、`proximity_changed`、`pressure_changed`、`clipboard_changed` |
+| 输入法（`ImeEventBridge`，由 RPC 事件任务消费） | `ime_keys`、`clipboard_text`、`speech_recorded` |
 
 要点：
 
@@ -75,6 +76,14 @@ GPS / 围栏 / 活动 / GNSS 另有 **20 个**事件，由 `LocationEventMonitor
   间隔存在抖动，原因与读法见〈时间语义与观测陷阱〉。
 - 传感器类（`light/proximity/pressure`）有 1 秒去抖；`clipboard_changed` 只在输入法
   可见时产生，payload 只有 `has_text`/`length`，**不落剪贴板内容**。
+- 输入法事件来自 `ImeEventBridge`，**主流程只做一次订阅判断 + O(1) 入队**，JSON 序列化、
+  Python 调用与文件 I/O 全部在独立 `ime-event-bridge` 线程完成；无任务订阅时直接返回，零开销。
+  - `ime_keys`：200ms 合批，payload `items=[[ts,key,shifted],...]` + `dropped`（丢弃的最旧条数）；
+    单批上限 200 条。该事件**不写** `recent_events` 环形缓冲（`record=False`），避免刷掉系统事件。
+  - `clipboard_text`：`ts`、`text`（剪贴板内容，由任务决定是否落盘）。
+  - `speech_recorded`：`path`（App 私有 cache 下 `audio-archive/` 的 wav 临时文件）、`text`、
+    `started_ms`、`duration_ms`；任务负责把文件 move 到最终位置，Kotlin 不再硬编码目录。
+    无 `speech_recorded` 订阅时连临时文件都不创建。
 - `brightness/volume/keyboard` 来自 ContentObserver / 输入法回调；`time_tick`、
   `battery_changed` 这类高频事件默认只记账，不进 Python（见下节）。
 

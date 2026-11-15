@@ -142,6 +142,10 @@ object SystemEventMonitor {
         synchronized(lock) { log.clear() }
     }
 
+    /** 供其它 Kotlin 事件源（如 ImeEventBridge）做零开销订阅判断。 */
+    @JvmStatic
+    fun hasSubscriber(name: String): Boolean = registered.contains(name)
+
     /** 当前生效的 Python 订阅集合（调试用，JSON 数组字符串）。 */
     @JvmStatic
     fun getRegisteredEvents(): String {
