@@ -56,6 +56,44 @@ class XimeApplication : Application(), ImageLoaderFactory {
 
     private val applicationScope = CoroutineScope(Dispatchers.IO)
 
+    /** 主题配置只会解析一次：Activity 首帧回调与 2s 兜底可能同时触发。 */
+    private val themeLoadRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * 异步加载 xime.yaml 的主题配置（89KB、30+ 色板，解析 1~2s）。
+     * 必须在首帧之后调用：与 Compose 首次组合并行会把它拖慢约一倍。
+     * 失败只降级为内置默认色板，绝不影响启动与 MQTT/HTTP RPC 主流程。
+     */
+    fun ensureBackgroundWarmup() {
+        if (!themeLoadRequested.compareAndSet(false, true)) return
+        applicationScope.launch {
+            try {
+                val themeId = KeysConfigHelper.loadDefaultThemeId(this@XimeApplication)
+                val darkMode = KeysConfigHelper.loadDefaultDarkMode(this@XimeApplication)
+                SettingsPreferences.defaultKeyboardTheme = themeId
+                SettingsPreferences.defaultDarkMode = darkMode
+                KeyboardThemes.initFromConfig(this@XimeApplication)
+            } catch (t: Throwable) {
+                com.kingzcheung.xime.util.FileLogger.w(
+                    "XimeApp", "主题配置异步加载失败，沿用内置默认: ${t.javaClass.simpleName}"
+                )
+            } finally {
+                KeyboardThemes.markConfigReady()
+            }
+            // 按设置显示或隐藏桌面图标（默认显示）：幂等的组件开关，一并放到后台
+            try {
+                LauncherIconController.syncFromPreference(this@XimeApplication)
+            } catch (t: Throwable) {
+                com.kingzcheung.xime.util.FileLogger.w(
+                    "XimeApp", "LauncherIconController 同步失败: ${t.javaClass.simpleName}"
+                )
+            }
+            // 词库部署/引擎预热放到首帧之后：首次安装要解压 15MB 词库并编译，
+            // 与 Compose 首帧并行会把白屏拉长一倍。输入法服务自身仍会按需初始化。
+            preInitializeRimeEngine()
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
 
@@ -134,20 +172,17 @@ class XimeApplication : Application(), ImageLoaderFactory {
         
         ExtensionManager.initialize(this)
 
-        // 从 xime.yaml 加载配色方案
-        KeyboardThemes.initFromConfig(this)
-
-        // 从 xime.yaml 的 style 读取默认主题和显示模式
-        SettingsPreferences.defaultKeyboardTheme = KeysConfigHelper.loadDefaultThemeId(this)
-        SettingsPreferences.defaultDarkMode = KeysConfigHelper.loadDefaultDarkMode(this)
-
-        // 按设置显示或隐藏桌面图标（默认显示）。
-        LauncherIconController.syncFromPreference(this)
+        // 主题配置（89KB xime.yaml，解析 1~2s）推迟到首帧之后再做：
+        // 主线程在 Activity 首帧绘制完成后调 ensureThemeConfigLoad()；
+        // 纯输入法进程没有 Activity，2s 后兜底启动，保证键盘也能拿到用户主题。
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+            { ensureBackgroundWarmup() }, 2000
+        )
 
         // 初始化模型运行时（内存管理 + 生命周期）
         ModelRuntime.attach(this)
 
-        preInitializeRimeEngine()
+        // 词库部署/引擎预热已改到 ensureBackgroundWarmup() 里、首帧之后执行
     }
     
     private fun isMainProcess(): Boolean {

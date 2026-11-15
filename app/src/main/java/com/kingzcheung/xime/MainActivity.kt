@@ -19,11 +19,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -40,6 +42,7 @@ import com.kingzcheung.xime.settings.SchemaManager
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kingzcheung.xime.ui.settings.SettingsScreen
 import com.kingzcheung.xime.ui.settings.SetupWizardScreen
+import com.kingzcheung.xime.ui.theme.KeyboardThemes
 import com.kingzcheung.xime.ui.theme.XimeTheme
 import com.kingzcheung.xime.util.PermissionHelper
 import kotlinx.coroutines.CoroutineScope
@@ -124,6 +127,20 @@ class MainActivity : ComponentActivity() {
             var wizardToSettings by remember { mutableStateOf(false) }
             var darkMode by remember { mutableIntStateOf(SettingsPreferences.getDarkMode(context)) }
             var keyboardTheme by remember { mutableStateOf(SettingsPreferences.getKeyboardTheme(context)) }
+
+            // 主题配置（89KB xime.yaml）在 Application 的 IO 线程解析。这里等首帧绘制完成后再启动解析，
+            // 避免与 Compose 首次组合抢 CPU；解析完成后 configReady 翻转，再补一次主题/显示模式。
+            val themeConfigReady = KeyboardThemes.configReady
+            LaunchedEffect(Unit) {
+                withFrameNanos { }
+                (context.applicationContext as? XimeApplication)?.ensureBackgroundWarmup()
+            }
+            LaunchedEffect(themeConfigReady) {
+                if (themeConfigReady) {
+                    darkMode = SettingsPreferences.getDarkMode(context)
+                    keyboardTheme = SettingsPreferences.getKeyboardTheme(context)
+                }
+            }
             
             val isDarkTheme = when (darkMode) {
                 2 -> isSystemInDarkTheme()

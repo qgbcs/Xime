@@ -129,7 +129,20 @@ object KeyboardThemes {
     private var themesCache by mutableStateOf(defaultThemes)
     private var themesMapCache: Map<String, KeyboardColorScheme> = defaultThemes.associateBy { it.id }
 
-    /** 从配置文件加载主题覆盖项。应在 Application.onCreate 中调用。 */
+    /**
+     * 配置是否已加载完成。
+     * xime.yaml 的解析在 IO 线程异步进行（见 XimeApplication），UI 先以内置默认色板出首帧；
+     * 加载结束后本状态翻转，组合中读取它的 Composable 会自动重组并取到用户配置的主题。
+     */
+    var configReady by mutableStateOf(false)
+        private set
+
+    /** 标记配置加载结束（成功/失败都调用，避免 UI 永远等不到刷新）。 */
+    fun markConfigReady() {
+        configReady = true
+    }
+
+    /** 从配置文件加载主题覆盖项。由 XimeApplication 在 IO 线程调用。 */
     fun initFromConfig(context: Context) {
         reload(context)
     }
@@ -148,6 +161,7 @@ object KeyboardThemes {
             .filterNotNull()
         themesCache = overridden + newThemes
         themesMapCache = themesCache.associateBy { it.id }
+        configReady = true
     }
 
     /**
