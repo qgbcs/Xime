@@ -108,9 +108,20 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             displayComments = display.displayComments
             isComposing = display.isComposing
         } else {
-            // 部分选中的候选保持在 composing 区；Rime 只处理尚未选择的尾码。
-            // 普通输入仍显示原始输入，避免显示 speller 展开的编码。
-            displayText = if (partialCandidateText.isNotEmpty()) partialCandidateText else inputText
+            // 原生分段选词：Rime 会在 preedit 中保留已确认片段（如“伟guang zheng”），
+            // 此时展示 preedit 才能看到已选中文字与剩余编码的边界。
+            // 普通输入（preedit 只是 speller 展开）仍显示原始输入。
+            val lowerInput = inputText.lowercase()
+            val hasExtraContent = preeditText.any { c ->
+                !c.isWhitespace() && c != '\'' && !lowerInput.contains(c.lowercaseChar())
+            }
+            displayText = if (partialCandidateText.isNotEmpty()) {
+                partialCandidateText
+            } else if (preeditText.isNotEmpty() && hasExtraContent) {
+                preeditText
+            } else {
+                inputText
+            }
             displayCandidates = filteredTexts
             displayComments = filteredComments
             isComposing = inputText.isNotEmpty() || partialCandidateText.isNotEmpty()

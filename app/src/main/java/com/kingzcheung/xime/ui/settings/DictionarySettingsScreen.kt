@@ -64,6 +64,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kingzcheung.xime.settings.DictEntry
 import com.kingzcheung.xime.viewmodel.CustomPhraseUiState
 import com.kingzcheung.xime.viewmodel.CustomPhraseViewModel
+import com.kingzcheung.xime.viewmodel.LearnedWordUiState
+import com.kingzcheung.xime.viewmodel.LearnedWordViewModel
 import com.kingzcheung.xime.viewmodel.PersonalDictUiState
 import com.kingzcheung.xime.viewmodel.PersonalDictViewModel
 
@@ -79,6 +81,12 @@ fun DictionarySettingsContent(
     val customPhraseVM: CustomPhraseViewModel = viewModel(key = "dict_custom_phrase")
     val customPhraseState by customPhraseVM.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(uiState.selectedSchema) { customPhraseVM.setSchema(uiState.selectedSchema) }
+    val learnedVM: LearnedWordViewModel = viewModel(key = "dict_learned_word")
+    val learnedState by learnedVM.uiState.collectAsStateWithLifecycle()
+    // 学习词需要读 userdb，只在真正切到该页签时才读，避免开页就触发重读。
+    LaunchedEffect(selectedDictTab, uiState.selectedSchema) {
+        if (selectedDictTab == 3) learnedVM.setSchema(uiState.selectedSchema, force = true)
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -139,11 +147,14 @@ fun DictionarySettingsContent(
                 TabButton("个人词库", selected = selectedDictTab == 1, onClick = { selectedDictTab = 1 }, modifier = Modifier.weight(1f))
                 Spacer(modifier = Modifier.width(8.dp))
                 TabButton("方案词库", selected = selectedDictTab == 2, onClick = { selectedDictTab = 2 }, modifier = Modifier.weight(1f))
+                Spacer(modifier = Modifier.width(8.dp))
+                TabButton("学习词", selected = selectedDictTab == 3, onClick = { selectedDictTab = 3 }, modifier = Modifier.weight(1f))
             }
             when (selectedDictTab) {
                 0 -> CustomPhraseTabContent(viewModel = customPhraseVM, uiState = customPhraseState)
                 1 -> SchemaDictContent(viewModel = viewModel, uiState = uiState)
                 2 -> SchemaDictBrowserPanel()
+                3 -> LearnedWordTabContent(viewModel = learnedVM, uiState = learnedState)
             }
         }
     }
@@ -400,6 +411,84 @@ private fun PhraseEditDialog(
                 }
             }
             Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun LearnedWordTabContent(
+    viewModel: LearnedWordViewModel,
+    uiState: LearnedWordUiState
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Spacer(modifier = Modifier.height(12.dp))
+        Surface(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            shape = RoundedCornerShape(28.dp),
+            tonalElevation = 2.dp,
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Search, contentDescription = null,
+                    tint = if (uiState.searchQuery.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp))
+                Spacer(modifier = Modifier.width(12.dp))
+                BasicTextField(value = uiState.searchQuery, onValueChange = { viewModel.setSearchQuery(it) },
+                    modifier = Modifier.weight(1f), singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                    decorationBox = { innerTextField ->
+                        Box { if (uiState.searchQuery.isEmpty()) Text("搜索", color = MaterialTheme.colorScheme.onSurfaceVariant); innerTextField() }
+                    })
+                if (uiState.searchQuery.isNotEmpty()) {
+                    IconButton(onClick = { viewModel.clearSearch() }, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Default.Clear, contentDescription = "清除", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+        }
+
+        if (uiState.isLoading) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        } else {
+            Text("共 ${uiState.entries.size} 条${if (uiState.searchQuery.isNotEmpty()) "，搜索结果 ${uiState.filteredEntries.size} 条" else ""}",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+
+            if (uiState.entries.isEmpty()) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("暂无学习词", style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text("输入并选词后会出现：Rime 用户词典（${uiState.userDictName ?: "userdb"}）与自动学习表",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            } else if (uiState.filteredEntries.isEmpty()) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text("未找到匹配条目", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp)) {
+                    itemsIndexed(items = uiState.filteredEntries,
+                        key = { i, e -> "${e.source.name}_${e.word}_${e.code}_$i" }) { _, entry ->
+                        Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(entry.word, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                                    Text(entry.code, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                                }
+                                Text("${entry.source.label} · ${entry.score}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

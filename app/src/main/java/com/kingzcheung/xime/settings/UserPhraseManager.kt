@@ -176,6 +176,19 @@ object UserPhraseManager {
         return loaded
     }
 
+    /**
+     * 读取当前方案的自动学习词条（含编码与分值），供「词库管理 → 学习词」展示。
+     * 与 [getAutoPhrases] 共用同一份缓存，不额外读磁盘。
+     */
+    @Synchronized
+    internal fun getAutoPhraseEntries(
+        context: Context,
+        schemaId: String,
+    ): List<LearnedCandidateEntry> {
+        if (schemaId.isBlank()) return emptyList()
+        return getEntries(context, schemaId)
+    }
+
     /** 读取当前方案的自动学习词（分值降序），首次访问从磁盘载入内存。 */
     @Synchronized
     fun getAutoPhrases(context: Context, schemaId: String): List<String> {

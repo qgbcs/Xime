@@ -6,7 +6,6 @@ import android.view.inputmethod.EditorInfo
 import com.kingzcheung.xime.association.AssociationManager
 import com.kingzcheung.xime.keyboard.OverlayRoute
 import com.kingzcheung.xime.rime.resolveRimeCandidateIndex
-import com.kingzcheung.xime.rime.resolveCandidateInputPrefix
 import com.kingzcheung.xime.rime.candidateSelectionLeavesComposition
 import com.kingzcheung.xime.rime.canProbeDanglingTail
 import com.kingzcheung.xime.rime.hasRemainingCandidateComposition
@@ -195,10 +194,16 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                     if (candState.isComposing) {
                         // T9 模式提交完整预编辑（含 partial commit 累积），非 T9 模式用 RIME input。
                         val isT9 = isT9Schema(state.currentSchemaId)
-                        val input = if (isT9 && candState.preeditText.isNotEmpty()) {
-                            candState.preeditText
-                        } else {
-                            service.rimeEngine.getInput()
+                        // 原生分段选词时 preedit 含已确认中文（如 伟光zheng），回车上屏该文本；
+                        // 纯编码输入仍原样上屏 RIME input。
+                        val nativeConfirmed = !isT9 && candState.preeditText.any {
+                            it.code in 0x4E00..0x9FFF
+                        }
+                        val input = when {
+                            isT9 && candState.preeditText.isNotEmpty() -> candState.preeditText
+                            nativeConfirmed && candState.preeditText.isNotEmpty() ->
+                                candState.preeditText.filterNot { it.isWhitespace() }
+                            else -> service.rimeEngine.getInput()
                         }
                         val pendingCandidateText = if (isT9) "" else {
                             service.partialCandidateSegments.joinToString("") { it.text }
@@ -212,7 +217,9 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                             // 中文（非 T9、非英文直输）模式下按回车没选候选、把一长串字母原样上屏：
                             // 自动学习进当前方案 custom_phrase，下次敲该串即出现在候选栏。
                             // 行为不变（原文照常上屏），学习在后台异步进行。
-                            if (!isT9 && pendingCandidateText.isEmpty() && !state.isAsciiMode) {
+                            if (!isT9 && pendingCandidateText.isEmpty() && !state.isAsciiMode &&
+                                !nativeConfirmed
+                            ) {
                                 com.kingzcheung.xime.settings.UserPhraseManager
                                     .learnRawCommit(service, state.currentSchemaId, input)
                             }
@@ -877,15 +884,6 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         } else {
             null
         }
-        if (candidatePreview != null && selectedCandidate != null) {
-            val partialOutcome = retainCandidatePrefix(
-                baseIndex,
-                selectedCandidate,
-                expectedComment,
-                candidatePreview,
-            )
-            if (partialOutcome != null) return partialOutcome
-        }
 
         // 非 T9 且 candidate preview 可用时，才探测尾部无法成词的悬空字母（如 hgi 的 i）。
         // Preview 缺失时禁止 setInput 探测，直接走候选身份选择与下方的部分组合检查。
@@ -894,7 +892,11 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         // 故在选词【之前】先用 setInput 探测剥掉悬空尾码，再干净选词上屏并追加尾码字面量。
         // 探测期间若选中前缀候选但没有 commit，Rime 已留下 confirmed segment；恢复原输入前
         // 必须 clearComposition，否则 setInput 只会在已确认片段后继续，候选菜单仍属于尾码。
-        if (!isT9 && selectedCandidate != null && canProbeDanglingTail(candidatePreview)) {
+        // 已存在原生确认片段时禁止 setInput 探测：confirmed segment 不会被 setInput 清掉，
+        // 探测会把会话带偏。直接交给下方原生 selectCandidate 处理。
+        if (!isT9 && selectedCandidate != null && canProbeDanglingTail(candidatePreview) &&
+            !hasConfirmedNativeSegment(candState)
+        ) {
             val danglingTailCommit = trimDanglingTailAndPick(selectedCandidate)
             if (danglingTailCommit != null) {
                 return CandidateSelectionOutcome(
@@ -1047,7 +1049,11 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
             if (isT9 && fullCommitText.isNotEmpty() && fullCommitPinyin.isNotEmpty()) {
                 service.rimeEngine.t9Memorize(fullCommitText, fullCommitPinyin)
             }
-            if (!isT9 && !service.uiState.value.isAsciiMode && selectedCandidate != null) {
+            // 原生分段选词（preedit 已含中文）由 Rime 自己写入 user_dict；此处再用整串编码
+            // 加最后一个词学习会污染 app 学习表（如 weiguangzheng -> 正）。
+            if (!isT9 && !service.uiState.value.isAsciiMode && selectedCandidate != null &&
+                !hasConfirmedNativeSegment(candState)
+            ) {
                 com.kingzcheung.xime.settings.UserPhraseManager.learnCandidateSelection(
                     service,
                     service.uiState.value.currentSchemaId,
@@ -1127,65 +1133,6 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         )
     }
 
-    /**
-     * 悬空尾码预处理（非 T9，在 rime selectCandidate 之前执行）。
-     *
-     * 判据：从输入尾端逐字剥离，比较去尾前后的“菜单签名”。完全一致 ⇒ 该字母对 rime 毫无
-     * 贡献，是悬空尾码（hgi 去 i 后菜单与 hg 完全相同）；菜单一旦变化（哪怕仅顺序或补全词
-     * 不同）立即停止，避免误伤正在被消费的音节（nihao 去尾得 niha，候选顺序已变）。剥净后在
-     * 健康会话内一次选词上屏，尾码作为字面量追加（韩国i）。
-     *
-     * @return true=已按悬空尾码处理并上屏；false=非该场景（已恢复原始输入，走正常选词）。
-     */
-    private suspend fun retainCandidatePrefix(
-        index: Int,
-        candidate: String,
-        expectedComment: String?,
-        preview: com.kingzcheung.xime.rime.RimeCandidatePreview,
-    ): CandidateSelectionOutcome? {
-        val originalInput = service.rimeEngine.getInput()
-        if (originalInput.isEmpty()) return null
-        val originalPageNo = service.rimeEngine.getCandidatePageInfo().pageNo
-        if (originalPageNo < 0) return null
-
-        if (preview.selectedText != candidate) {
-            FileLogger.w("ImeKeyRouter", "Rime candidate preview identity mismatch; falling back to normal selection")
-            return null
-        }
-        if (preview.textAfterSelection.isEmpty()) return null
-
-        val prefix = resolveCandidateInputPrefix(originalInput, preview, candidate)
-            ?: run {
-                FileLogger.w("ImeKeyRouter", "Rime candidate preview left an unresolvable input suffix; falling back to normal selection")
-                return null
-            }
-
-        fun restoreOriginalInput(): Boolean =
-            service.rimeEngine.setInput(originalInput) && restoreCandidatePage(originalPageNo)
-
-        val remainderSet = service.rimeEngine.setInput(prefix.remainingInput)
-        val remainder = if (remainderSet) service.rimeEngine.getComposition() else null
-        if (remainder == null || remainder.input != prefix.remainingInput) {
-            if (!restoreOriginalInput()) {
-                Log.e(XimeInputMethodService.TAG, "Failed to restore Rime input after candidate preview")
-                withContext(Dispatchers.Main) { service.updateUI() }
-            }
-            FileLogger.w("ImeKeyRouter", "Unable to rebuild Rime input suffix; falling back to normal selection")
-            return null
-        }
-
-        service.partialCandidateSegments.add(
-            PartialCandidateSegment(prefix.selectedText, prefix.selectedInput)
-        )
-        withContext(Dispatchers.Main) { service.updateUI() }
-        return CandidateSelectionOutcome(
-            accepted = true,
-            rimeCommitText = "",
-            committedText = null,
-            partialSelection = true,
-        )
-    }
-
     /** 读取当前 rime 会话的菜单签名（候选有序序列 + 分页标志），不修改会话。 */
     private fun liveMenuSignature(): String {
         val c = service.rimeEngine.getCandidates()
@@ -1206,6 +1153,10 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         }
         return currentPage == pageNo
     }
+
+    /** 组合态中是否已有 Rime 原生确认的中文片段（如“伟guang zheng”里的“伟”）。 */
+    private fun hasConfirmedNativeSegment(candState: CandidateState): Boolean =
+        candState.preeditText.any { it.code in 0x4E00..0x9FFF }
 
     private suspend fun trimDanglingTailAndPick(word: String): String? {
         val original = service.rimeEngine.getInput()
