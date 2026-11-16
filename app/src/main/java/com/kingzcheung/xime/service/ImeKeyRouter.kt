@@ -1054,11 +1054,24 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
             if (isT9 && fullCommitText.isNotEmpty() && fullCommitPinyin.isNotEmpty()) {
                 service.rimeEngine.t9Memorize(fullCommitText, fullCommitPinyin)
             }
-            // 原生分段选词（preedit 已含中文）由 Rime 自己写入 user_dict；此处再用整串编码
-            // 加最后一个词学习会污染 app 学习表（如 weiguangzheng -> 正）。
-            if (!isT9 && !service.uiState.value.isAsciiMode && selectedCandidate != null &&
-                !hasConfirmedNativeSegment(candState)
-            ) {
+            // 原生分段选词（preedit 已含中文，如 zhouqu -> 舟|去）：Rime 会自己写 user_dict，
+            // 但 app 学习表没有这个词，候选栏就不会给它长按删除/降频菜单。这里用
+            //「整串编码 + 整串上屏文本」补一条 app 学习词（zhouqu -> 舟去）；
+            // 不能用 learnedInputCode（确认片段后只剩 qu），否则会污染成 qu -> 舟去。
+            val nativeSegmentConfirmed = !isT9 && !service.uiState.value.isAsciiMode &&
+                selectedCandidate != null && hasConfirmedNativeSegment(candState)
+            if (nativeSegmentConfirmed) {
+                val phrase = fullCommitText.trim()
+                val code = service.lastCompositionInputCode
+                if (com.kingzcheung.xime.settings.shouldLearnNativeSegmentPhrase(code, phrase)) {
+                    com.kingzcheung.xime.settings.UserPhraseManager.learnCandidateSelection(
+                        service,
+                        service.uiState.value.currentSchemaId,
+                        code,
+                        phrase,
+                    )
+                }
+            } else if (!isT9 && !service.uiState.value.isAsciiMode && selectedCandidate != null) {
                 com.kingzcheung.xime.settings.UserPhraseManager.learnCandidateSelection(
                     service,
                     service.uiState.value.currentSchemaId,
@@ -1066,6 +1079,8 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                     selectedCandidate,
                 )
             }
+            // 组合已结束，清掉临时整串编码，避免影响下一次输入。
+            service.lastCompositionInputCode = ""
             // T9 跳过了 service.rimeEngine.commit()，需显式清除 RIME composition，
             // 防止残留状态影响后续输入（在 service.keyProcessingDispatcher 上执行）。
             if (isT9) service.rimeEngine.clearComposition()

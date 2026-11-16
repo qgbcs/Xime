@@ -4,6 +4,7 @@ import com.kingzcheung.xime.keyboard.HANDWRITING_SCHEMA_ID
 import com.kingzcheung.xime.rime.RimeEngine
 import com.kingzcheung.xime.rime.T9InputController
 import com.kingzcheung.xime.rime.buildT9DisplayState
+import com.kingzcheung.xime.rime.preeditHasConfirmedHan
 import com.kingzcheung.xime.rime.resolveComposingDisplayText
 import com.kingzcheung.xime.settings.SchemaManager
 import com.kingzcheung.xime.settings.SettingsPreferences
@@ -75,6 +76,16 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
         val isAsciiMode = composition.isAsciiMode
         val hasNextPage = composition.hasNextPage
         val hasPrevPage = composition.hasPrevPage
+        // 记录纯拼音阶段的完整编码：Rime 原生分段选词确认片段后 input 只剩剩余码
+        //（zhouqu -> 舟 确认后只剩 qu），整串提交（舟去）时要靠这里保存的 zhouqu
+        // 写 app 学习表，否则会用 qu 学习出错误词条。
+        val isT9SchemaForCapture = isT9Schema(service.uiState.value.currentSchemaId)
+        service.lastCompositionInputCode = when {
+            isAsciiMode || isT9SchemaForCapture -> ""
+            preeditHasConfirmedHan(preeditText) -> service.lastCompositionInputCode
+            inputText.isNotEmpty() -> inputText
+            else -> ""
+        }
 
         val pendingEnglish = service.candidateState.value.pendingEnglishText
 

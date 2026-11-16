@@ -258,6 +258,12 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     /** 累积的 partial commit 段列表（多段选词场景下逐段追加，文本+拼音同源，供调频/回滚） */
     internal val t9PartialSegments = mutableListOf<T9PartialSegment>()
     internal val partialCandidateSegments = mutableListOf<PartialCandidateSegment>()
+    /**
+     * 最近一次纯拼音组合（preedit 尚无 Rime 原生确认的中文片段）的完整输入码。
+     * 分段选词确认片段后 getInput() 只剩剩余码（zhouqu -> qu），提交整串（舟去）时
+     * 用它作为 app 学习表编码，保证学到的词条与真实按键对得上、并能获得长按菜单。
+     */
+    internal var lastCompositionInputCode: String = ""
     /** 键盘回调引用，用于在 RIME selectCandidate 前同步通知 T9 控制器 */
     internal var keyboardCallbacks: KeyboardCallbacks? = null
     internal var isChineseMode = true
