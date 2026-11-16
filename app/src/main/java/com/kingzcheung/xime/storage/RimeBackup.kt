@@ -9,6 +9,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * Rime 用户目录（files/rime/）的外置镜像与恢复。
@@ -29,7 +30,8 @@ object RimeBackup {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var periodicStarted = false
-    @Volatile private var mirroring = false
+    /** 启动 reconcile 与周期镜像互斥：两边都遍历 userdb，并发会互相抢文件并放大 I/O。 */
+    private val syncLock = ReentrantLock()
     @Volatile private var lastMirroredAt = 0L
     private var pendingJob: Job? = null
 
@@ -59,6 +61,8 @@ object RimeBackup {
         if (rel in assetSet) return false
         // leveldb 活动锁/日志不搬（会自动重建，避免持锁文件复制）
         if (rel.endsWith("/LOCK") || rel.endsWith("/LOG") || rel.endsWith("/LOG.old")) return false
+        // RepairDB 的 lost/ 是修复残骸，只增不减；镜像它没有任何恢复价值，却动辄上千文件
+        if (rel.contains("/lost/")) return false
         return true
     }
 
@@ -67,15 +71,25 @@ object RimeBackup {
      */
     fun reconcile(context: Context, rimeDir: File) {
         val extDir = StorageRoots.ensureExternalDir(context, DIR) ?: return  // 外置不可用：纯内置
-        val assetSet = assetFiles(context)
+        // 启动路径会被 Application 预热 / 输入法服务 / 部署兜底先后调用多次；
+        // 拿到锁的只跑一遍，其余直接返回，避免同一批 userdb 文件被并发复制。
+        if (!syncLock.tryLock()) return
         try {
-            // 1) 外置 → 内置（外置为准）；先拷数据文件，MANIFEST/CURRENT 最后
-            val restored = syncRimeTree(extDir, rimeDir, assetSet, overwrite = true)
+            val assetSet = assetFiles(context)
+            // 1) 外置 → 内置（外置为准）；先拷数据文件，MANIFEST/CURRENT 最后。
+            //    内置已存在同名 userdb 时跳过整个目录：内置 leveldb 才是引擎当前有效状态，
+            //    把外置里历史世代的 .ldb/.log 灌回来会让目录膨胀到上万文件（启动复制几十秒）。
+            val restored = syncRimeTree(
+                extDir, rimeDir, assetSet,
+                overwrite = true, skipExistingUserdb = true,
+            )
             // 2) 内置有、外置无的用户文件 → 外置留种（新装首跑 / 新版本带来的用户态文件）
             val seeded = syncRimeTree(rimeDir, extDir, assetSet, overwrite = false)
             Log.i(TAG, "rime reconcile: 外置恢复 $restored 个，留种 $seeded 个")
         } catch (e: Throwable) {
             Log.w(TAG, "rime reconcile 失败: ${e.message}")
+        } finally {
+            syncLock.unlock()
         }
         startPeriodic(context.applicationContext)
     }
@@ -93,21 +107,44 @@ object RimeBackup {
     }
 
     private fun doMirror(context: Context) {
-        if (mirroring) return
         val extDir = StorageRoots.ensureExternalDir(context, DIR) ?: return
         val rimeDir = File(context.filesDir, "rime")
         if (!rimeDir.isDirectory) return
-        val assetSet = assetFiles(context)
-        mirroring = true
+        if (!syncLock.tryLock()) return
         try {
+            val assetSet = assetFiles(context)
             val n = syncRimeTree(rimeDir, extDir, assetSet, overwrite = true)
+            // leveldb 会不断产生新世代文件，旧世代在内置被回收后仍留在外置，
+            // 不清理会无限累积（实测 pinyin_simp.userdb 涨到 1.5 万个文件）。
+            val pruned = pruneStaleUserdb(rimeDir, extDir, assetSet)
             lastMirroredAt = System.currentTimeMillis()
-            if (n > 0) Log.i(TAG, "周期镜像 $n 个用户文件到外置")
+            if (n > 0 || pruned > 0) {
+                Log.i(TAG, "周期镜像 $n 个用户文件到外置，清理旧世代 $pruned 个")
+            }
         } catch (e: Throwable) {
             Log.w(TAG, "rime 镜像失败: ${e.message}")
         } finally {
-            mirroring = false
+            syncLock.unlock()
         }
+    }
+
+    /** 删除外置 `*.userdb/` 中内置已不存在的 leveldb 旧世代文件，返回删除数。 */
+    private fun pruneStaleUserdb(rimeDir: File, extDir: File, assetSet: Set<String>): Int {
+        var removed = 0
+        rimeDir.listFiles { f -> f.isDirectory && f.name.endsWith(".userdb") }?.forEach { dir ->
+            val extUdb = File(extDir, dir.name)
+            if (!extUdb.isDirectory) return@forEach
+            val keep = dir.walkTopDown().filter { it.isFile }
+                .map { it.relativeTo(dir).invariantSeparatorsPath }
+                .toSet()
+            extUdb.walkTopDown().filter { it.isFile }.forEach { file ->
+                val rel = file.relativeTo(extUdb).invariantSeparatorsPath
+                if (rel !in keep && isUserData("${dir.name}/$rel", assetSet) && file.delete()) {
+                    removed++
+                }
+            }
+        }
+        return removed
     }
 
     /**
@@ -119,9 +156,22 @@ object RimeBackup {
         dst: File,
         assetSet: Set<String>,
         overwrite: Boolean,
+        skipExistingUserdb: Boolean = false,
     ): Int {
         if (!src.isDirectory) return 0
-        val files = src.walkTopDown().filter { it.isFile }
+        val files = src.walkTopDown()
+            .onEnter { dir ->
+                if (dir == src || !skipExistingUserdb) {
+                    return@onEnter true
+                }
+                val rel = dir.relativeTo(src).invariantSeparatorsPath
+                // 内置已有同名 userdb：不进入该目录，省掉上万次 external 存储遍历
+                if (rel.endsWith(".userdb") && File(dst, rel).isDirectory) {
+                    return@onEnter false
+                }
+                true
+            }
+            .filter { it.isFile }
             .map { it to it.relativeTo(src).invariantSeparatorsPath }
             .filter { isUserData(it.second, assetSet) }
             .sortedBy { (_, rel) ->

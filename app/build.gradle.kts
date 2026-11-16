@@ -5,6 +5,7 @@ import java.text.SimpleDateFormat
 import java.util.Base64
 import java.util.Date
 import java.util.Properties
+import java.util.TimeZone
 
 plugins {
     alias(libs.plugins.android.application)
@@ -217,10 +218,16 @@ android {
         // 构建信息
         buildConfigField("String", "GIT_HASH", "\"${getGitHash()}\"")
         buildConfigField("String", "SOURCE_FINGERPRINT", "\"${getSourceFingerprint()}\"")
-        // APK 构建时刻：配置阶段取一次注入 BuildConfig，RPC buildInfo 直接读出
+        // APK 构建时刻：配置阶段取一次注入 BuildConfig，RPC buildInfo 直接读出。
+        // 显式带构建机时区偏移，并附北京时间，跨时区构建时也能直接对比包的新旧。
+        val buildInstant = Date()
+        val buildTimeWithZone = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z").format(buildInstant)
+        val buildTimeBeijing = SimpleDateFormat("yyyy-MM-dd HH:mm:ss").apply {
+            timeZone = TimeZone.getTimeZone("Asia/Shanghai")
+        }.format(buildInstant)
         buildConfigField(
             "String", "BUILD_TIME",
-            "\"${SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z").format(Date())}\""
+            "\"$buildTimeWithZone（北京时间 $buildTimeBeijing）\""
         )
     }
 

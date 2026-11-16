@@ -39,36 +39,22 @@ object RimeConfigHelper {
     /** 冷启动自检（fullCheck=false）每进程只跑一次；用户主动部署不受此限。 */
     @Volatile
     private var startupCheckDone = false
-    
-    suspend fun initializeRimeDataAsync(context: Context): Pair<String, String> {
-        val rimeDir = File(context.filesDir, "rime")
-        
-        // 迁移旧目录结构 (rime/shared/ + rime/user/) → 单一 rime/ 目录
-        migrateOldStructure(context, rimeDir)
-        
-        // 迁移旧版 market 目录（rime/market/ → market/）
-        migrateOldMarketDir(context)
-        
-        if (!rimeDir.exists()) {
-            rimeDir.mkdirs()
-        }
-        
-        copyAssetsToRimeDir(context, rimeDir)
-        // 状态对齐（迁移一次 + 过滤失效项），再把启用列表镜像进 default.yaml。
-        SchemeStore.ensure(context)
-        // 旧版出厂默认方案集升级为当前默认：简体拼音 / 手写 / 拼音九键
-        SchemaManager.migrateLegacyDefaultSchemas(context)
-        // F1: assets 会用内置 default.yaml 覆盖，这里把启用方案重新写回 schema_list
-        SchemaManager.applyEnabledSchemasToDefaultYaml(context)
-        // 为所有启用方案打个人词库补丁
-        PersonalDictManager.ensureSchemaPacks(context)
-        // 用户数据外置镜像对齐（外置为准）：assets/补丁都落地后再恢复，保证用户配置最终生效
-        com.kingzcheung.xime.storage.RimeBackup.reconcile(context, rimeDir)
-        // 不再在初始化阶段删 build：build 是否重建统一由 ensureDeployment()
-        // 按增量优先策略决定，避免配置变化即全量重编译（60MB 词库持锁 30s+）。
 
-        return Pair(rimeDir.absolutePath, rimeDir.absolutePath)
-    }
+    /**
+     * 数据目录准备结果，每进程只执行一次。
+     *
+     * Application 预热、输入法服务 onCreate、ensureDeployment 兜底会先后调用，
+     * 之前三份实现各跑一遍（含外置镜像 reconcile，实测把 1.5 万个 userdb 文件
+     * 并发复制三遍，启动被拖到 70s+）；现在统一走 [initializeRimeData] 并复用结果。
+     */
+    @Volatile
+    private var preparedDirs: Pair<String, String>? = null
+    private val prepareLock = Any()
+
+    suspend fun initializeRimeDataAsync(context: Context): Pair<String, String> =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            initializeRimeData(context)
+        }
 
     /**
      * 统一部署入口（进程内互斥），语义对齐成熟实现：
@@ -274,29 +260,40 @@ object RimeConfigHelper {
         }
     
     fun initializeRimeData(context: Context): Pair<String, String> {
-        val rimeDir = SchemeFiles.rimeDir(context)
+        // 每进程只准备一次：重复调用会重新走 assets 校验 + 外置 reconcile，
+        // 把启动路径变成多份并发 I/O（镜像副本还会互相删/抢文件）。
+        preparedDirs?.let { return it }
+        synchronized(prepareLock) {
+            preparedDirs?.let { return it }
+            val rimeDir = SchemeFiles.rimeDir(context)
 
-        // 上次安装若在解压阶段被打断（EXTRACTING），先按压缩包重来一次，再读写 rime。
-        SchemeInstaller.recoverIfNeeded(context)
+            // 上次安装若在解压阶段被打断（EXTRACTING），先按压缩包重来一次，再读写 rime。
+            SchemeInstaller.recoverIfNeeded(context)
 
-        migrateOldStructure(context, rimeDir)
-        
-        if (!rimeDir.exists()) {
-            rimeDir.mkdirs()
+            migrateOldStructure(context, rimeDir)
+
+            // 迁移旧版 market 目录（rime/market/ → market/）
+            migrateOldMarketDir(context)
+
+            if (!rimeDir.exists()) {
+                rimeDir.mkdirs()
+            }
+
+            copyAssetsToRimeDir(context, rimeDir)
+            // 同步初始化路径同样先对齐状态，再镜像 schema_list
+            SchemeStore.ensure(context)
+            // 旧版出厂默认方案集升级为当前默认：简体拼音 / 手写 / 拼音九键
+            SchemaManager.migrateLegacyDefaultSchemas(context)
+            // F1: 同步初始化路径也写回 default.yaml 的 schema_list
+            SchemaManager.applyEnabledSchemasToDefaultYaml(context)
+            runBlocking { PersonalDictManager.ensureSchemaPacks(context) }
+            // 用户数据外置镜像对齐（外置为准）
+            com.kingzcheung.xime.storage.RimeBackup.reconcile(context, rimeDir)
+            // build 是否重建统一由 ensureDeployment() 决定（缺失/半成品时强制 fullCheck）
+            val dirs = Pair(rimeDir.absolutePath, rimeDir.absolutePath)
+            preparedDirs = dirs
+            return dirs
         }
-        
-        copyAssetsToRimeDir(context, rimeDir)
-        // 同步初始化路径同样先对齐状态，再镜像 schema_list
-        SchemeStore.ensure(context)
-        // 旧版出厂默认方案集升级为当前默认：简体拼音 / 手写 / 拼音九键
-        SchemaManager.migrateLegacyDefaultSchemas(context)
-        // F1: 同步初始化路径也写回 default.yaml 的 schema_list
-        SchemaManager.applyEnabledSchemasToDefaultYaml(context)
-        runBlocking { PersonalDictManager.ensureSchemaPacks(context) }
-        // 用户数据外置镜像对齐（外置为准）
-        com.kingzcheung.xime.storage.RimeBackup.reconcile(context, rimeDir)
-        // build 是否重建统一由 ensureDeployment() 决定（缺失/半成品时强制 fullCheck）
-        return Pair(rimeDir.absolutePath, rimeDir.absolutePath)
     }
 
     /**
