@@ -35,6 +35,8 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
         val comments: List<String>,
         val frontCount: Int,
         val tailCount: Int,
+        /** 与 candidates 等长的候选来源集合。 */
+        val sources: List<Set<CandidateSource>>,
     )
 
     private fun mergeAutoCandidates(
@@ -46,7 +48,11 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
         hasNextPage: Boolean,
     ): MergedResult {
         if (isAsciiMode || isT9 || input.isEmpty()) {
-            return MergedResult(rimeCandidates, rimeComments, 0, 0)
+            // ascii / T9 / 空码直接透传：候选全部来自 rime
+            return MergedResult(
+                rimeCandidates, rimeComments, 0, 0,
+                rimeCandidates.map { setOf(CandidateSource.RIME) },
+            )
         }
         val schemaId = service.uiState.value.currentSchemaId
         val match = UserPhraseManager.matchAutoPhrases(service, schemaId, input)
@@ -55,8 +61,16 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             .frontCandidatesForRimePage(match.front, rimePageNo)
         val tail = com.kingzcheung.xime.settings.LearnedCandidateIndex
             .tailCandidatesForRimePage(match.tail, rimePageNo, hasNextPage)
+        // rime 候选基础来源为 RIME；属于手动 custom_phrase 时追加 CUSTOM
+        val rimeSources = rimeCandidates.map { word ->
+            if (UserPhraseManager.isCustomWord(service, schemaId, word)) {
+                setOf(CandidateSource.RIME, CandidateSource.CUSTOM)
+            } else {
+                setOf(CandidateSource.RIME)
+            }
+        }
         if (front.isEmpty() && match.tail.isEmpty()) {
-            return MergedResult(rimeCandidates, rimeComments, 0, 0)
+            return MergedResult(rimeCandidates, rimeComments, 0, 0, rimeSources)
         }
         val removeSet = (front + match.tail).toHashSet()
         val keptIndices = rimeCandidates.indices.filterNot { rimeCandidates[it] in removeSet }
@@ -65,7 +79,20 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
         val outCandidates = front + keptTexts + tail
         val outComments =
             List(front.size) { "" } + keptComments + List(tail.size) { "" }
-        return MergedResult(outCandidates, outComments, front.size, tail.size)
+        // 前置自动词：同名词也在 rime 候选里时两份表共存，删除时需全删
+        val frontSources = front.map { word ->
+            if (word in rimeCandidates) {
+                setOf(CandidateSource.AUTO, CandidateSource.RIME)
+            } else {
+                setOf(CandidateSource.AUTO)
+            }
+        }
+        val keptSources = keptIndices.map { rimeSources[it] }
+        val tailSources = tail.map { setOf(CandidateSource.AUTO) }
+        return MergedResult(
+            outCandidates, outComments, front.size, tail.size,
+            frontSources + keptSources + tailSources,
+        )
     }
 
     internal fun applyComposition(composition: com.kingzcheung.xime.rime.RimeComposition) {
@@ -156,7 +183,9 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             hasNextPage = hasNextPage,
             hasPrevPage = hasPrevPage,
             customPhraseCount = merged.frontCount,
-            demotedPhraseCount = merged.tailCount
+            demotedPhraseCount = merged.tailCount,
+            candidateSources = merged.sources.takeIf { it.size == merged.candidates.size }
+                ?: List(merged.candidates.size) { emptySet() }
         )
         if (isAsciiMode != service.uiState.value.isAsciiMode) {
             FileLogger.i(XimeInputMethodService.TAG, "applyComposition: ascii ${service.uiState.value.isAsciiMode}->$isAsciiMode")
@@ -273,7 +302,9 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             hasNextPage = result.hasNextPage,
             hasPrevPage = result.hasPrevPage,
             customPhraseCount = merged.frontCount,
-            demotedPhraseCount = merged.tailCount
+            demotedPhraseCount = merged.tailCount,
+            candidateSources = merged.sources.takeIf { it.size == merged.candidates.size }
+                ?: List(merged.candidates.size) { emptySet() }
         )
         service.uiState.value = service.uiState.value.copy(isAsciiMode = isAsciiMode)
         

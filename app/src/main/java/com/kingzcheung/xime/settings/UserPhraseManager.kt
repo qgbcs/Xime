@@ -261,6 +261,32 @@ object UserPhraseManager {
     fun isAutoWord(context: Context, schemaId: String, word: String): Boolean =
         getEntries(context, schemaId).any { it.word == word }
 
+    // ── 手动 custom_phrase 词条缓存：候选合并时逐条判断来源，避免高频读盘 ──
+    /** 该方案的手动词词条集合；[phraseRevision] 变化（增删/降频）时整体失效。 */
+    private val customWordCache = HashMap<String, Set<String>>()
+    private var customWordCacheRevision = -1L
+
+    /** 判断某词是否为手动 custom_phrase 词条（供候选来源标注与长按动作路由）。 */
+    @Synchronized
+    fun isCustomWord(context: Context, schemaId: String?, word: String): Boolean {
+        if (schemaId.isNullOrBlank()) return false
+        val revision = phraseRevision.longValue
+        if (revision != customWordCacheRevision) {
+            customWordCache.clear()
+            customWordCacheRevision = revision
+        }
+        val words = customWordCache.getOrPut(schemaId) {
+            try {
+                PersonalDictManager.loadCustomPhrases(context.applicationContext, schemaId)
+                    .map { it.word }
+                    .toSet()
+            } catch (_: Exception) {
+                emptySet()
+            }
+        }
+        return word in words
+    }
+
     /**
      * 前缀匹配：
      * - front：分值 >= 0 的词，按分值降序，注入候选栏前部；

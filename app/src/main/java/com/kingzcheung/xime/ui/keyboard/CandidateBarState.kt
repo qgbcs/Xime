@@ -1,5 +1,7 @@
 package com.kingzcheung.xime.ui.keyboard
 
+import com.kingzcheung.xime.service.CandidateSource
+
 sealed interface CandidateBarState {
 
     data object Idle : CandidateBarState
@@ -12,6 +14,8 @@ sealed interface CandidateBarState {
         val hasMore: Boolean = false,
         val associationCandidates: List<String> = emptyList(),
         val demotedCandidateCount: Int = 0,
+        /** 与 candidates 等长的候选来源集合，长按菜单按来源路由。 */
+        val candidateSources: List<Set<CandidateSource>> = emptyList(),
     ) : CandidateBarState
 
     data class AssociationOnly(
@@ -50,6 +54,7 @@ sealed interface CandidateBarState {
             hasNextPage: Boolean,
             isCalculatorActive: Boolean = false,
             demotedCandidateCount: Int = 0,
+            candidateSources: List<Set<CandidateSource>> = emptyList(),
         ): CandidateBarState {
             val hasCandidates = candidates.isNotEmpty()
             val hasAssociations = associationCandidates.isNotEmpty()
@@ -68,6 +73,7 @@ sealed interface CandidateBarState {
                         hasMore = hasCandidates && hasNextPage,
                         associationCandidates = associationCandidates,
                         demotedCandidateCount = demotedCandidateCount,
+                        candidateSources = candidateSources,
                     )
                 !isComposing && !hasInput && hasAssociations && !hasCandidates ->
                     AssociationOnly(
@@ -82,6 +88,7 @@ sealed interface CandidateBarState {
                         preeditText = preeditText,
                         hasMore = hasCandidates && hasNextPage,
                         demotedCandidateCount = demotedCandidateCount,
+                        candidateSources = candidateSources,
                     )
                 else -> Idle
             }

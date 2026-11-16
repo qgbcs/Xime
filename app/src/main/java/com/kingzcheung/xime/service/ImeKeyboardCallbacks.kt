@@ -120,16 +120,48 @@ internal fun rememberImeKeyboardCallbacks(
                 val mgr = com.kingzcheung.xime.settings.UserPhraseManager
                 val schemaId = service.uiState.value.currentSchemaId
                 // 自动学习词走内存直管（即时、不重建会话）；手动 custom_phrase 走原有重建链路。
-                val isAuto = mgr.isAutoWord(service, schemaId, word)
+                val isAuto = schemaId.isNotBlank() && mgr.isAutoWord(service, schemaId, word)
                 when (action) {
-                    "delete" ->
-                        if (isAuto) {
-                            mgr.deleteAutoWord(service, schemaId, word)
-                            // 立即按当前编码重合并候选：被删词当场消失。
-                            service.updateUI()
-                        } else {
-                            mgr.deleteWord(service, schemaId, word)
+                    "delete" -> {
+                        // rime 用户词删除必须在 keyProcessingDispatcher 上执行
+                        service.keyRouter.postRimeJob {
+                            val cs = service.candidateState.value
+                            val displayedIndex = cs.candidates.indexOf(word)
+                            val rimeCandidates = service.rimeEngine.getCandidates()
+                            // 显示索引 = front 注入词数 + rime 页内索引；app 前置词也可能同时存在于
+                            // rime 用户词典（两份表），此时按文本回查 rime 索引，确保两边都删。
+                            var rimeIndex = displayedIndex - cs.customPhraseCount
+                            if (rimeIndex < 0 || rimeIndex >= rimeCandidates.size ||
+                                rimeCandidates[rimeIndex] != word
+                            ) {
+                                rimeIndex = rimeCandidates.indexOf(word)
+                            }
+                            var rimeGone = true
+                            if (rimeIndex >= 0) {
+                                service.rimeEngine.deleteCandidateOnCurrentPage(rimeIndex, word)
+                                // 码表词只会取消调频，删完仍在；用户词会当场消失（commits 置负）。
+                                rimeGone = !service.rimeEngine.getCandidates().contains(word)
+                            }
+                            val isCustom = mgr.isCustomWord(service, schemaId, word)
+                            if (isAuto) {
+                                mgr.deleteAutoWord(service, schemaId, word)
+                            }
+                            if (isCustom) {
+                                mgr.deleteWord(service, schemaId, word)
+                            }
+                            withContext(Dispatchers.Main) {
+                                service.updateUI()
+                                // 三份都没有可删副本：说明是码表词，只能取消调频。
+                                if (!rimeGone && !isAuto && !isCustom) {
+                                    android.widget.Toast.makeText(
+                                        service,
+                                        "该词来自码表，无法删除",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
                         }
+                    }
                     "moveSecondPage" ->
                         if (isAuto) {
                             mgr.moveAutoWordToSecondPage(service, schemaId, word)

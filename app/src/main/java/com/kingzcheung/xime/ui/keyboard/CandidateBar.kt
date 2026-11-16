@@ -1,6 +1,7 @@
 package com.kingzcheung.xime.ui.keyboard
 
 import com.kingzcheung.xime.BuildConfig
+import com.kingzcheung.xime.service.CandidateSource
 import com.kingzcheung.xime.service.PredictionManager
 import android.annotation.SuppressLint
 import androidx.compose.foundation.background
@@ -109,8 +110,6 @@ fun CandidateBar(
     voiceSpectrum: FloatArray = FloatArray(16),
     voiceRecognitionState: RecognitionState = RecognitionState.IDLE,
     voicePluginName: String = "",
-    // 当前方案用户自定义词条；命中的候选长按可删除或降频到第二屏
-    customPhraseWords: Set<String> = emptySet(),
 ) {
     val configuration = LocalConfiguration.current
     val isLandscape = !isFloatingMode && configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
@@ -437,8 +436,17 @@ fun CandidateBar(
             ) {
                 itemsIndexed(candidateDisplayItems, key = { _, item -> item.index }) { _, item ->
                     val candidate = item.candidate
-                    val isCustom = callbacks.onCustomPhraseAction != null &&
-                        candidate in customPhraseWords
+                    // 候选自带来源集合：非空即可长按；AUTO/CUSTOM 可降到第二屏，RIME 仅支持删除
+                    val sources = when (val s = state) {
+                        is CandidateBarState.ChineseCandidates ->
+                            s.candidateSources.getOrNull(item.index) ?: setOf(CandidateSource.RIME)
+                        // 英文候选全部来自 app 学习表，保持与中文一致的删除/降频菜单
+                        is CandidateBarState.EnglishCandidates -> setOf(CandidateSource.AUTO)
+                        else -> emptySet()
+                    }
+                    val canManage = callbacks.onCustomPhraseAction != null && sources.isNotEmpty()
+                    val canMoveSecondPage =
+                        CandidateSource.AUTO in sources || CandidateSource.CUSTOM in sources
                     Box {
                         CandidateItem(
                             text = item.displayText,
@@ -456,7 +464,7 @@ fun CandidateBar(
                             accentColor = visuals.accentColor,
                             selectedTextColor = visuals.selectedTextColor,
                             fontSize = candidateTextSize.sp,
-                            onLongClick = if (isCustom) {
+                            onLongClick = if (canManage) {
                                 {
                                     callbacks.onUiDiagnosticEvent?.invoke(
                                         "candidate_long_press",
@@ -466,7 +474,7 @@ fun CandidateBar(
                                 }
                             } else null
                         )
-                        if (isCustom) {
+                        if (canManage) {
                             DropdownMenu(
                                 expanded = longPressedWord == candidate,
                                 properties = PopupProperties(focusable = false),
@@ -486,18 +494,20 @@ fun CandidateBar(
                                         )
                                     }
                                 }
-                                DropdownMenuItem(
-                                    text = { Text("移到第二屏") },
-                                    onClick = {
-                                        val w = candidate
-                                        callbacks.onUiDiagnosticEvent?.invoke(
-                                            "candidate_menu_selected",
-                                            "source=candidate_bar;candidate=$w;action=moveSecondPage"
-                                        )
-                                        longPressedWord = null
-                                        callbacks.onCustomPhraseAction?.invoke(w, "moveSecondPage")
-                                    }
-                                )
+                                if (canMoveSecondPage) {
+                                    DropdownMenuItem(
+                                        text = { Text("移到第二屏") },
+                                        onClick = {
+                                            val w = candidate
+                                            callbacks.onUiDiagnosticEvent?.invoke(
+                                                "candidate_menu_selected",
+                                                "source=candidate_bar;candidate=$w;action=moveSecondPage"
+                                            )
+                                            longPressedWord = null
+                                            callbacks.onCustomPhraseAction?.invoke(w, "moveSecondPage")
+                                        }
+                                    )
+                                }
                                 DropdownMenuItem(
                                     text = { Text("删除该词") },
                                     onClick = {

@@ -47,6 +47,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.PopupProperties
+import com.kingzcheung.xime.service.CandidateSource
 
 data class CandidatePageState(
     val candidates: List<String>,
@@ -57,6 +58,8 @@ data class CandidatePageState(
     val hasNextPage: Boolean = false,
     val hasPrevPage: Boolean = false,
     val bottomPaddingDp: Int = 0,
+    /** 与 candidates 等长的候选来源集合，长按菜单按来源路由。 */
+    val candidateSources: List<Set<CandidateSource>> = emptyList(),
 )
 
 data class CandidatePageCallbacks(
@@ -73,7 +76,6 @@ data class CandidatePageCallbacks(
 fun CandidatePage(
     state: CandidatePageState,
     callbacks: CandidatePageCallbacks,
-    customPhraseWords: Set<String> = emptySet(),
     modifier: Modifier = Modifier
 ) {
     var longPressedWord by remember { mutableStateOf<String?>(null) }
@@ -205,14 +207,18 @@ fun CandidatePage(
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             state.candidates.forEachIndexed { index, candidate ->
-                                val isCustom = callbacks.onCustomPhraseAction != null &&
-                                    candidate in customPhraseWords
+                                // 候选自带来源集合：非空即可长按；AUTO/CUSTOM 可降到第二屏，RIME 仅支持删除
+                                val sources = state.candidateSources.getOrNull(index) ?: emptySet()
+                                val canManage =
+                                    callbacks.onCustomPhraseAction != null && sources.isNotEmpty()
+                                val canMoveSecondPage =
+                                    CandidateSource.AUTO in sources || CandidateSource.CUSTOM in sources
                                 Box {
                                     CandidatePageItem(
                                         text = candidate,
                                         comment = state.candidateComments.getOrElse(index) { "" },
                                         onClick = { callbacks.onCandidateSelect(index, candidate) },
-                                        onLongClick = if (isCustom) {
+                                        onLongClick = if (canManage) {
                                             {
                                                 callbacks.onUiDiagnosticEvent?.invoke(
                                                     "candidate_long_press",
@@ -223,7 +229,7 @@ fun CandidatePage(
                                         } else null,
                                         textColor = state.textColor
                                     )
-                                    if (isCustom) {
+                                    if (canManage) {
                                         DropdownMenu(
                                             expanded = longPressedWord == candidate,
                                             properties = PopupProperties(focusable = false),
@@ -243,20 +249,22 @@ fun CandidatePage(
                                                     )
                                                 }
                                             }
-                                            DropdownMenuItem(
-                                                text = { Text("移到第二屏") },
-                                                onClick = {
-                                                    callbacks.onUiDiagnosticEvent?.invoke(
-                                                        "candidate_menu_selected",
-                                                        "source=candidate_page;candidate=$candidate;action=moveSecondPage"
-                                                    )
-                                                    longPressedWord = null
-                                                    callbacks.onCustomPhraseAction?.invoke(
-                                                        candidate,
-                                                        "moveSecondPage"
-                                                    )
-                                                }
-                                            )
+                                            if (canMoveSecondPage) {
+                                                DropdownMenuItem(
+                                                    text = { Text("移到第二屏") },
+                                                    onClick = {
+                                                        callbacks.onUiDiagnosticEvent?.invoke(
+                                                            "candidate_menu_selected",
+                                                            "source=candidate_page;candidate=$candidate;action=moveSecondPage"
+                                                        )
+                                                        longPressedWord = null
+                                                        callbacks.onCustomPhraseAction?.invoke(
+                                                            candidate,
+                                                            "moveSecondPage"
+                                                        )
+                                                    }
+                                                )
+                                            }
                                             DropdownMenuItem(
                                                 text = { Text("删除该词") },
                                                 onClick = {

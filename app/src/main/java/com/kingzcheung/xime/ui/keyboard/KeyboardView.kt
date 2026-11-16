@@ -232,21 +232,6 @@ fun KeyboardView(
         onCardPositioned = onCardPositioned,
     ) {
     Box(modifier = contentModifier) {
-        // 当前方案用户自定义候选词集合，供普通和展开候选栏的长按菜单判断；
-        // 切换方案，或自动学习 / 删除 / 降频后（UserPhraseManager.phraseRevision
-        // 递增）重新从磁盘加载。
-        val customPhraseContext = LocalContext.current
-        val customPhraseRevision =
-            com.kingzcheung.xime.settings.UserPhraseManager.phraseRevision.longValue
-        var customPhraseWords by remember(state.currentSchemaId) {
-            mutableStateOf(emptySet<String>())
-        }
-        LaunchedEffect(state.currentSchemaId, customPhraseRevision) {
-            customPhraseWords = withContext(Dispatchers.IO) {
-                com.kingzcheung.xime.settings.UserPhraseManager
-                    .loadWords(customPhraseContext, state.currentSchemaId)
-            }
-        }
         // 剪贴板历史搜索态：页面为剪贴板覆盖层且搜索开启时，IME 窗口撑满全屏，
         // 候选栏下方用全部剩余高度展示剪贴板面板（搜索结果），下方保留 QWERTY 键盘，
         // 按键走 RIME 引擎可输中文，上屏文本由服务层重定向写入搜索框。
@@ -340,6 +325,7 @@ fun KeyboardView(
                         hasNextPage = cs.hasNextPage,
                         isCalculatorActive = state.isCalculatorMode,
                         demotedCandidateCount = cs.demotedPhraseCount,
+                        candidateSources = cs.candidateSources,
                     )
                 }
             }
@@ -396,7 +382,6 @@ fun KeyboardView(
                 voiceSpectrum = voiceSpectrumState.value,
                 voiceRecognitionState = state.voiceRecognitionState,
                 voicePluginName = state.voicePluginName,
-                customPhraseWords = customPhraseWords,
                 toolbarActions = state.toolbarButtons.mapNotNull { id ->
                     val button = ToolbarButton.fromId(id) ?: return@mapNotNull null
                     if (button == ToolbarButton.HANDWRITING_LOOKUP) {
@@ -1108,8 +1093,8 @@ fun KeyboardView(
                             hasNextPage = candidateState.value.hasNextPage,
                             hasPrevPage = candidateState.value.hasPrevPage,
                             bottomPaddingDp = state.keyboardBottomPaddingDp,
+                            candidateSources = candidateState.value.candidateSources,
                         ),
-                        customPhraseWords = customPhraseWords,
                         callbacks = CandidatePageCallbacks(
                             onCandidateSelect = { index, candidate ->
                                 callbacks.onCandidateSelect(index, candidate)

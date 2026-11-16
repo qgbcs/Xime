@@ -562,6 +562,22 @@ public:
         }
         return rime->select_candidate_on_current_page(session_id_, index);
     }
+    // 删除当前页候选对应的用户词典词条（标记删除，不改变候选列表）
+    bool deleteCandidate(int index, const std::string* expectedText = nullptr) {
+        if (!rime || !session_id_ || index < 0) return false;
+        if (expectedText) {
+            RIME_STRUCT(RimeContext, context);
+            if (!rime->get_context(session_id_, &context)) return false;
+            std::string text;
+            if (index < context.menu.num_candidates &&
+                context.menu.candidates[index].text) {
+                text = context.menu.candidates[index].text;
+            }
+            rime->free_context(&context);
+            if (text != *expectedText) return false;
+        }
+        return rime->delete_candidate_on_current_page(session_id_, index);
+    }
     
     bool pageDown() {
         if (!rime || !session_id_) return false;
@@ -1765,6 +1781,28 @@ Java_com_kingzcheung_xime_rime_RimeEngine_nativeSelectCandidate(
     return Rime::Instance().selectCandidate(
         index, expectedTextPtr, expectedCommentPtr
     ) ? JNI_TRUE : JNI_FALSE;
+}
+
+// 删除当前页候选对应的用户词典词条
+JNIEXPORT jboolean JNICALL
+Java_com_kingzcheung_xime_rime_RimeEngine_nativeDeleteCandidate(
+    JNIEnv* env,
+    jobject thiz,
+    jint index,
+    jstring expected_text
+) {
+    std::string expectedText;
+    const std::string* expectedTextPtr = nullptr;
+
+    if (expected_text) {
+        const char* value = env->GetStringUTFChars(expected_text, nullptr);
+        if (!value) return JNI_FALSE;
+        expectedText = value;
+        env->ReleaseStringUTFChars(expected_text, value);
+        expectedTextPtr = &expectedText;
+    }
+    return Rime::Instance().deleteCandidate(index, expectedTextPtr)
+        ? JNI_TRUE : JNI_FALSE;
 }
 
 // 翻页 - 下一页

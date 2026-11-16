@@ -388,6 +388,14 @@ class RimeEngine {
         }
     }
 
+    /** 删除当前页指定候选对应的 rime 用户词典词条（标记删除，不改变候选列表）。 */
+    fun deleteCandidateOnCurrentPage(index: Int, expectedText: String? = null): Boolean {
+        return tryLocked(false) {
+            if (!nativeHasSession()) return@tryLocked false
+            nativeDeleteCandidate(index, expectedText)
+        }
+    }
+
     fun pageDown(): Boolean {
         return tryLocked(false) {
             if (!nativeHasSession()) return@tryLocked false
@@ -802,6 +810,7 @@ class RimeEngine {
         expectedText: String?,
         expectedComment: String?
     ): Boolean
+    private external fun nativeDeleteCandidate(index: Int, expectedText: String?): Boolean
     private external fun nativePageDown(): Boolean
     private external fun nativePageUp(): Boolean
     private external fun nativeHasNextPage(): Boolean
