@@ -4,6 +4,7 @@ import com.kingzcheung.xime.keyboard.HANDWRITING_SCHEMA_ID
 import com.kingzcheung.xime.rime.RimeEngine
 import com.kingzcheung.xime.rime.T9InputController
 import com.kingzcheung.xime.rime.buildT9DisplayState
+import com.kingzcheung.xime.rime.resolveComposingDisplayText
 import com.kingzcheung.xime.settings.SchemaManager
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kingzcheung.xime.settings.UserPhraseManager
@@ -111,17 +112,7 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             // 原生分段选词：Rime 会在 preedit 中保留已确认片段（如“伟guang zheng”），
             // 此时展示 preedit 才能看到已选中文字与剩余编码的边界。
             // 普通输入（preedit 只是 speller 展开）仍显示原始输入。
-            val lowerInput = inputText.lowercase()
-            val hasExtraContent = preeditText.any { c ->
-                !c.isWhitespace() && c != '\'' && !lowerInput.contains(c.lowercaseChar())
-            }
-            displayText = if (partialCandidateText.isNotEmpty()) {
-                partialCandidateText
-            } else if (preeditText.isNotEmpty() && hasExtraContent) {
-                preeditText
-            } else {
-                inputText
-            }
+            displayText = resolveComposingDisplayText(preeditText, inputText, partialCandidateText)
             displayCandidates = filteredTexts
             displayComments = filteredComments
             isComposing = inputText.isNotEmpty() || partialCandidateText.isNotEmpty()

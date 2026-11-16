@@ -76,7 +76,7 @@ class LearnedWordViewModel(application: Application) : AndroidViewModel(applicat
                         isLoading = false,
                         userDictName = loaded.second,
                         entries = loaded.first,
-                        filteredEntries = filterEntries(loaded.first, it.searchQuery),
+                        filteredEntries = filterLearnedWordEntries(loaded.first, it.searchQuery),
                     )
                 }
             }
@@ -100,21 +100,33 @@ class LearnedWordViewModel(application: Application) : AndroidViewModel(applicat
                 }
             }.getOrDefault(emptyList())
         }
-        return (fromUserDb.sortedByDescending { it.score } + auto.sortedByDescending { it.score }) to dictName
+        return mergeLearnedWordEntries(fromUserDb, auto) to dictName
     }
 
     fun setSearchQuery(query: String) {
-        _uiState.update { it.copy(searchQuery = query, filteredEntries = filterEntries(it.entries, query)) }
+        _uiState.update { it.copy(searchQuery = query, filteredEntries = filterLearnedWordEntries(it.entries, query)) }
     }
 
     fun clearSearch() = setSearchQuery("")
 
-    private fun filterEntries(entries: List<LearnedWordEntry>, query: String): List<LearnedWordEntry> {
-        if (query.isEmpty()) return entries
-        val lower = query.lowercase(Locale.ROOT)
-        return entries.filter {
-            it.word.contains(query) || it.code.contains(query, ignoreCase = true) ||
-                it.code.lowercase(Locale.ROOT).contains(lower)
-        }
+}
+
+/** 学习词合并顺序：userdb 在前、auto 在后，各自按分值降序。 */
+fun mergeLearnedWordEntries(
+    userDictEntries: List<LearnedWordEntry>,
+    autoEntries: List<LearnedWordEntry>,
+): List<LearnedWordEntry> =
+    userDictEntries.sortedByDescending { it.score } + autoEntries.sortedByDescending { it.score }
+
+/** 学习词搜索：词或编码（忽略大小写）包含查询串即命中；空查询返回全部。 */
+fun filterLearnedWordEntries(
+    entries: List<LearnedWordEntry>,
+    query: String,
+): List<LearnedWordEntry> {
+    if (query.isEmpty()) return entries
+    val lower = query.lowercase(Locale.ROOT)
+    return entries.filter {
+        it.word.contains(query) || it.code.contains(query, ignoreCase = true) ||
+            it.code.lowercase(Locale.ROOT).contains(lower)
     }
 }

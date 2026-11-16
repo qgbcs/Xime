@@ -6,6 +6,8 @@ import android.view.inputmethod.EditorInfo
 import com.kingzcheung.xime.association.AssociationManager
 import com.kingzcheung.xime.keyboard.OverlayRoute
 import com.kingzcheung.xime.rime.resolveRimeCandidateIndex
+import com.kingzcheung.xime.rime.preeditHasConfirmedHan
+import com.kingzcheung.xime.rime.shouldCommitDisplayedCandidate
 import com.kingzcheung.xime.rime.candidateSelectionLeavesComposition
 import com.kingzcheung.xime.rime.canProbeDanglingTail
 import com.kingzcheung.xime.rime.hasRemainingCandidateComposition
@@ -196,9 +198,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                         val isT9 = isT9Schema(state.currentSchemaId)
                         // 原生分段选词时 preedit 含已确认中文（如 伟光zheng），回车上屏该文本；
                         // 纯编码输入仍原样上屏 RIME input。
-                        val nativeConfirmed = !isT9 && candState.preeditText.any {
-                            it.code in 0x4E00..0x9FFF
-                        }
+                        val nativeConfirmed = !isT9 && preeditHasConfirmedHan(candState.preeditText)
                         val input = when {
                             isT9 && candState.preeditText.isNotEmpty() -> candState.preeditText
                             nativeConfirmed && candState.preeditText.isNotEmpty() ->
@@ -965,11 +965,16 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         // 部分候选选中后仍有输入与候选时，上方已先刷新组合态并返回，避免 commit 消耗尾码。
         // T9：跳过 service.rimeEngine.commit()，用用户点选的 selectedCandidate 作为权威上屏文本。
         val committedText = if (isT9) "" else service.rimeEngine.commit()
-        if (!isT9 && selectedCandidate != null && resolvedRimeIndex >= 0 &&
-            committedText != selectedCandidate &&
-            candidatePreview != null && candidatePreview.textAfterSelection.isEmpty()
+        val committedCandidate = selectedCandidate
+        if (!isT9 && resolvedRimeIndex >= 0 &&
+            shouldCommitDisplayedCandidate(
+                committedCandidate,
+                committedText,
+                hasConfirmedNativeSegment(candState),
+                candidatePreview?.textAfterSelection,
+            ) && committedCandidate != null
         ) {
-            return commitVerifiedCandidate(selectedCandidate, committedText, learnedInputCode)
+            return commitVerifiedCandidate(committedCandidate, committedText, learnedInputCode)
         }
         // T9 模式下 fullyConsumed 是判断 full/partial commit 的唯一权威：
         // 当控制器明确 partial commit 时，即使 RIME commit() 返回非空文本
@@ -1156,7 +1161,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
 
     /** 组合态中是否已有 Rime 原生确认的中文片段（如“伟guang zheng”里的“伟”）。 */
     private fun hasConfirmedNativeSegment(candState: CandidateState): Boolean =
-        candState.preeditText.any { it.code in 0x4E00..0x9FFF }
+        preeditHasConfirmedHan(candState.preeditText)
 
     private suspend fun trimDanglingTailAndPick(word: String): String? {
         val original = service.rimeEngine.getInput()

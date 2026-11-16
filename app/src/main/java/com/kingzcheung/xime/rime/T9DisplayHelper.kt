@@ -108,3 +108,44 @@ fun resolveCandidateInputPrefix(
     }
     return CandidateInputPrefix(selectedInput, remainingInput, selectedText)
 }
+
+/** 组合态 preedit 是否已含 Rime 原生确认的中文片段（如“伟guang zheng”里的“伟”）。 */
+fun preeditHasConfirmedHan(preeditText: String): Boolean =
+    preeditText.any { it.code in 0x4E00..0x9FFF }
+
+/**
+ * 非 T9 组合态要展示的文本：部分选词 > 含已确认中文的 preedit > 原始输入。
+ *
+ * preedit 只是 speller 展开的拼音时不展示（与原输入等价）；一旦包含输入里没有的字符
+ * （原生分段选中后残留的汉字），展示 preedit 才能看到已选中文字与剩余编码的边界。
+ */
+fun resolveComposingDisplayText(
+    preeditText: String,
+    inputText: String,
+    partialCandidateText: String,
+): String {
+    if (partialCandidateText.isNotEmpty()) return partialCandidateText
+    val lowerInput = inputText.lowercase()
+    val hasExtraContent = preeditText.any { c ->
+        !c.isWhitespace() && c != '\'' && !lowerInput.contains(c.lowercaseChar())
+    }
+    return if (preeditText.isNotEmpty() && hasExtraContent) preeditText else inputText
+}
+
+/**
+ * Rime 提交文本与所点候选不一致时，是否用“已展示候选”兜底上屏。
+ *
+ * 原生分段（preedit 已含中文）时 commit 文本本身就是完整整词（如“舟去”），
+ * 兜底会丢掉已确认前缀并写错学习词，必须交由 Rime 的提交文本直接上屏。
+ */
+fun shouldCommitDisplayedCandidate(
+    selectedCandidate: String?,
+    rimeCommitText: String,
+    preeditHasConfirmedHan: Boolean,
+    previewTextAfterSelection: String?,
+): Boolean =
+    selectedCandidate != null &&
+        rimeCommitText != selectedCandidate &&
+        !preeditHasConfirmedHan &&
+        previewTextAfterSelection != null &&
+        previewTextAfterSelection.isEmpty()
