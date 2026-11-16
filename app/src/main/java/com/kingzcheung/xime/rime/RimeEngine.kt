@@ -475,7 +475,11 @@ class RimeEngine {
 
     fun setPageSize(schemaId: String, pageSize: Int) {
         if (!isInitialized) return
-        nativeSetPageSize(schemaId, pageSize)
+        // 会写方案配置并在必要时 session->ApplySchema 重建组件（重），必须独占引擎；
+        // 否则与后台用户词库读取/同步的 ApplySchema 并发会 SIGSEGV
+        locked {
+            nativeSetPageSize(schemaId, pageSize)
+        }
     }
 
     fun switchSchema(schemaId: String): Boolean {

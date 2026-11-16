@@ -135,7 +135,7 @@ object SettingsPreferences {
     const val KEY_QWERTY_LETTER_SIZE_LEVEL = "qwerty_letter_size_level"
     const val INPUT_TEXT_INPUT_BOX = "input_box"
     const val INPUT_TEXT_CANDIDATE_BAR = "candidate_bar"
-    const val DEFAULT_PAGE_SIZE = 30 // 手机候选栏每页候选词数；schema 里的 page_size 来自 PC 版（5），太短
+    const val DEFAULT_PAGE_SIZE = DEFAULT_CANDIDATE_PAGE_SIZE
 
     fun isCompactModeEnabled(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_COMPACT_MODE, true)
@@ -850,8 +850,9 @@ object SettingsPreferences {
     }
 
     fun getPageSize(context: Context): Int {
-        return getPrefs(context).getInt(KEY_PAGE_SIZE, DEFAULT_PAGE_SIZE)
+        return effectivePageSize(getPrefs(context).getInt(KEY_PAGE_SIZE, 0))
     }
+
 
     fun setPageSize(context: Context, pageSize: Int) {
         getPrefs(context).edit().putInt(KEY_PAGE_SIZE, pageSize).apply()
@@ -1175,4 +1176,16 @@ object SettingsPreferences {
             getPrefs(context).edit().putStringSet(KEY_INSTALLED_MARKET_IDS, cur).apply()
         }
     }
+}
+
+/**
+ * 每页候选词数缺省值：schema 里的 page_size 来自 PC 版（5），太短。
+ * 放在 object 外，便于纯 JVM 单测直接校验，不触发 SettingsPreferences 的
+ * 静态初始化（会拉起 ToolbarButton → Compose 图标）。
+ */
+internal const val DEFAULT_CANDIDATE_PAGE_SIZE = 30
+
+/** 设备上存了正数就用设备值（以设备设置为准），未设置/非法值回落 30。 */
+internal fun effectivePageSize(storedValue: Int): Int {
+    return if (storedValue > 0) storedValue else DEFAULT_CANDIDATE_PAGE_SIZE
 }

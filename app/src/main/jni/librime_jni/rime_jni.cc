@@ -8,6 +8,7 @@
 // 用户词库导入/导出/快照恢复所需（上游 002006ea 引入）：
 // UserDbManager 要求操作前词典关闭，DbSource/TableDb 负责库记录 -> 码表行转换
 #include <rime/service.h>
+#include <rime/schema.h>
 #include <rime/dict/db_utils.h>
 #include <rime/dict/table_db.h>
 #include <rime/dict/user_db.h>
@@ -192,6 +193,7 @@ public:
             LOGI("post-maintenance session recreated=%lu (default schema)",
                  (unsigned long)session_id_);
         }
+        reapplyPageSizeIfNeeded();
         return true;
     }
 
@@ -200,6 +202,7 @@ public:
         session_id_ = rime->create_session();
         if (session_id_ != 0) {
             LOGI("Session created: %lu", (unsigned long)session_id_);
+            reapplyPageSizeIfNeeded();
         } else {
             LOGD("Session creation failed (engine may be maintaining)");
         }
@@ -673,6 +676,9 @@ public:
         LOGI("select_schema result: %s", result ? "true" : "false");
         
         if (result) {
+            // select_schema 按磁盘配置重建 Schema，方案自带的 page_size（PC 默认 5）
+            // 会盖掉 app 设置；此处立即重放（已一致则空操作）
+            reapplyPageSizeIfNeeded();
             // 验证切换是否成功
             char current_schema[256];
             if (rime->get_current_schema(session_id_, current_schema, sizeof(current_schema))) {
@@ -810,6 +816,7 @@ public:
             return false;
         }
         LOGI("New session created: %lu", (unsigned long)session_id_);
+        reapplyPageSizeIfNeeded();
         
         LOGI("Deployment completed successfully");
         return true;
@@ -864,6 +871,7 @@ public:
         
         // 重新创建session
         session_id_ = rime->create_session();
+        reapplyPageSizeIfNeeded();
         LOGI("Deploy schema completed: %s", schemaId);
         return true;
     }
@@ -879,20 +887,58 @@ public:
         }
     }
 
+    // 把记住的每页候选数覆盖值注入引擎（值来自 app 设置，不在 JNI 写死）：
+    // 1) 修改方案配置缓存：schema_open 打开的 ConfigData 由组件按 id 共享，写入后
+    //    之后构造的 Schema 都会读到覆盖值；
+    // 2) 当前会话已用该方案时幂等重建 Schema——Schema 仅在构造时读取
+    //    menu/page_size（FetchUsefulConfigItems），只改配置对已构造的 Schema 无效。
+    // 这是 9961177 冲突收敛时丢失的逻辑：只剩第 1 步，导致设置值永远被方案
+    // 自带的 PC 默认 5 盖掉。
+    void applyPageSizeOverride(const char* schema_id) {
+        if (!rime || page_size_override_ <= 0 || !schema_id) return;
+        // 先拷贝：入参可能来自旧 Schema 的 schema_id()，ApplySchema 会释放它
+        const std::string sid(schema_id);
+        RimeConfig config;
+        if (rime->schema_open(sid.c_str(), &config)) {
+            rime->config_set_int(&config, "menu/page_size", page_size_override_);
+            rime->config_close(&config);
+        } else {
+            LOGE("applyPageSizeOverride: schema_open failed for '%s'", sid.c_str());
+        }
+        if (!session_id_) return;
+        auto session = rime::Service::instance().GetSession(
+            static_cast<rime::SessionId>(session_id_));
+        if (!session) return;
+        auto schema = session->schema();
+        // 仅当会话正用该方案时才需要重建；目标方案不同则只写缓存，随后的
+        // switchSchema/会话重建自然读到覆盖值
+        if (!schema || schema->schema_id() != sid) return;
+        // 已是覆盖值则不再重建：ApplySchema 会重建全部组件（含用户词典），开销大
+        if (schema->page_size() == page_size_override_) return;
+        session->ApplySchema(new rime::Schema(sid));
+        LOGI("applyPageSizeOverride: re-applied schema '%s' (menu/page_size=%d)",
+             sid.c_str(), page_size_override_);
+    }
+
+    // 会话/Schema 重建（创建/部署/切换/词库操作）后重新对齐覆盖值；无覆盖值时空操作
+    void reapplyPageSizeIfNeeded() {
+        if (page_size_override_ <= 0 || !session_id_ || !rime) return;
+        auto session = rime::Service::instance().GetSession(
+            static_cast<rime::SessionId>(session_id_));
+        if (!session) return;
+        auto schema = session->schema();
+        if (!schema) return;
+        applyPageSizeOverride(schema->schema_id().c_str());
+    }
+
     void setPageSize(const char* schema_id, int page_size) {
         if (!rime) {
             LOGE("setPageSize: rime not available");
             return;
         }
-        // schema_open 直接打开方案的配置对象，修改内存中的 menu/page_size
-        RimeConfig config;
-        if (rime->schema_open(schema_id, &config)) {
-            rime->config_set_int(&config, "menu/page_size", page_size);
-            rime->config_close(&config);
-            LOGI("Set schema '%s' menu/page_size=%d via schema_open", schema_id, page_size);
-        } else {
-            LOGE("setPageSize: schema_open failed for '%s'", schema_id);
-        }
+        if (page_size <= 0) return;
+        page_size_override_ = page_size;
+        applyPageSizeOverride(schema_id);
     }
 
     void setOption(const char* option, Bool value) {
@@ -1052,6 +1098,7 @@ public:
             if (session_id_) {
                 rime->select_schema(session_id_, current_schema.c_str());
             }
+            reapplyPageSizeIfNeeded();
         }
         return result;
     }
@@ -1131,6 +1178,7 @@ public:
         if (!current_schema.empty()) {
             rime->select_schema(session_id_, current_schema.c_str());
         }
+        reapplyPageSizeIfNeeded();
         LOGI("User dict sync completed successfully");
         return true;
     }
@@ -1162,6 +1210,7 @@ public:
             if (!session_id_) {
                 LOGE("Failed to create session after user dict operation");
             }
+            reapplyPageSizeIfNeeded();
         }
         return result;
     }
@@ -1264,6 +1313,9 @@ private:
     std::string user_data_dir_;
     std::string shared_data_dir_;
     bool initialized_ = false;
+    // app 设置的每页候选数覆盖值（<=0 表示未设置）；会话/Schema 重建后由
+    // reapplyPageSizeIfNeeded 重新对齐，避免被方案自带的 PC 默认 5 覆盖
+    int page_size_override_ = 0;
     // 维护前的会话状态，供 recreateSessionAfterMaintenance 恢复
     bool session_active_before_maintenance_ = false;
     std::string schema_before_maintenance_;
