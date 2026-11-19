@@ -891,7 +891,7 @@ class MultiMQTTManager:
     # [修复-N3] stop() 中等待分发线程退出的超时（秒）。
     DISPATCH_JOIN_TIMEOUT = 5.0
 
-    def __init__(self,brokers=None,broker_module=None,broker_add=None,log_messages=False,enable_crypto=False, server_public_key_bytes=None, client_private_key_bytes=None, enable_stats=True, log_connection=None, keepalive=60*5, max_reconnect_delay=3600, recovery_enabled=True, recovery_interval=15.0, recovery_probe_timeout=3.0, recovery_force_gap=30.0, recovery_start_grace=90.0,timestamp_window=400,stats_print_interval=None, stats_ping_interval=None, publish_health_enabled=True, publish_ack_timeout=10.0, publish_backlog_threshold=16, publish_backlog_rounds=3, publish_health_max_rebuild=2):
+    def __init__(self,brokers=None,broker_module=None,broker_add=None,log_messages=False,enable_crypto=False, server_public_key_bytes=None, client_private_key_bytes=None, enable_stats=True, log_connection=None, keepalive=60*5, max_reconnect_delay=3600, recovery_enabled=True, recovery_interval=15.0, recovery_probe_timeout=3.0, recovery_force_gap=30.0, recovery_start_grace=90.0,timestamp_window=400,stats_print_interval=None, stats_ping_interval=None, publish_health_enabled=True, publish_ack_timeout=100, publish_backlog_threshold=16, publish_backlog_rounds=3, publish_health_max_rebuild=2):
         if brokers is None:
             # 直读通道：rpc.json 三键合成 + broker_list_no 按 broker_module 屏蔽，
             # server_mqtt 与 client 启动读到同一份 broker。晚绑定导入：rpc_config

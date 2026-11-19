@@ -18,6 +18,18 @@ val ghMirrors = listOf(
     "https://ghproxy.net",
 )
 
+// raw.githubusercontent.com 在部分网络/机房会被整体 404（所有文件一律 404: Not Found），
+// 此时上面这些 raw 代理同样失效，需改用 jsDelivr 的 GitHub CDN 路径：
+//   raw        : https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>
+//   jsDelivr   : https://cdn.jsdelivr.net/gh/<owner>/<repo>@<ref>/<path>
+fun jsDelivrUrl(rawUrl: String): String? {
+    val prefix = "https://raw.githubusercontent.com/"
+    if (!rawUrl.startsWith(prefix)) return null
+    val parts = rawUrl.removePrefix(prefix).split('/', limit = 4)
+    if (parts.size < 4) return null
+    return "https://cdn.jsdelivr.net/gh/${parts[0]}/${parts[1]}@${parts[2]}/${parts[3]}"
+}
+
 // 纯 Java（HttpURLConnection）实现下载，跨平台且不依赖外部 curl/powershell：
 //  - 不依赖构建环境 PATH 中是否有 curl（F-Droid 构建服务器曾因找不到 curl 而构建失败）
 //  - 天然规避 Windows 下 curl/schannel TLS 握手失败（SSL error 35）问题
@@ -92,6 +104,7 @@ fun downloadWithMirrors(urls: List<String>, target: File, workDir: File, desc: S
 }
 
 fun githubUrls(url: String): List<String> = buildList {
+    jsDelivrUrl(url)?.let { add(it) }        // jsDelivr 优先（raw 整体 404 时仍可用）
     ghMirrors.forEach { add("${it.trimEnd('/')}/$url") }
     add(url) // 官方源兜底
 }

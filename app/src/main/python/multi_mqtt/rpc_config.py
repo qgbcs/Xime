@@ -13,7 +13,11 @@ rpc.json 读写逻辑，行为与抽离前逐条保持一致：
   会互相吞掉对方刚写的键，统一锁后跨模块写回串行，消除丢失更新；
 - broker 直读通道（``load_broker_list`` / ``filter_broker_list``）：server_mqtt
   与 client 启动经同一份合成实现读到同样的 broker；``broker_list_no``
-  （可选顶层键，如 ``{"192.168.1.20:1883": ["pty"]}``）支持按模块屏蔽条目。
+  （可选顶层键，如 ``{"192.168.1.20:1883": ["pty"]}``）支持按模块屏蔽条目；
+- broker 条目两种写法等价：数组 ``[host, port(, [user, pass])]`` 与单字符串
+  ``[user:pass@]host[:port]``（可选 ``mqtt://``、``token@host``、缺端口默认
+  1883），rpc.json 的 broker_list / broker_list_add / broker_list_del 与
+  CLI/RPC 显式输入共用 :func:`parse_broker_add` 同一口径。
 
 路径相关接口（``load_rpc_config`` 等）``path=None`` 时读写 :func:`get_config_path`
 返回的唯一路径；server_mqtt / server_http 的模块级 ``RPC_CONFIG_PATH`` 通过
@@ -144,7 +148,8 @@ DEFAULT_STATS_PING_INTERVAL = ConnectionQualityStats.PING_INTERVAL
 # HTTP RPC / MQTT RPC）都先经 normalize_rpc_updates() 归一化，因此别名在
 # 任何入口都等价于规范键。broker_list_add/del 还接受
 # "[user:pass@]host[:port]" 字符串或单条 (host, port, auth)，口径与
-# client 的 --broker_add 一致（缺端口默认 1883）。
+# client 的 --broker_add 一致（缺端口默认 1883）；rpc.json 里的 broker
+# 三键同样接受单字符串条目（_normalize_broker_list 内走 parse_broker_add）。
 RPC_CONFIG_ALIASES = {
     "broker_list": ("brokers", "bl"),
     "broker_list_add": ("add_broker", "add_brokers", "broker_add", "badd", "add"),
@@ -189,11 +194,24 @@ def _default_rpc_config():
 
 
 def _normalize_broker_list(brokers, name, allow_empty=False):
+    """归一 broker 列表：条目可以是数组，也可以是单字符串。
+
+    单字符串走 :func:`parse_broker_add` 的统一口径（``[user:pass@]host[:port]``、
+    可选 ``mqtt://``、``token@host``、缺端口默认 1883），使 rpc.json 与
+    CLI/RPC 显式输入共用同一份解析规则；数组仍按 ``[host, port(, auth)]`` 校验。
+    """
     if not isinstance(brokers, list) or (not brokers and not allow_empty):
         suffix = "列表" if allow_empty else "非空列表"
         raise ValueError(f"{name} 必须是{suffix}")
     normalized_brokers = []
     for index, entry in enumerate(brokers):
+        if isinstance(entry, str):
+            parsed = parse_broker_add(entry)
+            if parsed is None:
+                raise ValueError(
+                    f"{name}[{index}] 必须包含 host、port 和可选认证信息"
+                    f"（字符串格式 [user:pass@]host[:port]：{entry!r}）")
+            entry = parsed
         if not isinstance(entry, (list, tuple)) or len(entry) not in (2, 3):
             raise ValueError(f"{name}[{index}] 必须包含 host、port 和可选认证信息")
         host, port = entry[:2]
@@ -229,13 +247,26 @@ def _broker_identity(broker):
     return broker[0].casefold(), broker[1]
 
 
+def _broker_entry_identity(entry):
+    """任意 broker 条目的身份；单字符串按 parse_broker_add 解析。
+
+    非法/非条目返回 None，调用方据此宽松跳过，绝不抛异常。
+    """
+    if isinstance(entry, str):
+        entry = parse_broker_add(entry)
+    if (isinstance(entry, (list, tuple)) and len(entry) >= 2
+            and isinstance(entry[0], str)):
+        return _broker_identity(entry)
+    return None
+
+
 def _broker_identities(entries):
     """把 broker 条目序列提取成身份集合；非法/非条目项直接跳过，绝不抛异常。"""
     identities = set()
     for entry in entries or ():
-        if (isinstance(entry, (list, tuple)) and len(entry) >= 2
-                and isinstance(entry[0], str)):
-            identities.add(_broker_identity(entry))
+        identity = _broker_entry_identity(entry)
+        if identity is not None:
+            identities.add(identity)
     return identities
 
 
@@ -243,9 +274,7 @@ def _without_broker_identities(entries, identities):
     """剔除指定身份的条目，其它条目原样保留（含非法项，交给后续校验兜底）。"""
     kept = []
     for entry in entries or ():
-        if (isinstance(entry, (list, tuple)) and len(entry) >= 2
-                and isinstance(entry[0], str)
-                and _broker_identity(entry) in identities):
+        if _broker_entry_identity(entry) in identities:
             continue
         kept.append(entry)
     return kept

@@ -18,7 +18,10 @@ import kotlinx.coroutines.flow.update
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.text.SimpleDateFormat
 import java.util.ArrayDeque
+import java.util.Locale
+import java.util.TimeZone
 
 object RpcUiController {
     private const val MAX_LOG_CHARS = 100 * 1024
@@ -389,6 +392,25 @@ object RpcUiController {
         }
     }
 
+    /** 构建期 BUILD_TIME 只含构建机本地时间与时区偏移（yyyy-MM-dd HH:mm:ss Z）。
+     *  读取时再换算成北京时间，拼在原文后的括号里；解析失败原样返回，
+     *  保证 buildInfo 基础字段永远可用。
+     */
+    private fun buildTimeWithBeijing(raw: String): String {
+        return try {
+            val parser = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).apply {
+                isLenient = false
+            }
+            val instant = parser.parse(raw) ?: return raw
+            val beijing = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("Asia/Shanghai")
+            }.format(instant)
+            "$raw（北京时间 $beijing）"
+        } catch (e: Exception) {
+            raw
+        }
+    }
+
     /** RPC：构建信息；在基础字段上合并 Python 侧内置模块与 site-packages 摘要。
      *  Python 未启动或 build_extra 失败时只附 python_error，绝不影响基础字段返回。
      *  sitePackages=false（默认）不扫描 site-packages，只返回内置模块汇总。
@@ -401,7 +423,7 @@ object RpcUiController {
             .put("version_code", BuildConfig.VERSION_CODE)
             .put("git_hash", BuildConfig.GIT_HASH)
             .put("source_fingerprint", BuildConfig.SOURCE_FINGERPRINT)
-            .put("build_time", BuildConfig.BUILD_TIME)
+            .put("build_time", buildTimeWithBeijing(BuildConfig.BUILD_TIME))
         try {
             if (Python.isStarted()) {
                 val extra = JSONObject(
