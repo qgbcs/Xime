@@ -1770,11 +1770,11 @@ fun KeyboardRowWithConfig(
             // 长按选项
             val longPressConfig = KeysConfigHelper.getKeyGesture(key, isAsciiMode)?.longPress
             val longPressDisplay = longPressConfig?.display ?: DisplayMode.KEY
-            val longPressLabels = if (longPressDisplay == DisplayMode.BUBBLE) {
+            val baseLongPressLabels = if (longPressDisplay == DisplayMode.BUBBLE) {
                 longPressConfig?.let { KeysConfigHelper.longPressDisplayItems(it) }
                     ?.ifEmpty { null }
             } else null
-            val longPressGestureMap = if (longPressDisplay == DisplayMode.BUBBLE) {
+            val baseLongPressGestureMap = if (longPressDisplay == DisplayMode.BUBBLE) {
                 longPressConfig?.let { KeysConfigHelper.longPressActionMap(it) }
             } else null
 
@@ -1796,6 +1796,29 @@ fun KeyboardRowWithConfig(
                 LocalQwertyLetterScale.current
             } else {
                 1f
+            }
+
+            // 英文键盘字母键：长按气泡顺序为「键面上方字符 → 反大小写字符 → 当前字符」，
+            // 反大小写随 Shift 变化，配置里的静态顺序无法表达，这里按当前状态重建。
+            val isEnglishLetterKey = isAsciiMode && key.length == 1 && key[0].lowercaseChar() in 'a'..'z'
+            val longPressLabels: List<String>?
+            val longPressGestureMap: Map<String, KeyAction>?
+            if (isEnglishLetterKey && longPressDisplay == DisplayMode.BUBBLE) {
+                val above = swipeUpCommitValue?.takeIf { it.isNotEmpty() } ?: rawSwipeUpLabel.orEmpty()
+                val current = commitValue.orEmpty()
+                val opposite = if (isShifted) current.lowercase() else current.uppercase()
+                val extras = baseLongPressLabels.orEmpty().filter {
+                    it.isNotEmpty() && it != above && it != opposite && it != current
+                }
+                val ordered = (listOf(above, opposite) + extras + listOf(current))
+                    .filter { it.isNotEmpty() }
+                longPressLabels = ordered
+                longPressGestureMap = ordered.associateWith {
+                    KeyAction(action = GestureAction.COMMIT, value = it, explicitAction = true)
+                }
+            } else {
+                longPressLabels = baseLongPressLabels
+                longPressGestureMap = baseLongPressGestureMap
             }
 
             // tap 动作接线：非 COMMIT/SEND_RIME 的动作（复制/粘贴/面板切换等）走手势分发，

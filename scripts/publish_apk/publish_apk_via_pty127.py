@@ -721,12 +721,52 @@ class RemoteJob:
 
 # =============================== 接手上次任务 ===============================
 
+def probe_publish_url(url: str, expect_size: int = 0,
+                      timeout: float = 12.0) -> "tuple[bool, str]":
+    """探测复用链接是否真的还能下载（不拉整包）。
+
+    不能只看日志里的 rc/sha：发布物可能已被撤销（GitHub 分支被重写、Gitee
+    附件被删等），日志仍是旧的 rc=0。这里直接对链接做 HEAD，镜像不支持 HEAD
+    时退回 GET + Range: bytes=0-0，只读 1 字节；若响应带总量则顺带核对大小。
+    """
+    if not url:
+        return False, "空链接"
+    last = ""
+    for method, extra in (("HEAD", {}), ("GET", {"Range": "bytes=0-0"})):
+        headers = {"User-Agent": UA, "Cache-Control": "no-cache"}
+        headers.update(extra)
+        req = urllib.request.Request(url, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                size = 0
+                try:
+                    size = int(resp.headers.get("Content-Length") or 0)
+                except ValueError:
+                    size = 0
+                m = re.search(r"/(\d+)\s*$", resp.headers.get("Content-Range") or "")
+                if m:
+                    size = int(m.group(1))
+                if expect_size and size and size != expect_size:
+                    return False, "大小不符（链接 %dB，期望 %dB）" % (size, expect_size)
+                return True, "HTTP %d，%dB" % (resp.status, size)
+        except urllib.error.HTTPError as exc:
+            last = "HTTP %d" % exc.code
+            if exc.code in (404, 410):
+                return False, last
+        except Exception as exc:  # noqa: BLE001
+            last = "%s: %s" % (type(exc).__name__, exc)
+    return False, last or "探测失败"
+
+
 def resume_or_start_publish(b: Bridge, apk_info: dict, args, work_token: str,
                             cfg: dict, name: str, job_name: str):
     """优先接手最近 24 小时内跑完/仍在跑的 publish_all，否则新启动。
 
+    已完成的任务不再看日志里的 sha，而是实际探测复用链接是否可下载；
+    链接 404/410/大小不符时视为发布物已被撤销，重新走一次发布。
+
     返回 (job, url, outcome)：
-      job=None, outcome="reused"  上次已成功完成，直接复用链接，不再重发；
+      job=None, outcome="reused"  上次发布链接仍真实可下载，直接复用；
       job!=None, outcome="attached" 接手仍在远端跑的进程；
       job!=None, outcome="started"  新启动。
     """
@@ -736,14 +776,15 @@ def resume_or_start_publish(b: Bridge, apk_info: dict, args, work_token: str,
             continue
         log_path = j["dir"] + "/run.log"
         url = job_log_url(b, log_path)
-        sha = job_log_sha(b, log_path)
         if j["rc"] is not None:
-            if expect_base and not remote_log_contains(b, log_path, expect_base):
-                continue
-            if j["rc"] == 0 and url and (not sha or sha == apk_info["sha256"]):
-                log("捡起上次 publish_all（%s）：%.0fs 前完成 rc=0，sha 一致，复用链接"
-                    % (name, j["age"]))
-                return None, url, "reused"
+            if j["rc"] == 0 and url:
+                alive, detail = probe_publish_url(url, apk_info.get("size") or 0)
+                if alive:
+                    log("捡起上次 publish_all（%s）：%.0fs 前完成 rc=0，"
+                        "链接仍可下载（%s），复用链接" % (name, j["age"], detail))
+                    return None, url, "reused"
+                log("上次 publish_all（%s）的链接已失效（%s），重新发布"
+                    % (name, detail))
             continue
         if remote_process_alive(b, "publish_apk_all.py"):
             if expect_base and not remote_log_contains(b, log_path, expect_base):

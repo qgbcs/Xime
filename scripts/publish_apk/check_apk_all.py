@@ -10,10 +10,13 @@
   gitee    Gitee 发行版附件（gitee.com/qgbcs/suishou/releases/download/apk/ime.apk）
   npm      unpkg（npm 包 qgb@latest 包内的 ime.apk）
 
-每个渠道并行下载（默认不落盘，边下边算 sha256/md5），每 3s 打印实时状态：
-  [pa] 下载 12.3MiB/62.9MiB (19.5%) 即时 0.5MiB/s 平均 0.4MiB/s 用时 25s TTFB 12.4s
-久无新字节时改打 ⏳ 行（说明仍在连接/传输，不是卡死；pythonanywhere 免费站点
-实测 TTFB≈129s，因为服务端先缓冲整份 63MB 再回包）。
+除 pa 外的渠道并行下载（默认不落盘，边下边算 sha256/md5），每 3s 打印实时状态：
+  [ghfast] 下载 12.3MiB/62.9MiB (19.5%) 即时 0.5MiB/s 平均 0.4MiB/s 用时 25s TTFB 12.4s
+久无新字节时改打 ⏳ 行（说明仍在连接/传输，不是卡死）。
+
+pa 渠道不做 HTTP 下载、不测速：pythonanywhere 免费站点会先在服务端缓冲整份
+APK 再回包（实测 TTFB≈129s），大量下载会占满 worker，卡住同账号的其他 RPC
+请求。改为走同一个 RPC 入口在服务端读文件，只返回 size 与 sha256/md5。
 
 最后输出一张表：HTTP / 大小 / 用时 / TTFB / 平均速度 / sha256 / md5 / 是否与基准一致。
 基准优先级：--ref-sha > 本地 out/ 最新 APK > 成功渠道的多数共识哈希。
@@ -90,6 +93,50 @@ def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
         for block in iter(lambda: f.read(chunk), b""):
             h.update(block)
     return h.hexdigest()
+
+
+# ---------------------------------------------------------------- pa RPC 校验
+
+# 在 pythonanywhere 上就地读文件返回 size/hash；不经过 HTTP 下载，避免占满 worker。
+RPC_STAT_TEMPLATE = """import os, hashlib, json, time
+__p = os.path.abspath(os.path.expanduser(@@NAME@@))
+info = {'path': __p, 'exists': False}
+if os.path.exists(__p):
+    st = os.stat(__p)
+    h = hashlib.sha256()
+    m = hashlib.md5()
+    with open(__p,'rb') as f:
+        while True:
+            chunk = f.read(1<<20)
+            if not chunk: break
+            h.update(chunk); m.update(chunk)
+    info.update({'exists': True, 'size': st.st_size, 'mtime': st.st_mtime,
+                 'mtime_iso': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(st.st_mtime)),
+                 'sha256': h.hexdigest(), 'md5': m.hexdigest()})
+r = json.dumps(info, ensure_ascii=False)"""
+
+
+def rpc_url(base: str, code: str) -> str:
+    return base + urllib.parse.quote(code, safe="")
+
+
+def rpc_post(url: str, data: bytes, timeout: float) -> "tuple[int, bytes, float]":
+    req = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={"Content-Type": "application/octet-stream",
+                 "User-Agent": UA})
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read(), time.monotonic() - started
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read() or b""
+        except Exception:  # noqa: BLE001
+            body = b""
+        return exc.code, body, time.monotonic() - started
+    except Exception as exc:  # noqa: BLE001
+        return 0, ("%s: %s" % (type(exc).__name__, exc)).encode(), time.monotonic() - started
 
 
 def find_latest_apk(out_dir: Path) -> "Path | None":
@@ -270,6 +317,63 @@ def fetch_channel(key: str, label: str, url: str, timeout: float,
     return info
 
 
+# ---------------------------------------------------------------- pa：RPC 校验
+
+def fetch_pa_rpc(key: str, label: str, url: str, base: str, timeout: float) -> dict:
+    """不下载 APK：让 pythonanywhere 在服务端 stat + 算 sha256，只回一本 JSON。
+
+    免费站点对整份 63MB 的 HTTP 响应会先缓冲再回包，下载测试会长时间占住
+    worker，导致同账号其他 RPC 请求排队；这里改成一次轻量 RPC。
+    """
+    rep = Reporter(key).start()
+    started = time.monotonic()
+    info: dict = {"key": key, "label": label, "url": url, "ok": False,
+                  "status": 0, "size": 0, "sha256": "", "md5": "",
+                  "ttfb": None, "elapsed": 0.0, "speed": 0.0, "error": "",
+                  "saved": "", "method": "rpc"}
+    code = RPC_STAT_TEMPLATE.replace("@@NAME@@", repr(NAME))
+    try:
+        rep.set(phase="RPC 校验：等服务端读文件算 sha256")
+        log(key, "RPC 校验（不下载）：%s" % url)
+        status, body, elapsed = rpc_post(rpc_url(base, code), b"", timeout)
+        info["status"] = status
+        info["ttfb"] = elapsed
+        info["elapsed"] = elapsed
+        text = body.decode("utf-8", "replace").strip()
+        if status != 200:
+            info["error"] = "RPC HTTP %d %s" % (status, text[:200])
+            log(key, "失败：%s" % info["error"])
+            return info
+        try:
+            data = json.loads(text)
+        except ValueError:
+            info["error"] = "RPC 返回非 JSON：%s" % text[:200]
+            log(key, "失败：%s" % info["error"])
+            return info
+        if not data.get("exists"):
+            info["error"] = "RPC 返回 exists=False（%s）" % data.get("path")
+            log(key, "失败：%s" % info["error"])
+            return info
+        info.update({"size": int(data.get("size") or 0),
+                     "sha256": str(data.get("sha256") or ""),
+                     "md5": str(data.get("md5") or ""),
+                     "ok": bool(data.get("sha256"))})
+        if not info["ok"]:
+            info["error"] = "RPC 未返回 sha256"
+            log(key, "失败：%s" % info["error"])
+            return info
+        log(key, "完成：%s，sha256 %s，用时 %.1fs（RPC 校验，无下载）"
+            % (human_size(info["size"]), info["sha256"][:18] + "…", elapsed))
+    except Exception as exc:  # noqa: BLE001
+        info["error"] = "%s: %s" % (type(exc).__name__, exc)
+        log(key, "失败：%s（已用 %.1fs）" % (info["error"], time.monotonic() - started))
+    finally:
+        rep.stop()
+        if not info["elapsed"]:
+            info["elapsed"] = time.monotonic() - started
+    return info
+
+
 # ---------------------------------------------------------------- 报表
 
 def cjk_width(text: str) -> int:
@@ -293,7 +397,7 @@ def print_table(rows: "list[dict]") -> None:
             pad(human_size(r["size"]) if r["size"] else "-", 9),
             pad("%.1fs" % r["elapsed"], 7),
             pad("%.1fs" % r["ttfb"] if r["ttfb"] is not None else "-", 7),
-            pad(speed(r["speed"]) if r["size"] else "-", 11),
+            pad("-" if r.get("method") == "rpc" else (speed(r["speed"]) if r["size"] else "-"), 11),
             pad((r["sha256"][:18] + "…") if r["sha256"] else "-", 20),
             pad((r["md5"] or "-")[:12], 12),
             r["verdict"],
@@ -392,9 +496,13 @@ def main(argv: "list[str] | None" = None) -> int:
     results: "list[dict]" = []
     threads = []
     for key, label, url in picked:
-        t = threading.Thread(target=lambda k=key, lb=label, u=url:
-                             results.append(fetch_channel(k, lb, u, args.timeout, save_dir)),
-                             daemon=True)
+        if key == "pa":
+            target = lambda k=key, lb=label, u=url: results.append(
+                fetch_pa_rpc(k, lb, u, PA_BASE, args.timeout))
+        else:
+            target = lambda k=key, lb=label, u=url: results.append(
+                fetch_channel(k, lb, u, args.timeout, save_dir))
+        t = threading.Thread(target=target, daemon=True)
         t.start()
         threads.append(t)
     for t in threads:
@@ -421,9 +529,12 @@ def main(argv: "list[str] | None" = None) -> int:
     bad = [r for r in results if not r["ok"] or (ref_sha and r["verdict"] != "一致")]
     print("\n[check] 基准: %s%s" % (ref_src, ("  sha256 " + ref_sha) if ref_sha else ""),
           flush=True)
-    print("[check] 共 %d 条：成功 %d，与基准一致 %d，异常 %d，总耗时 %.1fs，共下载 %s"
+    downloaded = sum(r["size"] for r in results if r.get("method") != "rpc")
+    print("[check] 共 %d 条：成功 %d，与基准一致 %d，异常 %d，总耗时 %.1fs，共下载 %s%s"
           % (len(results), len(ok), len(good), len(bad), elapsed,
-             human_size(sum(r["size"] for r in results))), flush=True)
+             human_size(downloaded),
+             "（pa 为 RPC 校验，不计入下载量）"
+             if any(r.get("method") == "rpc" for r in results) else ""), flush=True)
     if bad:
         print("[check] 异常渠道：", flush=True)
         for r in bad:
