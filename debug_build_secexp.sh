@@ -18,7 +18,7 @@ fi
 # ============================================================
 # 注：BUILD_ABIS 可用环境变量覆盖（如 BUILD_ABIS=armeabi-v7a ./debug_build_secexp.sh 出 arm32 包），默认 arm64-v8a。
 unset APPLICATION_ID VERSION_CODE VERSION_NAME APP_NAME
-VERSION_CODE="${VERSION_CODE:-20261117}"
+VERSION_CODE="${VERSION_CODE:-20261120}"
 
 APP_CHINESE_NAME="${APP_CHINESE_NAME:-随手}"
 APP_NAME="${APP_CHINESE_NAME}输入法"
@@ -63,6 +63,32 @@ fi
 
 APP_ICON_PATH="$(realpath -- "$APP_ICON_PATH")"
 printf '%s 应用图标文件：%s\n' $VERSION_CODE "$APP_ICON_PATH"
+
+# 启动图标：直接落到 debug 专属资源目录，保证一定参与资源合并。
+# 历史问题：app/build.gradle.kts 的 generateAppIconResources 会生成
+#   build/generated/appIcon/res/drawable-nodpi/ic_launcher_foreground.png，
+# 但该目录曾未进入 mergeDebugResources，最终 APK 里仍是默认矢量图标。
+# 这里由脚本自己写入 app/src/debug/res/drawable-nodpi/，debug 包必定使用该图标；
+# 该文件是构建产物，已在 .gitignore 中忽略。
+ICON_RES_DIR="$PROJECT_DIR/app/src/debug/res/drawable-nodpi"
+mkdir -p "$ICON_RES_DIR"
+rm -f "$ICON_RES_DIR"/ic_launcher_foreground.*
+python3 - "$APP_ICON_PATH" "$ICON_RES_DIR/ic_launcher_foreground.png" <<'PYICON'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+try:
+    from PIL import Image
+    im = Image.open(src).convert("RGBA")
+    scale = 432.0 / max(im.size)
+    if scale < 1:
+        size = (max(1, round(im.width * scale)), max(1, round(im.height * scale)))
+        im = im.resize(size, Image.LANCZOS)
+    im.save(dst, "PNG")
+except Exception:
+    import shutil
+    shutil.copyfile(src, dst)
+PYICON
+printf '%s 已注入 debug 启动图标：%s\n' $VERSION_CODE "$ICON_RES_DIR/ic_launcher_foreground.png"
 
 # ============================================================
 # 新增环境隔离：强制让 Gradle 和 Android 工具依赖外层工作区目录
@@ -278,6 +304,13 @@ find "$OUT_DIR" -maxdepth 1 -type f -name "${APK_BASENAME}-*.apk" -delete 2>/dev
 
 # 3) 先清理并编译 debug APK，确保同一输入输出一致。
 rm -rf "$PROJECT_DIR/app/build/outputs/apk/debug" "$PROJECT_DIR/out/debug-secexp"
+# 启动图标保证：清掉资源合并/打包中间产物。
+# 历史问题：资源任务判定 up-to-date，packaged_res 还停留在旧状态，
+# 导致 app/src/debug/res 里的图标没进 APK（即使 mergeDebugResources 已执行）。
+rm -rf "$PROJECT_DIR/app/build/intermediates/merged_res" \
+       "$PROJECT_DIR/app/build/intermediates/packaged_res" \
+       "$PROJECT_DIR/app/build/intermediates/incremental/debug/mergeDebugResources" \
+       "$PROJECT_DIR/app/build/intermediates/incremental/debug/packageDebugResources"
 #mkdir -p "$PROJECT_DIR/out/debug-secexp"
 ./gradlew --no-daemon assembleDebug \
   --quiet \

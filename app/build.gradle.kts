@@ -318,9 +318,8 @@ android {
 
     // 测试 classpath 包含 main assets，使 T9Decoder() 无参构造可加载 pinyin_lm.bin
     sourceSets {
-        getByName("debug") {
-            res.srcDir(generatedAppIconResources.get().asFile)
-        }
+        // debug 的启动图标由 debug_build_secexp.sh 直接写入 app/src/debug/res/drawable-nodpi/，
+        // 不再从 build/generated 目录注入，避免生成成功但未进入资源合并。
         getByName("release") {
             res.srcDir(generatedAppIconResources.get().asFile)
         }
