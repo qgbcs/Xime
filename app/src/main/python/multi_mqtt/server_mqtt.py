@@ -964,7 +964,7 @@ class MQTTServer:
             and (now - self.last_command_ts) >= self.global_topic_list_idle_threshold
             and (now - self._last_gtl_publish_ts) >= self.global_topic_list_interval
         ):
-            reason = "startup" if self._last_gtl_publish_ts == 0.0 else "idle_no_command"
+            reason = "startup" if self._last_gtl_publish_ts == 0.0 else "idle"
             self._publish_global_topic_list(reason, confirm_timeout=0)  # 周期任务不阻塞调度循环
 
     def _register_global_topic_list_tick(self):
@@ -1119,9 +1119,9 @@ def start(config=None,globals=None):
     return server.start(block=False)
 
 
-def main(port=1177, host="0.0.0.0", globals=None, locals=None, block=False,
+def main(port=None, host="0.0.0.0", globals=None, locals=None, block=False,
          request_topic=None, pub=None, brokers=None, global_topic_url_list=None):
-    """启动 MQTT + HTTP 双通道 RPC，返回 (http_server, mqtt_server)。
+    """启动 MQTT 服务；显式传 port（如 1188）时才同时开启 HTTP RPC。
 
     globals/locals 原样透传给两个通道的执行器：HTTP 侧零拷贝持有 globals
     字典引用（启动后才赋值的名字对 RPC 实时可见），MQTT 侧 PythonExecutor
@@ -1148,13 +1148,17 @@ def main(port=1177, host="0.0.0.0", globals=None, locals=None, block=False,
         rpc_config_source=rpc_settings,
     )
     gms.mqtt_net.is_windows_cmd = (sys.platform == "win32")
-    import server_http
-    ghs = server_http.start_rpc_server(
-        port=port,
-        ip=host,
-        globals=globals,
-        locals=locals,
-    )
+    ghs = None
+    if port is None:
+        print("[HTTP RPC] 未指定 --port，跳过 HTTP RPC（仅 MQTT）")
+    else:
+        import server_http
+        ghs = server_http.start_rpc_server(
+            port=port,
+            ip=host,
+            globals=globals,
+            locals=locals,
+        )
 
     gms.start(block=block)  # block=True 阻塞主线程直到 KeyboardInterrupt；ipy 等交互调用用默认 False
     print(ghs, gms)
@@ -1165,7 +1169,8 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="mqtt http rpc")
-    parser.add_argument("--port", "-port", "-p", type=int, default=1177)
+    parser.add_argument("--port", "-port", "-p", type=int, default=None,
+                        help="HTTP RPC 端口；不指定则默认不开启 HTTP RPC")
     parser.add_argument("--host", "-host", default="0.0.0.0")
     parser.add_argument("--request_topic", "--topic", "-t", default=None)
     parser.add_argument("--pub", "--pubkey", "-pub", nargs="*", default=None)

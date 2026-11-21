@@ -34,7 +34,7 @@ import stat
 import tempfile
 import threading
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from ecdsa import VerifyingKey
 
@@ -508,11 +508,11 @@ def _normalize_rpc_config(config):
         return sanitized
 
 
-def _json_rpc_config(config):
+def _json_rpc_config(config, broker_as_dsn=False):
     return {
-        "broker_list": _json_brokers(config["broker_list"]),
-        "broker_list_add": _json_brokers(config["broker_list_add"]),
-        "broker_list_del": _json_brokers(config["broker_list_del"]),
+        "broker_list": _json_brokers(config["broker_list"], broker_as_dsn),
+        "broker_list_add": _json_brokers(config["broker_list_add"], broker_as_dsn),
+        "broker_list_del": _json_brokers(config["broker_list_del"], broker_as_dsn),
         "request_topic": config["request_topic"],
         "pub_key": config["pub_key"],
         "global_topic_url_list": list(config["global_topic_url_list"]),
@@ -527,7 +527,34 @@ def _json_rpc_config(config):
     }
 
 
-def _json_brokers(brokers):
+def _broker_to_dsn(broker):
+    """broker 条目 -> 单字符串 DSN，与 :func:`parse_broker_add` 互逆。
+
+    ``[user:pass@]host:port``，用户名/密码按 URI 规则百分号编码（保留 ``/``
+    的可读性），密码为空时输出 ``token@host:port``；IPv6 主机加方括号。
+    写入 rpc.json 时统一用这一种形式，用户手改字符串、程序写回数组的
+    来回切换问题就此消失。
+    """
+    host = str(broker[0])
+    port = broker[1]
+    host_text = f"[{host}]" if ":" in host else host
+    auth = broker[2] if len(broker) == 3 else None
+    if isinstance(auth, str):
+        username, _, password = auth.partition(":")
+        auth = (username, password)
+    if (isinstance(auth, (list, tuple)) and len(auth) >= 2
+            and auth[0] not in (None, "")):
+        username = quote(str(auth[0]), safe="/")
+        password = "" if auth[1] is None else str(auth[1])
+        if password:
+            return f"{username}:{quote(password, safe='/')}@{host_text}:{port}"
+        return f"{username}@{host_text}:{port}"
+    return f"{host_text}:{port}"
+
+
+def _json_brokers(brokers, as_dsn=False):
+    if as_dsn:
+        return [_broker_to_dsn(entry) for entry in brokers]
     return [
         [entry[0], entry[1], list(entry[2]) if isinstance(entry[2], tuple) else entry[2]]
         if len(entry) == 3 else [entry[0], entry[1]]
@@ -1140,11 +1167,14 @@ def _write_rpc_config_updates(updates, path=None, force_write=False):
                 source.get("broker_list_add", ()),
                 _broker_identities(updates["broker_list_del"]))
         normalized = _normalize_rpc_config(source)
-        serialized = _json_rpc_config(normalized)
+        # 落盘统一写成 "[user:pass@]host:port" 单字符串，读回走同一套
+        # parse_broker_add，避免手写字符串/程序写数组两种形态来回切换。
+        serialized = _json_rpc_config(normalized, broker_as_dsn=True)
         patch = {}
         for key in updates:
             if key == "broker_list":
-                patch[key] = _json_brokers(normalized["_broker_list_base"])
+                patch[key] = _json_brokers(normalized["_broker_list_base"],
+                                           as_dsn=True)
             elif key == "pub_key" and updates[key] == "":
                 patch[key] = ""
             elif key in serialized:

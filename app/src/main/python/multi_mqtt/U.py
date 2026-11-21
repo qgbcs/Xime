@@ -177,8 +177,14 @@ def get_system_id():
 
     sysname = platform.system().lower()
     if sysname == "windows":
+        # 32 位进程（含 WOW64 下的 32 位 Python）默认只能看到 32 位注册表视图，
+        # MachineGuid 不在 Wow6432Node 里，必须显式 /reg:64 才能读到；
+        # 真正的 32 位系统没有 64 位视图，该参数会失败，再退回普通查询。
         out = _cmd(["reg", "query", r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography",
-                    "/v", "MachineGuid"])
+                    "/v", "MachineGuid", "/reg:64"])
+        if not out:
+            out = _cmd(["reg", "query", r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography",
+                        "/v", "MachineGuid"])
         if out:
             m = re.search(r"MachineGuid\s+REG_SZ\s+(\S+)", out)
             if m:

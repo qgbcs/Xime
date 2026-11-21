@@ -1452,16 +1452,17 @@ class RPCRequestHandler(BaseHTTPRequestHandler):
                     body = body.encode('utf-8')
                 try:
                     self.wfile.write(body)
-                except (BrokenPipeError, ConnectionResetError):
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                     logging.getLogger("app").info("RPC client disconnected before response path=%s", self.path)
             else:
                 try:
                     self.wfile.write(result_str.encode('utf-8'))
-                except (BrokenPipeError, ConnectionResetError):
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                     logging.getLogger("app").info("RPC client disconnected before response path=%s", self.path)
         except Exception as error:
-            if not isinstance(error, (BrokenPipeError, ConnectionResetError)):
-                self.send_error(500, str(error))
+            if not isinstance(error, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+                # 状态行只能是 latin-1，不能把含中文的异常文本传给 send_error
+                self.send_error(500, 'Internal Server Error')
 
 
 def start_rpc_server(port=1133, key='', ip='0.0.0.0', globals=None, locals=None, daemon=True,
