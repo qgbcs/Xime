@@ -96,7 +96,7 @@ object ClipboardBackup {
         if (isEmpty) {
             importRowsOnce(context, dao)
         } else {
-            requestBackup(context)
+            requestBackup(context, dao)
         }
     }
 
@@ -116,9 +116,11 @@ object ClipboardBackup {
         val ext = prepareImport(context) ?: return
         importAttempted = true
         scope.launch {
-            val dao = com.kingzcheung.xime.clipboard.db.ClipboardDatabase
-                .getInstance(context.applicationContext).clipboardDao()
-            doImport(dao, ext)
+            runCatching {
+                val dao = com.kingzcheung.xime.clipboard.db.ClipboardDatabase
+                    .getInstance(context.applicationContext).clipboardDao()
+                doImport(dao, ext)
+            }.onFailure { Log.w(TAG, "剪贴板恢复入口失败: ${it.message}") }
         }
     }
 
@@ -147,27 +149,28 @@ object ClipboardBackup {
     }
 
     /** 写操作后调用：去抖备份（仅由非空快照触发，空库不覆盖外置）。 */
-    fun requestBackup(context: Context) {
+    fun requestBackup(context: Context, dao: ClipboardDao) {
         val ctx = context.applicationContext
         job?.cancel()
         job = scope.launch {
             delay(BACKUP_DEBOUNCE_MS)
-            doBackup(ctx)
+            doBackup(ctx, dao)
         }
     }
 
-    private fun doBackup(context: Context) {
+    private suspend fun doBackup(context: Context, dao: ClipboardDao) {
         if (backing) return
-        val internal = internalDb(context)
-        val ext = externalDb(context) ?: return
-        if (!internal.isFile) return
-        // 最后防线：外置已有数据而待复制的库是空库，放弃本轮
-        if (ext.isFile && countRows(internal) == 0 && countRows(ext) > 0) {
-            Log.i(TAG, "活库为空、外置备份非空，跳过备份以免覆盖")
-            return
-        }
         backing = true
         try {
+            val internal = internalDb(context)
+            val ext = externalDb(context) ?: return
+            if (!internal.isFile) return
+            // 最后防线：外置已有数据而待复制的库是空库，放弃本轮。
+            // 活库行数走 Room 自己的连接，避免对活库另开 SQLite 句柄并发短读。
+            if (ext.isFile && dao.countAll() == 0 && countRows(ext) > 0) {
+                Log.i(TAG, "活库为空、外置备份非空，跳过备份以免覆盖")
+                return
+            }
             // 外置只保存单一主库：先清掉历史残留的 wal/shm，避免恢复时回放旧数据
             File(ext.absolutePath + "-wal").delete()
             File(ext.absolutePath + "-shm").delete()
@@ -188,14 +191,18 @@ object ClipboardBackup {
         }
     }
 
-    private fun countRows(dbFile: File): Int {
+    /** 统计库文件行数；读取失败（FUSE 短读/库损坏等）返回 -1，绝不抛出。 */
+    private fun countRows(dbFile: File): Int = runCatching {
         SQLiteDatabase.openDatabase(
             dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY
         ).use { db ->
             db.rawQuery("select count(*) from $TABLE", null).use { c ->
-                return if (c.moveToFirst()) c.getInt(0) else 0
+                if (c.moveToFirst()) c.getInt(0) else 0
             }
         }
+    }.getOrElse {
+        Log.w(TAG, "读取行数失败 ${dbFile.name}: ${it.message}")
+        -1
     }
 
     private fun readEntries(dbFile: File): List<ClipboardEntry> {

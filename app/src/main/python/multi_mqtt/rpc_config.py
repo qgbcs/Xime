@@ -30,6 +30,7 @@ import copy
 import json
 import logging
 import os
+import re
 import stat
 import tempfile
 import threading
@@ -1226,6 +1227,46 @@ def _machine_id_or_none():
         return None
 
 
+_TOPIC_ESCAPE_RE = re.compile(r"\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4})")
+
+
+def decode_request_topic_escapes(topic):
+    """显式传入的 request_topic 支持 ``\\xNN`` / ``\\uNNNN`` 转义。
+
+    设备 topic 里可能出现控制字符（例如设备树文件带出的 ``\\x00``），而
+    Windows/Linux 的命令行 argv 都无法携带 NUL，只能约定转义写法；
+    非字符串、或没有反斜杠时原样返回，避免误伤普通 topic。
+    """
+    if not isinstance(topic, str) or "\\" not in topic:
+        return topic
+    return _TOPIC_ESCAPE_RE.sub(
+        lambda match: chr(int(match.group(1)[1:], 16)), topic)
+
+
+def request_topic_error(topic):
+    """检查 request_topic 能否用于 MQTT：合法返回 None，否则返回原因。
+
+    MQTT 规范禁止 topic 出现 U+0000，其余 C0/DEL 控制字符各家 broker 也会
+    直接断连（实测 broker.codenow.cn 收到含 NUL 的 topic 后 rc=7 断开），
+    所以统一按非法处理。
+    """
+    if not isinstance(topic, str):
+        return "不是字符串"
+    if not topic.strip():
+        return "为空"
+    bad = []
+    for ch in topic:
+        if ch < " " or ch == "\x7f":
+            token = "\\x%02x" % ord(ch)
+            if token not in bad:
+                bad.append(token)
+    if bad:
+        return "含控制字符 " + "/".join(bad)
+    if any(0xD800 <= ord(ch) <= 0xDFFF for ch in topic):
+        return "含非法 Unicode 代理项"
+    return None
+
+
 def _mapped_request_topic(stored):
     """request_topic_map[设备id]：命中返回 topic，否则 None（不写回文件）。"""
     topic_map = _read_request_topic_map(stored)
@@ -1250,10 +1291,19 @@ def _resolve_request_topic(request_topic=None, stored=None, path=None):
     # 命中只读不写回，避免共用配置被本机 topic 污染。
     mapped = _mapped_request_topic(stored)
     if mapped is not None:
-        return mapped
+        error = request_topic_error(mapped)
+        if error is None:
+            return mapped
+        logger.warning("rpc.json request_topic_map 命中但非法（%s），忽略：%r",
+                       error, mapped)
 
     if "request_topic" in stored:
-        return stored["request_topic"]
+        stored_topic = stored["request_topic"]
+        error = request_topic_error(stored_topic)
+        if error is None:
+            return stored_topic
+        logger.warning("rpc.json request_topic 非法（%s），回退到默认：%r",
+                       error, stored_topic)
 
     try:
         import U
@@ -1293,9 +1343,18 @@ def resolve_client_request_topic(request_topic=None, path=None):
         stored = {}
     mapped = _mapped_request_topic(stored)
     if mapped is not None:
-        return mapped
+        error = request_topic_error(mapped)
+        if error is None:
+            return mapped
+        logger.warning("rpc.json request_topic_map 命中但非法（%s），忽略：%r",
+                       error, mapped)
     if "request_topic" in stored:
-        return stored["request_topic"]
+        stored_topic = stored["request_topic"]
+        error = request_topic_error(stored_topic)
+        if error is None:
+            return stored_topic
+        logger.warning("rpc.json request_topic 非法（%s），回退到默认 %s：%r",
+                       error, REQUEST_TOPIC, stored_topic)
     return REQUEST_TOPIC
 
 

@@ -1,17 +1,19 @@
 [submodule "librime"]
 	path = app/src/main/jni/librime
 	url = git@github.com:ximeiorg/librime.git
-	ignore = untracked
+	ignore = dirty
 [submodule "app/src/main/jni/snappy"]
 	path = app/src/main/jni/snappy
 	url = https://github.com/google/snappy.git
 [submodule "app/src/main/jni/librime-lua"]
 	path = app/src/main/jni/librime-lua
 	url = https://github.com/hchunhui/librime-lua.git
+	ignore = dirty
 [submodule "app/src/main/jni/librime-lua-deps"]
 	path = app/src/main/jni/librime-lua-deps
 	url = https://github.com/hchunhui/librime-lua.git
 	branch = thirdparty
+	ignore = dirty
 [submodule "app/src/main/jni/librime-octagram"]
 	path = app/src/main/jni/librime-octagram
 	url = https://github.com/lotem/librime-octagram.git

@@ -334,8 +334,11 @@ def get_standard_pem_bytes(key_input) -> bytes:
 
     return raw_bytes # 默认兜底返回
 
-def _describe_public_key(value: bytes | str | None,short_text=False) -> str:
-    """返回可直接写入日志的公钥摘要与详细值。"""
+def _describe_public_key(value, short_text=False):
+    """返回可直接写入日志的公钥摘要与详细值。
+
+    兼容 Python 3.8：不使用 ``bytes | str | None`` 注解（PEP 604 需 3.10+）。
+    """
     if not value:
         return "未配置"
     try:

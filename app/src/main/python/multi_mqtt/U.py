@@ -82,11 +82,14 @@ def get_manufacturer():
         return ""
     if sysname == "darwin":
         return "Apple"
-    for p in ("/sys/devices/virtual/dmi/id/sys_vendor", "/sys/class/dmi/id/sys_vendor",
-              "/sys/firmware/devicetree/base/vendor", "/proc/device-tree/vendor"):
+    for p in ("/sys/devices/virtual/dmi/id/sys_vendor", "/sys/class/dmi/id/sys_vendor"):
         v = _file(p)
         if v:
             return v
+    # 无 DMI 的 ARM 板（如 Hi3798）：走设备树 compatible/vendor/model 兜底
+    vendor, _ = _dtb_identity()
+    if vendor:
+        return vendor
     out = _cmd(["dmidecode", "-s", "system-manufacturer"])
     return out or ""
 
@@ -144,11 +147,14 @@ def get_model():
             if m:
                 return m.group(1).strip()
         return ""
-    for p in ("/sys/devices/virtual/dmi/id/product_name", "/sys/class/dmi/id/product_name",
-              "/proc/device-tree/model"):
+    for p in ("/sys/devices/virtual/dmi/id/product_name", "/sys/class/dmi/id/product_name"):
         v = _file(p)
         if v:
             return v
+    # model 节点只写厂家名时，改取 compatible 里的板型（本机 hi3798mv100-series）
+    _, model = _dtb_identity()
+    if model:
+        return model
     out = _cmd(["dmidecode", "-s", "system-product-name"])
     return out or ""
 
@@ -204,8 +210,65 @@ def get_system_id():
             return v
     return ""
     
+def _printable_identity(value):
+    """机器标识只保留可见字符。
+
+    设备树/固件里的 model、vendor 文件常以 NUL 结尾，直接拼进 MQTT topic
+    会产生非法 topic（broker 收到 U+0000 会断连），所以先过滤控制字符。
+    """
+    return "".join(ch for ch in (value or "") if ch.isprintable())
+
+
+def _dtb_string(path, n=512):
+    """读设备树字符串文件：内容以 NUL 结尾，按字节读并只取第一段。"""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(n)
+    except Exception:
+        return None
+    return raw.split(b"\x00")[0].decode("utf-8", "ignore").strip() or None
+
+
+def _dtb_compat_list(n=4):
+    """compatible 是 NUL 分隔的多字符串，返回前 n 项。"""
+    try:
+        with open("/proc/device-tree/compatible", "rb") as f:
+            raw = f.read(512)
+    except Exception:
+        return []
+    items = [x.decode("utf-8", "ignore").strip() for x in raw.split(b"\x00")]
+    return [x for x in items if x][:n]
+
+
+def _dtb_identity():
+    """设备树兜底 (vendor, model)，用于 DMI 取不到信息的 ARM 板。
+
+    compatible 形如 ["vendor,board"]；部分板子只写板型（本机即
+    "hi3798mv100-series"），此时 model 节点往往只写了厂家名（"Hisilicon"），
+    需要把两者换位使用。
+    """
+    vendor_node = (_dtb_string("/sys/firmware/devicetree/base/vendor")
+                   or _dtb_string("/proc/device-tree/vendor"))
+    model_node = (_dtb_string("/sys/firmware/devicetree/base/model")
+                  or _dtb_string("/proc/device-tree/model"))
+    compat = _dtb_compat_list()
+    compat_vendor = compat_model = ""
+    for entry in compat:
+        if "," in entry:
+            compat_vendor, compat_model = (part.strip()
+                                           for part in entry.split(",", 1))
+            break
+    if not compat_model and compat:
+        compat_model = compat[0]
+    vendor = vendor_node or compat_vendor or model_node or ""
+    model = model_node or ""
+    if model and vendor and model.lower() == vendor.lower():
+        model = ""                       # model 节点只是厂家名，改用 compatible
+    return vendor, (model or compat_model)
+
+
 def get_machine_id():
-    mf=get_manufacturer().replace(" ", "")[:9]
-    mo=get_model().replace(" ", "")[:14]
-    return f"{mf}_{mo}_{get_system_id()[:6]}"
+    mf=_printable_identity(get_manufacturer()).replace(" ", "")[:9]
+    mo=_printable_identity(get_model()).replace(" ", "")[:14]
+    return f"{mf}_{mo}_{_printable_identity(get_system_id())[:6]}"
 get_machine_request_topic=get_machine_id

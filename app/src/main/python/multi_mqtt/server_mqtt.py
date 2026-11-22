@@ -55,6 +55,8 @@ from rpc_config import (
     _valid_stored_request_topic,
     _validate_explicit_updates,
     _validate_rpc_config,
+    decode_request_topic_escapes,
+    request_topic_error,
     filter_broker_list,
     load_broker_list,
 )
@@ -239,7 +241,7 @@ def set_rpc_config(*, path=None, force_write=False, **updates):
             raise
         primary = _primary_server(servers)
         return primary.rpc_config_get() if primary else _json_rpc_config(candidates[-1])
-rpc_config=set_config=set_rpc=rpc_set_config=rpc_config_set=set_rpc_config
+rpc_config=set_config=set_rpc=rpc_conf_set=rpc_set_config=rpc_config_set=set_rpc_config
 
 def get_rpc_config():
     """返回实际生效的设置，只读、无副作用。
@@ -251,7 +253,7 @@ def get_rpc_config():
         if primary is not None:
             return primary.rpc_config_get()
         return _json_rpc_config(load_rpc_config())
-get_config=get_rpc=rpc_get_config=rpc_config_get=get_rpc_config
+get_config=get_rpc=rpc_conf_get=rpc_get_config=rpc_config_get=get_rpc_config
 
 
 
@@ -525,8 +527,8 @@ class MQTTServer:
             return self.rpc_config_get()
 
     # get 只保留一个实现，其余名字统一指向它（set 同理）
-    get_config=get_rpc=rpc_get_config=rpc_config_get=get_rpc_config
-    rpc_config=set_config=set_rpc=rpc_set_config=rpc_config_set=set_rpc_config
+    get_config=get_rpc=rpc_conf_get=rpc_get_config=rpc_config_get=get_rpc_config
+    rpc_config=set_config=set_rpc=rpc_conf_set=rpc_set_config=rpc_config_set=set_rpc_config
 
     def _apply_network_public_key(self, pub_key):
         """热更新验签公钥，不碰任何 MQTT 连接。
@@ -1173,16 +1175,26 @@ if __name__ == "__main__":
                         help="HTTP RPC 端口；不指定则默认不开启 HTTP RPC")
     parser.add_argument("--host", "-host", default="0.0.0.0")
     parser.add_argument("--request_topic", "--topic", "-t", default=None)
+    parser.add_argument("--topic-esc", "--topic_escape", "--decode-topic",
+                        dest="topic_esc", action="store_true",
+                        help=r"把 -t 里的 \xNN / \uNNNN 转义解码成真实字符；"
+                             r"默认按字面量")
     parser.add_argument("--pub", "--pubkey", "-pub", nargs="*", default=None)
     parser.add_argument("--broker", action="append", default=None,
                         help="追加 broker，格式 [user:pass@]host[:port]，缺端口默认 1883")
     parser.add_argument("--global_topic_url_list", nargs="*", default=None)
     args = parser.parse_args()
+    topic = (decode_request_topic_escapes(args.request_topic)
+             if args.topic_esc else args.request_topic)
+    if topic is not None:
+        topic_error = request_topic_error(topic)
+        if topic_error:
+            parser.error("request_topic 非法（%s）：%r" % (topic_error, topic))
     try:
         main(
             port=args.port,
             host=args.host,
-            request_topic=args.request_topic,
+            request_topic=topic,
             pub=args.pub,
             brokers=args.broker,
             global_topic_url_list=args.global_topic_url_list,

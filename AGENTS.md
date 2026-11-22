@@ -1,3 +1,6 @@
+> **先读这条｜工作区干净度判定**：`app/src/main/jni/librime`、`app/src/main/jni/librime-lua`、`app/src/main/jni/librime-lua-deps` 是第三方构建子模块，其中未跟踪/已修改内容一律忽略：不要提交、不要清理、不要当成待办。
+> 判断工作区是否干净用 `git status --short --ignore-submodules=all`；仓库自身文件（发布脚本、`app/src/main/python/` 等）的改动仍须正常 add/commit。
+
 ## 项目简介
 这是一个基于 rime 输入法，采用 kotlin + jetpack compose 构建。
 
