@@ -455,7 +455,13 @@ object RpcUiController {
     private val UI_TARGET_PROPS = mapOf(
         UiOverrides.TARGET_CANDIDATE_LOGO to setOf("badge", "tint"),
         UiOverrides.TARGET_MENU_FEEDBACK to setOf("badge", "label", "icon", "visible"),
+        UiOverrides.TARGET_CLIPBOARD_CLEAR_ALL to setOf("visible"),
     )
+
+    /** 剪贴板「清空」按钮显隐需要跨进程重启保留，同步写入正式设置。 */
+    private fun persistClipboardClearAllVisible(visible: Boolean) {
+        context?.let { SettingsPreferences.setClipboardClearAllVisible(it, visible) }
+    }
 
     /** RPC：向指定 UI 槽位下发属性，如 RpcUiController.uiSet('ime.menu.feedback','label','问题反馈')。 */
     @JvmStatic
@@ -464,6 +470,9 @@ object RpcUiController {
         if (prop !in allowed) return errorResult("unknown_prop:$target#$prop")
         validateUiValue(prop, value)?.let { return errorResult(it) }
         UiOverrides.set(target, prop, value)
+        if (target == UiOverrides.TARGET_CLIPBOARD_CLEAR_ALL && prop == "visible") {
+            persistClipboardClearAllVisible(value != "false")
+        }
         if (prop == "badge") {
             // 红点链路：候选栏图标与菜单反馈项共享同一枚角标
             if (target == UiOverrides.TARGET_CANDIDATE_LOGO) {
@@ -484,6 +493,9 @@ object RpcUiController {
     @JvmStatic
     fun uiClear(target: String, prop: String): String {
         UiOverrides.clear(target, prop)
+        if (target == UiOverrides.TARGET_CLIPBOARD_CLEAR_ALL && prop == "visible") {
+            persistClipboardClearAllVisible(true)
+        }
         if (prop == "badge") UiOverrides.clearBadgeChain()
         return JSONObject().put("ok", true).put("target", target).put("prop", prop).toString()
     }
@@ -492,6 +504,9 @@ object RpcUiController {
     @JvmStatic
     fun uiClearTarget(target: String): String {
         UiOverrides.clearTarget(target)
+        if (target == UiOverrides.TARGET_CLIPBOARD_CLEAR_ALL) {
+            persistClipboardClearAllVisible(true)
+        }
         if (target == UiOverrides.TARGET_CANDIDATE_LOGO || target == UiOverrides.TARGET_MENU_FEEDBACK) {
             UiOverrides.clearBadgeChain()
         }
@@ -502,6 +517,7 @@ object RpcUiController {
     @JvmStatic
     fun uiClearAll(): String {
         UiOverrides.clearAll()
+        persistClipboardClearAllVisible(true)
         return JSONObject().put("ok", true).toString()
     }
 

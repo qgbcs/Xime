@@ -58,11 +58,14 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kingzcheung.xime.clipboard.ClipboardItem
+import com.kingzcheung.xime.settings.SettingsPreferences
+import com.kingzcheung.xime.util.UiOverrides
 import com.kingzcheung.xime.viewmodel.KeyboardViewModel
 import kotlin.math.max
 
@@ -115,6 +118,12 @@ fun ClipboardView(
     var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var showClearConfirm by remember { mutableStateOf(false) }
     val searchFocusRequester = remember { FocusRequester() }
+
+    // 「清空剪贴板」按钮显隐：内存态覆盖优先（RPC 即时生效），否则取持久化设置（默认显示）
+    val appContext = LocalContext.current
+    val persistedClearAllVisible = remember { SettingsPreferences.isClipboardClearAllVisible(appContext) }
+    val clearAllOverride = UiOverrides.get(UiOverrides.TARGET_CLIPBOARD_CLEAR_ALL, "visible")
+    val clearAllVisible = clearAllOverride?.let { it != "false" } ?: persistedClearAllVisible
 
     // 搜索开启时仅获取焦点显示光标；输入法自身窗口内无法再唤起系统键盘，
     // 实际输入由同屏自研 QWERTY 键盘经按键重定向完成（见 ImeKeyboardCallbacks）。
@@ -281,7 +290,7 @@ fun ClipboardView(
                         }
                         Spacer(modifier = Modifier.width(8.dp))
                     }
-                    if (clipboardItems.isNotEmpty()) {
+                    if (clipboardItems.isNotEmpty() && clearAllVisible) {
                         Box(
                             modifier = Modifier
                                 .size(28.dp)

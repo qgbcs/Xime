@@ -34,6 +34,7 @@ object SettingsPreferences {
     private const val KEY_RPC_LOG_AUTO_WRAP = "rpc_log_auto_wrap"
     private const val KEY_RPC_LOG_HEIGHT_DP = "rpc_log_height_dp"
     private const val KEY_LAUNCHER_ICON_HIDDEN = "launcher_icon_hidden"
+    private const val KEY_CLIPBOARD_CLEAR_ALL_VISIBLE = "clipboard_clear_all_visible"
     private const val KEY_SETTING_ITEM_VISIBLE_PREFIX = "setting_item_visible_"
     
     private const val KEY_SOUND_ENABLED = "sound_enabled"
@@ -350,6 +351,15 @@ object SettingsPreferences {
 
     fun setLauncherIconHidden(context: Context, hidden: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_LAUNCHER_ICON_HIDDEN, hidden).apply()
+    }
+
+    /** 剪贴板面板右上角「清空剪贴板」按钮是否显示，默认显示。 */
+    fun isClipboardClearAllVisible(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_CLIPBOARD_CLEAR_ALL_VISIBLE, true)
+    }
+
+    fun setClipboardClearAllVisible(context: Context, visible: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_CLIPBOARD_CLEAR_ALL_VISIBLE, visible).apply()
     }
 
     fun isSetupCompleted(context: Context): Boolean {

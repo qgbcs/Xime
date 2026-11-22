@@ -11,6 +11,8 @@ import androidx.compose.runtime.mutableStateMapOf
 object UiOverrides {
     const val TARGET_CANDIDATE_LOGO = "ime.candidate.logo"
     const val TARGET_MENU_FEEDBACK = "ime.menu.feedback"
+    /** 剪贴板面板右上角「清空剪贴板」按钮，仅控制显隐，不涉及数据。 */
+    const val TARGET_CLIPBOARD_CLEAR_ALL = "ime.clipboard.clearall"
 
     private val values = mutableStateMapOf<String, String>()
 

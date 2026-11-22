@@ -130,6 +130,29 @@ def _layout_class():
     return cls
 
 
+def _insets_class():
+    cls = _PROXIES.get("insets")
+    if cls is None:
+        from android.view import View
+        from java import dynamic_proxy
+
+        class OnInsetsProxy(dynamic_proxy(View.OnApplyWindowInsetsListener)):
+            def __init__(self, fn=None):
+                super().__init__()
+                self.fn = fn
+
+            def onApplyWindowInsets(self, view, insets):
+                if self.fn is not None:
+                    try:
+                        self.fn(view, insets)
+                    except BaseException as error:
+                        _log("insets", error)
+                return insets
+
+        cls = _PROXIES["insets"] = OnInsetsProxy
+    return cls
+
+
 def _post(fn):
     """投递到主线程：RPC 线程直接改 View 会崩，必须走 Handler。"""
     from android.os import Handler, Looper
@@ -557,6 +580,32 @@ def signal_status():
         return json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False)
 
 
+def _pad_for_ime(context, root):
+    """Android 15（targetSdk 35）强制 edge-to-edge 后 adjustResize 不再收缩窗口，
+    改为监听 WindowInsets 手动让出软键盘高度，避免输入栏被键盘遮挡。
+    低版本系统继续交给 manifest 的 adjustResize。"""
+    try:
+        from android.os import Build
+        if int(Build.VERSION.SDK_INT) < 35:
+            return
+        from android.view import WindowInsets
+        ime_type = WindowInsets.Type.ime()
+        nav_type = WindowInsets.Type.navigationBars()
+        status_type = WindowInsets.Type.statusBars()
+
+        def apply_insets(view, insets):
+            ime = insets.getInsets(ime_type).bottom
+            nav = insets.getInsets(nav_type).bottom
+            status = insets.getInsets(status_type).top
+            # 键盘弹出时垫到键盘上方；收起时只让出导航栏，否则输入栏会沉到导航栏下面
+            view.setPadding(0, status, 0, max(ime, nav))
+
+        root.setOnApplyWindowInsetsListener(_insets_class()(apply_insets))
+        root.requestApplyInsets()
+    except Exception as error:
+        _log("pad for ime", error)
+
+
 def build_view(context):
     from android.view import ViewGroup, Gravity
     from android.widget import Button, EditText, LinearLayout, ScrollView, TextView
@@ -575,6 +624,8 @@ def build_view(context):
     root.setOrientation(LinearLayout.VERTICAL)
     root.setBackgroundColor(_color(_PAGE_BG))
     root.setLayoutParams(ViewGroup.LayoutParams(match, match))
+    # Android 15 起键盘高度只能靠 WindowInsets 拿到（adjustResize 已失效）
+    _pad_for_ime(context, root)
 
     # ---- 顶部栏 ----
     bar = LinearLayout(context)
