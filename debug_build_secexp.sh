@@ -132,6 +132,90 @@ fi
 export ANDROID_HOME="$ANDROID_HOME_DEFAULT"
 export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME_DEFAULT}"
 
+# ============================================================
+# 可重复构建：工具链指纹检测（只告警，永不阻断构建）
+# 首次运行写入 repro_env_baseline.json；以后不一致只提醒。
+# ============================================================
+check_toolchain_fingerprint() {
+    local baseline_file="$PROJECT_DIR/repro_env_baseline.json"
+    local jdk_version agp_version kotlin_version gradle_version
+    local build_tools platform ndk cmake d8_sha py_path py_version py_sha
+
+    jdk_version="$(java -version 2>&1 | head -n 1 | tr -d '\r')"
+    agp_version="$(sed -n 's/^agp[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' gradle/libs.versions.toml 2>/dev/null | head -n 1)"
+    kotlin_version="$(sed -n 's/^kotlin[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' gradle/libs.versions.toml 2>/dev/null | head -n 1)"
+    gradle_version="$(sed -n 's#^distributionUrl=.*gradle-\([0-9.]*\)-bin\.zip#\1#p' gradle/wrapper/gradle-wrapper.properties 2>/dev/null | head -n 1)"
+    build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort -V | tail -n 1)"
+    platform="$(find "$ANDROID_HOME/platforms" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort -V | tail -n 1)"
+    ndk="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort -V | tail -n 1)"
+    cmake="$(find "$ANDROID_HOME/cmake" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort -V | tail -n 1)"
+    d8_sha=""
+    if [[ -n "$build_tools" && -f "$ANDROID_HOME/build-tools/$build_tools/lib/d8.jar" ]]; then
+        d8_sha="$(sha256sum "$ANDROID_HOME/build-tools/$build_tools/lib/d8.jar" | cut -c1-16)"
+    fi
+    if [[ -x "/usr/bin/python$PYTHON_VERSION" ]]; then
+        py_path="$(readlink -f "/usr/bin/python$PYTHON_VERSION" 2>/dev/null || printf '%s' "/usr/bin/python$PYTHON_VERSION")"
+        py_version="$(/usr/bin/python$PYTHON_VERSION -V 2>&1 | tr -d '\r')"
+        py_sha="$(sha256sum "$py_path" 2>/dev/null | cut -c1-16)"
+    else
+        py_path="/usr/bin/python$PYTHON_VERSION"
+        py_version="missing"
+        py_sha=""
+    fi
+
+    REPRO_PROJECT_DIR="$PROJECT_DIR" \
+    REPRO_JDK="$jdk_version" \
+    REPRO_AGP="$agp_version" \
+    REPRO_KOTLIN="$kotlin_version" \
+    REPRO_GRADLE="$gradle_version" \
+    REPRO_BUILD_TOOLS="$build_tools" \
+    REPRO_PLATFORM="$platform" \
+    REPRO_NDK="$ndk" \
+    REPRO_CMAKE="$cmake" \
+    REPRO_D8_SHA256_16="$d8_sha" \
+    REPRO_PYTHON_PATH="$py_path" \
+    REPRO_PYTHON_VERSION="$py_version" \
+    REPRO_PYTHON_SHA256_16="$py_sha" \
+    python3 - "$baseline_file" <<'PYREPRO'
+import json, os, sys
+
+baseline_path = sys.argv[1]
+current = {
+    "project_dir": os.environ["REPRO_PROJECT_DIR"],
+    "jdk": os.environ["REPRO_JDK"],
+    "agp": os.environ["REPRO_AGP"],
+    "kotlin": os.environ["REPRO_KOTLIN"],
+    "gradle": os.environ["REPRO_GRADLE"],
+    "build_tools": os.environ["REPRO_BUILD_TOOLS"],
+    "platform": os.environ["REPRO_PLATFORM"],
+    "ndk": os.environ["REPRO_NDK"],
+    "cmake": os.environ["REPRO_CMAKE"],
+    "d8_sha256_16": os.environ["REPRO_D8_SHA256_16"],
+    "python_path": os.environ["REPRO_PYTHON_PATH"],
+    "python_version": os.environ["REPRO_PYTHON_VERSION"],
+    "python_sha256_16": os.environ["REPRO_PYTHON_SHA256_16"],
+}
+
+if not os.path.exists(baseline_path):
+    with open(baseline_path, "w", encoding="utf-8") as handle:
+        json.dump(current, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+    print(f"[可重复构建] 已写入工具链基线: {baseline_path}")
+else:
+    with open(baseline_path, encoding="utf-8") as handle:
+        baseline = json.load(handle)
+    diffs = [(key, baseline.get(key), value) for key, value in current.items()
+             if baseline.get(key) != value]
+    if not diffs:
+        print("[可重复构建] 工具链与基线一致")
+    else:
+        print("[可重复构建][警告] 工具链与基线不一致（仅告警，继续构建）:")
+        for key, old, new in diffs:
+            print(f"  - {key}: 基线={old!r} 当前={new!r}")
+PYREPRO
+}
+check_toolchain_fingerprint || echo "警告: 工具链指纹检测失败，继续构建。" >&2
+
 
 # ============================================================
 # 子模块同步：只认 .gitmodules 里的 path/url，rsync 权威覆盖
@@ -192,6 +276,28 @@ if [[ -d "$source_dir" ]]; then
 else
     echo "警告: 同步源目录不存在: $source_dir，跳过 rsync。" >&2
 fi
+
+# ============================================================
+# 可重复构建：统一 Python 源码 mtime、清理 __pycache__
+# Chaquopy 打包 assets/chaquopy/app.imy 时会带上源文件时间戳，mtime 不稳
+# 会让同一份源码产出不同的 app.imy。在 gradle 之前钉死时间。
+# ============================================================
+normalize_python_sources() {
+    local stamp="2026-11-11 00:00:00 UTC"
+    local roots=("$PROJECT_DIR/app/src/main/python")
+    # site-packages 如果被解包到源码树，一并纳入（当前默认由 chaquopy 管理）
+    [[ -d "$PROJECT_DIR/app/src/main/python/site-packages" ]] && \
+        roots+=("$PROJECT_DIR/app/src/main/python/site-packages")
+    local root
+    for root in "${roots[@]}"; do
+        [[ -d "$root" ]] || continue
+        find "$root" -type d -name '__pycache__' -prune -exec rm -rf -- {} + 2>/dev/null || true
+        find "$root" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete 2>/dev/null || true
+        find "$root" -type f -name '*.py' -exec touch -d "$stamp" -- {} + 2>/dev/null || true
+    done
+    echo "已统一 Python 源码 mtime: $stamp，并清理 __pycache__"
+}
+normalize_python_sources
 
 ensure_native_dependency() {
     local repository="$1"
@@ -350,6 +456,9 @@ with zipfile.ZipFile(src, 'r') as zin:
             data = zin.read(info.filename)
             new_info = zipfile.ZipInfo(info.filename)
             new_info.compress_type = info.compress_type
+            # 构建时间戳占位文件必须 STORED：签名前要定长就地改写，DEFLATE 流做不到。
+            if info.filename == "assets/build_time.txt":
+                new_info.compress_type = zipfile.ZIP_STORED
             new_info.date_time = (1980, 1, 1, 0, 0, 0)
             new_info.extra = b''
             new_info.comment = b''
@@ -375,6 +484,21 @@ ALIGNED_APK="$PROJECT_DIR/app/build/outputs/apk/debug/aligned-${VERSION_CODE}-${
 rm -f "$APK_PATH"
 APK_PATH="$ALIGNED_APK"
 "$ZIPALIGN_BIN" -c -p 4 "$APK_PATH"
+
+# 5c) 构建时间戳：zipalign 之后、签名之前，原地写入 assets/build_time.txt。
+#     固定 48 字节、STORED、长度不变，只改数据区 + 本地头/中央目录两处 CRC；
+#     所以同一份源码的两次构建只在这个戳与签名块上有差异。
+#     BUILD_TIME_VALUE 可固定时间（可重复性测试），缺省取当前构建机本地时间。
+STAMP_OK=1
+if [[ -n "${BUILD_TIME_VALUE:-}" ]]; then
+    python3 "$PROJECT_DIR/scripts/apk_build_time_stamp.py" set "$APK_PATH" \
+        --value "$BUILD_TIME_VALUE" || STAMP_OK=0
+else
+    python3 "$PROJECT_DIR/scripts/apk_build_time_stamp.py" set "$APK_PATH" || STAMP_OK=0
+fi
+if [[ "$STAMP_OK" != "1" ]]; then
+    echo "警告: 写入构建时间戳失败，build_time 将保持占位值（不影响主流程）。" >&2
+fi
 
 # 6) 使用 apk_sign.py 通过 secexp 确定性生成签名密钥并签名
 python3 "$PROJECT_DIR/apk_sign.py" "$APK_PATH" \

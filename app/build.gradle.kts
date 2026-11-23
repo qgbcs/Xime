@@ -1,9 +1,7 @@
 import com.android.build.gradle.internal.api.BaseVariantOutputImpl
 import org.gradle.api.tasks.Sync
 import java.security.MessageDigest
-import java.text.SimpleDateFormat
 import java.util.Base64
-import java.util.Date
 import java.util.Properties
 
 plugins {
@@ -79,6 +77,28 @@ fun getSourceFingerprint(): String {
     return digest.digest().joinToString("") { it.toInt().and(0xff).toString(16).padStart(2, '0') }
 }
 
+// 递归记录 submodule 精确 commit，构建期固化成 BuildConfig.GIT_SUBMODULES（JSON: path -> sha）
+fun getGitSubmodules(): String {
+    return try {
+        val process = ProcessBuilder("git", "submodule", "status", "--recursive")
+            .directory(rootDir)
+            .start()
+        val output = process.inputStream.bufferedReader().readText()
+        process.waitFor()
+        val q = 34.toChar()
+        val entries = output.lines().mapNotNull { line ->
+            val trimmed = line.trim().removePrefix("-").removePrefix("+").removePrefix("U")
+            if (trimmed.length < 41) return@mapNotNull null
+            val sha = trimmed.substring(0, 40)
+            if (!sha.all { it in "0123456789abcdef" }) return@mapNotNull null
+            val path = trimmed.substring(40).trim().substringBefore(' ')
+            "$q$path$q:$q$sha$q"
+        }
+        "{${entries.joinToString(",")}}"
+    } catch (e: Exception) {
+        "{}"
+    }
+}
 val supportedAbis = listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
 val buildAbis = providers.gradleProperty("buildAbis")
     .orNull
@@ -163,8 +183,9 @@ val configuredVersionName = providers.gradleProperty("versionName")
 val escapedAppName = configuredAppName.replace("\\", "\\\\").replace("\"", "\\\"")
 val escapedChineseAppName = configuredChineseAppName.replace("\\", "\\\\").replace("\"", "\\\"")
 
-// 获取构建时间已移除：构建时刻会写入 BuildConfig 进而进入 classes.dex，
-// 破坏 F-Droid 可复现构建（不同环境构建时间不同导致产物不一致）。
+// 构建时刻不进 BuildConfig（会进 classes.dex，破坏可重复构建）。
+// 改由构建收尾阶段原地写入 apk 内 assets/build_time.txt（固定 48 字节、STORED），
+// 运行时按需读取；同一份源码的两次构建只在该戳与签名块上有差异。
 
 // 加载签名配置
 val keystorePropertiesFile = rootProject.file("app/keystore.properties")
@@ -217,11 +238,10 @@ android {
         // 构建信息
         buildConfigField("String", "GIT_HASH", "\"${getGitHash()}\"")
         buildConfigField("String", "SOURCE_FINGERPRINT", "\"${getSourceFingerprint()}\"")
-        // APK 构建时刻：配置阶段取一次注入 BuildConfig，RPC buildInfo 直接读出。
-        // 这里只记录构建机本地时间及其显式时区偏移（如 2026-11-16 20:48:57 +0100）；
-        // 括号内的北京时间由 RpcUiController.buildInfo() 调用时再换算追加。
-        val buildTimeWithZone = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z").format(Date())
-        buildConfigField("String", "BUILD_TIME", "\"$buildTimeWithZone\"")
+        // submodule 精确 commit（递归），构建期固化；buildInfo 仅在传参时返回
+        val escapedGitSubmodules = getGitSubmodules().replace("\\", "\\\\").replace("\"", "\\\"")
+        buildConfigField("String", "GIT_SUBMODULES", "\"$escapedGitSubmodules\"")
+        // 构建时刻不进编译产物：由脚本在签名前写入 assets/build_time.txt。
     }
 
     signingConfigs {

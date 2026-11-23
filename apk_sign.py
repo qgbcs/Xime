@@ -37,70 +37,271 @@
 import argparse
 import datetime
 import hashlib
+import importlib.metadata
 import importlib.util
+import json
 import os
+import platform
 import re
 import struct
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
-def _pip_install(packages, index_url):
+SIGN_VENV = Path(os.environ.get("XIME_SIGN_VENV", "/root/.cache/xime-sign-venv"))
+REQUIREMENTS_IN = Path(__file__).with_name("requirements.in")
+LOCK_FILE = Path(__file__).with_name("pip-lock.json")
+SIGN_PACKAGES = ("cryptography", "ecdsa", "asn1crypto")
+LOCK_SCHEMA = 1
+
+
+def _venv_python() -> Path:
+    return SIGN_VENV / "bin" / "python"
+
+
+def _python_bin() -> str:
+    """venv 不可用时退回当前解释器，保证签名步骤不被环境问题卡死。"""
+    python = _venv_python()
+    return str(python) if python.exists() else sys.executable
+
+
+def _in_sign_venv() -> bool:
+    try:
+        return Path(sys.prefix).resolve() == SIGN_VENV.resolve()
+    except OSError:
+        return False
+
+
+def _bootstrap_sign_venv() -> None:
+    """把签名依赖固定装进专用 venv，避免镜像/系统 Python 漂移。
+
+    首次运行创建 venv，然后用 os.execv 以 venv 解释器重新执行本脚本。
+    """
+    if _in_sign_venv():
+        return
+    python = _venv_python()
+    if not python.exists():
+        print(f"[+] 创建签名专用 venv: {SIGN_VENV}")
+        try:
+            SIGN_VENV.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.check_call([sys.executable, "-m", "venv", str(SIGN_VENV)])
+        except (OSError, subprocess.CalledProcessError) as error:
+            print(f"[!] venv 创建失败，退回当前解释器: {error}", file=sys.stderr)
+            return
+    os.execv(str(python), [str(python), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
+def _index_urls():
+    override = os.environ.get("APK_SIGN_PIP_INDEX", "").strip()
+    if override:
+        return [override]
+    if "PYTHONANYWHERE_DOMAIN" in os.environ or "SPACE_ID" in os.environ:
+        return ["https://pypi.org/simple",
+                "https://pypi.tuna.tsinghua.edu.cn/simple"]
+    return ["https://pypi.tuna.tsinghua.edu.cn/simple",
+            "https://pypi.org/simple"]
+
+
+def _pip_command(args, index_url):
     command = [
-        sys.executable,
+        _python_bin(),
         "-m",
         "pip",
         "install",
         "--disable-pip-version-check",
-        "-i",
-        index_url,
+        "--no-input",
     ]
-    if "tuna" in index_url:
-        command += ["--trusted-host", "pypi.tuna.tsinghua.edu.cn"]
+    if index_url:
+        command += ["-i", index_url]
+        if "tuna" in index_url:
+            command += ["--trusted-host", "pypi.tuna.tsinghua.edu.cn"]
+    return command + [str(arg) for arg in args]
+
+
+def _run_pip(args, index_url):
+    """执行一次 pip install，并用 --report 拿回解析/安装结果。"""
+    handle, name = tempfile.mkstemp(prefix="xime-pip-", suffix=".json")
+    os.close(handle)
+    report_path = Path(name)
     try:
-        subprocess.check_call(command + list(packages))
-        return True
-    except (OSError, subprocess.CalledProcessError) as error:
-        print(f"[!] 使用 {index_url} 安装依赖失败: {error}", file=sys.stderr)
-        return False
+        result = subprocess.run(
+            _pip_command([*args, "--report", str(report_path)], index_url),
+            capture_output=True,
+            text=True,
+        )
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            report = {}
+        if result.returncode != 0:
+            tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
+            print("[!] pip 失败: " + " | ".join(tail), file=sys.stderr)
+        return result, report
+    finally:
+        report_path.unlink(missing_ok=True)
+
+
+def _report_packages(report):
+    packages = {}
+    for item in report.get("install", []):
+        metadata = item.get("metadata", {})
+        name = str(metadata.get("name", "")).strip().lower()
+        version = str(metadata.get("version", "")).strip()
+        if not name or not version:
+            continue
+        hashes = item.get("download_info", {}).get("archive_info", {}).get("hashes", {})
+        packages[name] = {"version": version, "sha256": str(hashes.get("sha256", ""))}
+    return packages
+
+
+def _read_lock():
+    if not LOCK_FILE.is_file():
+        return {}
+    try:
+        return json.loads(LOCK_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _tool_version(name):
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return ""
+
+
+def _collect_installed(names, latest, previous_packages):
+    """以 venv 里实际安装的版本为准写 lock（pip 报告对“已满足”的包为空）。"""
+    packages = {}
+    for name in sorted(names):
+        version = _tool_version(name)
+        if not version:
+            continue
+        hashes = ""
+        old = previous_packages.get(name)
+        if old and old.get("version") == version:
+            hashes = old.get("sha256", "")
+        elif latest.get(name, {}).get("version") == version:
+            hashes = latest[name].get("sha256", "")
+        packages[name] = {"version": version, "sha256": hashes}
+    return packages
+
+
+def _write_lock(packages, previous):
+    """写入 lock；pip/setuptools/wheel 保留首次成功构建时的版本作为基线。"""
+    payload = {
+        "schema": LOCK_SCHEMA,
+        "python": {
+            "version": platform.python_version(),
+            "implementation": platform.python_implementation(),
+            "platform": platform.platform(),
+            "abi": "cp{}{}".format(sys.version_info.major, sys.version_info.minor),
+        },
+        "pip": previous.get("pip") or _tool_version("pip"),
+        "setuptools": previous.get("setuptools") or _tool_version("setuptools"),
+        "wheel": previous.get("wheel") or _tool_version("wheel"),
+        "packages": {name: packages[name] for name in sorted(packages)},
+    }
+    LOCK_FILE.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    print(f"[+] 已更新依赖锁: {LOCK_FILE}")
+    return payload
+
+
+def _major(version) -> str:
+    return str(version).split(".")[0]
+
+
+def _install_targets(targets, index_url):
+    specs = [f"{name}=={info['version']}" for name, info in sorted(targets.items())]
+    result, report = _run_pip(specs, index_url)
+    return result.returncode == 0, report
+
+
+def _pin_tools(lock):
+    """把 pip/setuptools/wheel 对齐到 lock；lock 首次没有版本时装最新并回写。"""
+    index_url = _index_urls()[0]
+    for name in ("pip", "setuptools", "wheel"):
+        current = _tool_version(name)
+        target = str(lock.get(name, "")).strip()
+        if target:
+            if current == target:
+                continue
+            spec = f"{name}=={target}"
+        else:
+            if current:
+                continue
+            spec = name
+        print(f"[+] 对齐 {name}: {spec}")
+        result, _ = _run_pip([spec], index_url)
+        if result.returncode != 0:
+            print(f"[!] {name} 对齐失败，继续使用当前版本 {_tool_version(name) or '未安装'}",
+                  file=sys.stderr)
 
 
 def ensure_dependencies():
-    """缺依赖时自动 pip 安装（同 multi_mqtt.py 的机制）。"""
-    packages = {
-        "cryptography": "cryptography",
-        "ecdsa": "ecdsa",
-        "asn1crypto": "asn1crypto",
-    }
-    missing = [package for module, package in packages.items()
-               if importlib.util.find_spec(module) is None]
-    if not missing:
+    """签名依赖：专用 venv + 锁文件 + 主版本闸门。
+
+    规则：lock 里已有同主版本 -> 钉死 lock 的精确版本；出现主版本跃迁
+    （含 certifi 这类日期版本号按年跳）-> 放开该包按最新解析，成功后覆盖
+    lock。任何网络/解析问题都不阻断构建，退化为使用本地已装版本。
+    """
+    _bootstrap_sign_venv()
+    lock = _read_lock()
+    locked = lock.get("packages", {})
+    missing = [name for name in SIGN_PACKAGES if importlib.util.find_spec(name) is None]
+
+    latest, index_url = {}, None
+    for candidate in _index_urls():
+        result, report = _run_pip(
+            ["-r", str(REQUIREMENTS_IN), "--dry-run", "--ignore-installed"], candidate
+        )
+        if result.returncode == 0 and report.get("install"):
+            latest, index_url = _report_packages(report), candidate
+            break
+
+    if not latest:
+        if missing:
+            sys.exit("[!] 缺少签名依赖且无法访问包索引: " + ", ".join(missing))
+        print("[!] 包索引不可用，沿用现有 venv 与 lock（离线）。", file=sys.stderr)
+        _pin_tools(lock)
         return
 
-    print(f"[+] 缺少依赖: {', '.join(missing)}，开始自动安装 ...")
-    # 可用 APK_SIGN_PIP_INDEX 指定源；默认按环境选源，失败自动换下一个源。
-    override = os.environ.get("APK_SIGN_PIP_INDEX", "").strip()
-    if override:
-        index_urls = [override]
-    elif "PYTHONANYWHERE_DOMAIN" in os.environ or "SPACE_ID" in os.environ:
-        index_urls = ["https://pypi.org/simple",
-                      "https://pypi.tuna.tsinghua.edu.cn/simple"]
-    else:
-        index_urls = ["https://pypi.tuna.tsinghua.edu.cn/simple",
-                      "https://pypi.org/simple"]
+    targets, jumps, added = {}, [], []
+    for name, info in latest.items():
+        old = locked.get(name)
+        if not old:
+            targets[name] = info
+            added.append(name)
+        elif _major(old.get("version", "")) == _major(info["version"]):
+            targets[name] = old
+        else:
+            targets[name] = info
+            jumps.append((name, old.get("version"), info["version"]))
 
-    for index_url in index_urls:
-        if _pip_install(missing, index_url):
-            break
-    else:
-        sys.exit(f"[!] 依赖安装失败，请手动执行: {sys.executable} -m pip install "
-                 f"{' '.join(missing)}")
+    print("[+] 签名依赖: " + ", ".join(
+        f"{name}=={info['version']}" for name, info in sorted(targets.items())
+    ))
+    if added:
+        print("[+] 新增依赖: " + ", ".join(sorted(added)))
+    for name, old, new in jumps:
+        print(f"[+] 主版本跃迁: {name} {old} -> {new}")
 
-    still_missing = [module for module in packages
-                     if importlib.util.find_spec(module) is None]
-    if still_missing:
-        sys.exit(f"[!] 依赖安装后仍无法导入: {', '.join(still_missing)}")
+    ok, report = _install_targets(targets, index_url)
+    if not ok:
+        print("[!] 锁定版本安装失败，放开全图重新解析一次。", file=sys.stderr)
+        ok, report = _install_targets(latest, index_url)
+    if not ok or not all(importlib.util.find_spec(name) for name in SIGN_PACKAGES):
+        sys.exit("[!] 签名依赖安装失败")
+
+    _pin_tools(lock)
+    lock = _write_lock(
+        _collect_installed(set(latest) | set(targets), latest, locked), lock
+    )
+
 
 ensure_dependencies()
 
@@ -124,6 +325,8 @@ V3_BLOCK_ID = 0xF05368C0
 ECDSA_SHA256_ALGID = 0x0201          # ECDSA with SHA-256, CHUNKED_SHA256 内容摘要
 CHUNK_MAX_SIZE_BYTES = 1024 * 1024   # 1MB 分块
 V3_MAX_SDK = 0x7FFFFFFF
+SIGNING_BLOCK_PADDING_ID = 0x42726577   # AOSP verity padding 对，验证器忽略
+SIGNING_BLOCK_TARGET_SIZE = 4096        # 固定签名块总长，避免中央目录位移
 
 
 def private_key_from_pem(pem_path: Path) -> ec.EllipticCurvePrivateKey:
@@ -391,6 +594,18 @@ def _build_signing_block(v2_value: bytes, v3_value: bytes) -> bytes:
         pairs += struct.pack("<Q", 4 + len(value))
         pairs += struct.pack("<I", block_id)
         pairs += value
+    # 固定签名块总长：ECDSA DER 长度会因 r/s 前导零差 0~2 字节，块变长会让
+    # 中央目录整体位移，逐字节对比就退化成整段 CD 不同。用 AOSP 认可的
+    # verity padding 对（0x42726577，验证器忽略）把块补齐到固定总长。
+    minimum = 8 + len(pairs) + 8 + 16
+    target = SIGNING_BLOCK_TARGET_SIZE
+    while target < minimum:
+        target += SIGNING_BLOCK_TARGET_SIZE
+    pad_len = target - minimum - 12
+    if pad_len > 0:
+        pairs += struct.pack("<Q", 4 + pad_len)
+        pairs += struct.pack("<I", SIGNING_BLOCK_PADDING_ID)
+        pairs += b"\x00" * pad_len
     # size 字段统计的是其后所有字节：pairs + 尾部 size(8) + magic(16)
     size = len(pairs) + 8 + 16
     return (

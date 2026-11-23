@@ -392,6 +392,19 @@ object RpcUiController {
         }
     }
 
+    /** 构建时刻由构建脚本在签名前原地写入 apk 内 assets/build_time.txt（固定 48 字节）。
+     *  运行时读取；读不到（旧包或异常）返回 unknown，不影响 buildInfo 其它字段。
+     */
+    private fun readBuildTimeStamp(): String {
+        return try {
+            context?.assets?.open("build_time.txt")?.use { input ->
+                input.readBytes().toString(Charsets.UTF_8).trim().ifEmpty { "unknown" }
+            } ?: "unknown"
+        } catch (e: Exception) {
+            "unknown"
+        }
+    }
+
     /** 构建期 BUILD_TIME 只含构建机本地时间与时区偏移（yyyy-MM-dd HH:mm:ss Z）。
      *  读取时再换算成北京时间，拼在原文后的括号里；解析失败原样返回，
      *  保证 buildInfo 基础字段永远可用。
@@ -414,16 +427,25 @@ object RpcUiController {
     /** RPC：构建信息；在基础字段上合并 Python 侧内置模块与 site-packages 摘要。
      *  Python 未启动或 build_extra 失败时只附 python_error，绝不影响基础字段返回。
      *  sitePackages=false（默认）不扫描 site-packages，只返回内置模块汇总。
+     *  gitSubmodules=false（默认）不返回 submodule 表；为 true 时附带 git_submodules（path -> commit）。
      */
     @JvmStatic
     @JvmOverloads
-    fun buildInfo(sitePackages: Boolean = false): String {
+    fun buildInfo(sitePackages: Boolean = false, gitSubmodules: Boolean = false): String {
         val info = JSONObject()
             .put("version_name", BuildConfig.VERSION_NAME)
             .put("version_code", BuildConfig.VERSION_CODE)
             .put("git_hash", BuildConfig.GIT_HASH)
             .put("source_fingerprint", BuildConfig.SOURCE_FINGERPRINT)
-            .put("build_time", buildTimeWithBeijing(BuildConfig.BUILD_TIME))
+            .put("build_time", buildTimeWithBeijing(readBuildTimeStamp()))
+        // 递归 submodule commit 表（构建期固化）。默认不返回，需显式传 gitSubmodules=True。
+        if (gitSubmodules) {
+            info.put("git_submodules", try {
+                JSONObject(BuildConfig.GIT_SUBMODULES)
+            } catch (e: Exception) {
+                JSONObject()
+            })
+        }
         try {
             if (Python.isStarted()) {
                 val extra = JSONObject(

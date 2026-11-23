@@ -1,0 +1,15 @@
+{
+  "project_dir": "/root/build_xime_home/xime",
+  "jdk": "openjdk version \"21.0.13.1\" 2026-11-17",
+  "agp": "9.4.1",
+  "kotlin": "2.4.21",
+  "gradle": "9.8.2",
+  "build_tools": "37.0.0",
+  "platform": "android-37.2",
+  "ndk": "29.0.14206865",
+  "cmake": "3.22.1",
+  "d8_sha256_16": "a26ee56252adcff6",
+  "python_path": "/usr/bin/python3.13",
+  "python_version": "Python 3.13.5",
+  "python_sha256_16": "e59d0124ff06c248"
+}

@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "python": {
+    "version": "3.12.12",
+    "implementation": "CPython",
+    "platform": "Linux-6.18.62-127.179.amzn2023.x86_64-x86_64-with-glibc2.41",
+    "abi": "cp312"
+  },
+  "pip": "25.0.1",
+  "setuptools": "84.2.1",
+  "wheel": "0.48.0",
+  "packages": {
+    "asn1crypto": {
+      "version": "1.5.1",
+      "sha256": "db4e40728b728508912cbb3d44f19ce188f218e9eba635821bb4b68564f8fd67"
+    },
+    "cffi": {
+      "version": "2.1.1",
+      "sha256": "c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf"
+    },
+    "cryptography": {
+      "version": "50.0.2",
+      "sha256": "9dab55f57c74c3cad24c323bacbbd04be4705ba6eb0d92e920b1fc4837ed5079"
+    },
+    "ecdsa": {
+      "version": "0.19.2",
+      "sha256": "840f5dc5e375c68f36c1a7a5b9caad28f95daa65185c9253c0c08dd952bb7399"
+    },
+    "pycparser": {
+      "version": "3.12",
+      "sha256": "a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e"
+    },
+    "six": {
+      "version": "1.17.0",
+      "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"
+    }
+  }
+}

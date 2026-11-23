@@ -697,6 +697,54 @@ def build_extra(site_packages=False):
         return "{}"
 
 
+# ── RPC 便捷入口：build_info ─────────────────────────────────────────────
+# 默认 RPC 命名空间就是本模块（app.py）的 globals；这里把 Kotlin
+# RpcUiController.buildInfo 包一层，参数一律按真值处理（1/True/"1" 等价）。
+_ALIAS_SITE_PACKAGES = ("site_packages", "site", "pip", "sp")
+_ALIAS_GIT_SUBMODULES = ("git_submodules", "git", "submodules", "gs")
+
+
+def _rpc_truthy(value):
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "0", "false", "no", "off", "none", "null")
+    return bool(value)
+
+
+def build_info(*args, **kw):
+    """RPC：构建信息。build_info(pip=1, git=1) == build_info(1, 1)。
+
+    参数按真值处理（1 / True / "1" / "true" 为真，0 / False / "" 为假）。
+    site_packages 别名：site_packages / site / pip / sp
+    git_submodules 别名：git_submodules / git / submodules / gs
+    返回 JSON 字符串；未知参数或异常也回到 JSON，不抛出。
+    """
+    if len(args) > 2:
+        return json.dumps({"error": "build_info accepts at most 2 positional args"},
+                          ensure_ascii=False)
+    try:
+        _ensure_multi_mqtt_path()
+        from multi_mqtt import get_duplicated_kargs
+        if args:
+            if any(k in kw for k in _ALIAS_SITE_PACKAGES):
+                raise ValueError("site_packages specified twice")
+            kw["site_packages"] = args[0]
+        if len(args) > 1:
+            if any(k in kw for k in _ALIAS_GIT_SUBMODULES):
+                raise ValueError("git_submodules specified twice")
+            kw["git_submodules"] = args[1]
+        site_packages = _rpc_truthy(
+            get_duplicated_kargs(kw, *_ALIAS_SITE_PACKAGES, default=False))
+        git_submodules = _rpc_truthy(
+            get_duplicated_kargs(kw, *_ALIAS_GIT_SUBMODULES, default=False))
+        if kw:
+            raise ValueError("unknown args: " + ", ".join(sorted(kw)))
+        if RpcUiController is None:
+            raise RuntimeError("RpcUiController unavailable")
+        return RpcUiController.buildInfo(site_packages, git_submodules)
+    except Exception:
+        return json.dumps({"error": traceback.format_exc(limit=3)}, ensure_ascii=False)
+
+
 def mqtt_stats_report():
     """设置页按钮入口：执行 gms.mqtt_net.stats.get_report() 并把报告打印进运行日志。"""
     server = globals().get("gms")

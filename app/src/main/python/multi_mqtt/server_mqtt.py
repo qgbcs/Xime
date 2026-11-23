@@ -815,8 +815,8 @@ class MQTTServer:
         return {
             # "type": "global_topic_list",
             "reason": reason,
-            "listen_topics": sorted(getattr(self.mqtt_net, "subscribed_topics", set()) or set()),
-            "request_topic": self.request_topic,
+            "listen": sorted(getattr(self.mqtt_net, "subscribed_topics", set()) or set()),
+            # "request_topic": self.request_topic,
             "reply_topic": self.reply_topic,
             # "server_time": utc_ms(),
             "stime": stime(),
@@ -933,7 +933,7 @@ class MQTTServer:
         logger.info(
             "📨 [%s] 已发布监听 topic 报告 -> %s (reason=%s, queued=%s, acked=%s, topics=%s)",
             stime(), self.global_topic_list, reason,
-            status["queued"], status["acked"], payload.get("listen_topics"),
+            status["queued"], status["acked"], payload.get("listen"),
         )  # 本地日志
         return status
 
