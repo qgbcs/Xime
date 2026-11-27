@@ -24,75 +24,26 @@ import kotlinx.coroutines.withContext
 internal class ImeSessionController(private val service: XimeInputMethodService) {
 
     /**
-     * 把自动学习词（前缀匹配）合并进候选：
-     * - 正常词（分值 >=0）只在第一页前置；降频词（负分）移到第二个 Rime 分页；
-     *   只有一个 Rime 分页时，降频词追加到唯一页末尾。
-     * - 仅在非 ascii、非 T9、且有字母编码时生效。
-     * 注释/候选不假定等长，按索引过滤以避免丢词。
+     * 候选来源标注：候选统一来自 Rime。
+     *
+     * 自动学习词已由 native learned_phrase_translator 作为普通候选注入，
+     * app 层不再前置/后置拼接；这里只为长按菜单标注 AUTO / CUSTOM 来源路由。
      */
-    private data class MergedResult(
-        val candidates: List<String>,
-        val comments: List<String>,
-        val frontCount: Int,
-        val tailCount: Int,
-        /** 与 candidates 等长的候选来源集合。 */
-        val sources: List<Set<CandidateSource>>,
-    )
-
-    private fun mergeAutoCandidates(
-        input: String,
-        isAsciiMode: Boolean,
-        isT9: Boolean,
-        rimeCandidates: List<String>,
-        rimeComments: List<String>,
-        hasNextPage: Boolean,
-    ): MergedResult {
-        if (isAsciiMode || isT9 || input.isEmpty()) {
-            // ascii / T9 / 空码直接透传：候选全部来自 rime
-            return MergedResult(
-                rimeCandidates, rimeComments, 0, 0,
-                rimeCandidates.map { setOf(CandidateSource.RIME) },
-            )
-        }
-        val schemaId = service.uiState.value.currentSchemaId
-        val match = UserPhraseManager.matchAutoPhrases(service, schemaId, input)
-        val rimePageNo = service.rimeEngine.getCandidatePageInfo().pageNo
-        val front = com.kingzcheung.xime.settings.LearnedCandidateIndex
-            .frontCandidatesForRimePage(match.front, rimePageNo)
-        val tail = com.kingzcheung.xime.settings.LearnedCandidateIndex
-            .tailCandidatesForRimePage(match.tail, rimePageNo, hasNextPage)
-        // rime 候选基础来源为 RIME；属于手动 custom_phrase 时追加 CUSTOM
-        val rimeSources = rimeCandidates.map { word ->
+    private fun annotateCandidateSources(
+        schemaId: String,
+        candidates: List<String>,
+    ): List<Set<CandidateSource>> {
+        if (candidates.isEmpty()) return emptyList()
+        val autoWords = UserPhraseManager.getAutoPhrases(service, schemaId).toHashSet()
+        return candidates.map { word ->
+            val sources = HashSet<CandidateSource>(3)
+            sources.add(CandidateSource.RIME)
+            if (word in autoWords) sources.add(CandidateSource.AUTO)
             if (UserPhraseManager.isCustomWord(service, schemaId, word)) {
-                setOf(CandidateSource.RIME, CandidateSource.CUSTOM)
-            } else {
-                setOf(CandidateSource.RIME)
+                sources.add(CandidateSource.CUSTOM)
             }
+            sources
         }
-        if (front.isEmpty() && match.tail.isEmpty()) {
-            return MergedResult(rimeCandidates, rimeComments, 0, 0, rimeSources)
-        }
-        val removeSet = (front + match.tail).toHashSet()
-        val keptIndices = rimeCandidates.indices.filterNot { rimeCandidates[it] in removeSet }
-        val keptTexts = keptIndices.map { rimeCandidates[it] }
-        val keptComments = keptIndices.map { rimeComments.getOrElse(it) { "" } }
-        val outCandidates = front + keptTexts + tail
-        val outComments =
-            List(front.size) { "" } + keptComments + List(tail.size) { "" }
-        // 前置自动词：同名词也在 rime 候选里时两份表共存，删除时需全删
-        val frontSources = front.map { word ->
-            if (word in rimeCandidates) {
-                setOf(CandidateSource.AUTO, CandidateSource.RIME)
-            } else {
-                setOf(CandidateSource.AUTO)
-            }
-        }
-        val keptSources = keptIndices.map { rimeSources[it] }
-        val tailSources = tail.map { setOf(CandidateSource.AUTO) }
-        return MergedResult(
-            outCandidates, outComments, front.size, tail.size,
-            frontSources + keptSources + tailSources,
-        )
     }
 
     internal fun applyComposition(composition: com.kingzcheung.xime.rime.RimeComposition) {
@@ -161,31 +112,24 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             service.dismissInlineSuggestions()
         }
 
-        val candidateLookupInput =
-            if (partialCandidateText.isNotEmpty() && !isT9Schema) inputText else displayText
-        val merged = mergeAutoCandidates(
-            candidateLookupInput,
-            isAsciiMode,
-            isT9Schema,
-            displayCandidates,
-            displayComments,
-            hasNextPage,
-        )
+        val schemaId = service.uiState.value.currentSchemaId
+        if (!isAsciiMode && !isT9Schema) {
+            // 学习词快照推给 native translator（内容未变时不跨 JNI）
+            UserPhraseManager.syncToNative(service, schemaId)
+        }
+        val sources = annotateCandidateSources(schemaId, displayCandidates)
 
         service.candidateState.value = service.candidateState.value.copy(
             inputText = if (partialCandidateText.isNotEmpty() && !isT9Schema) inputText else displayText,
             preeditText = displayText,
-            candidates = merged.candidates,
-            candidateComments = merged.comments,
+            candidates = displayCandidates,
+            candidateComments = displayComments,
             isComposing = isComposing,
             associationCandidates = if ((isAsciiMode || !service.isChineseMode) && pendingEnglish.isEmpty()) emptyList() else service.candidateState.value.associationCandidates,
             isShowingRecentClipboard = false,
             hasNextPage = hasNextPage,
             hasPrevPage = hasPrevPage,
-            customPhraseCount = merged.frontCount,
-            demotedPhraseCount = merged.tailCount,
-            candidateSources = merged.sources.takeIf { it.size == merged.candidates.size }
-                ?: List(merged.candidates.size) { emptySet() }
+            candidateSources = sources
         )
         if (isAsciiMode != service.uiState.value.isAsciiMode) {
             FileLogger.i(XimeInputMethodService.TAG, "applyComposition: ascii ${service.uiState.value.isAsciiMode}->$isAsciiMode")
@@ -280,31 +224,24 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             service.dismissInlineSuggestions()
         }
 
-        val candidateLookupInput =
-            if (partialCandidateText.isNotEmpty() && !isT9Schema) result.inputText else displayText
-        val merged = mergeAutoCandidates(
-            candidateLookupInput,
-            isAsciiMode,
-            isT9Schema,
-            displayCandidates,
-            displayComments,
-            result.hasNextPage,
-        )
+        val schemaId = service.uiState.value.currentSchemaId
+        if (!isAsciiMode && !isT9Schema) {
+            // 学习词快照推给 native translator（内容未变时不跨 JNI）
+            UserPhraseManager.syncToNative(service, schemaId)
+        }
+        val sources = annotateCandidateSources(schemaId, displayCandidates)
 
         service.candidateState.value = service.candidateState.value.copy(
             inputText = if (partialCandidateText.isNotEmpty() && !isT9Schema) result.inputText else displayText,
             preeditText = displayText,
-            candidates = merged.candidates,
-            candidateComments = merged.comments,
+            candidates = displayCandidates,
+            candidateComments = displayComments,
             isComposing = isComposing,
             associationCandidates = if ((isAsciiMode || !service.isChineseMode) && pendingEnglish.isEmpty()) emptyList() else service.candidateState.value.associationCandidates,
             isShowingRecentClipboard = false,
             hasNextPage = result.hasNextPage,
             hasPrevPage = result.hasPrevPage,
-            customPhraseCount = merged.frontCount,
-            demotedPhraseCount = merged.tailCount,
-            candidateSources = merged.sources.takeIf { it.size == merged.candidates.size }
-                ?: List(merged.candidates.size) { emptySet() }
+            candidateSources = sources
         )
         service.uiState.value = service.uiState.value.copy(isAsciiMode = isAsciiMode)
         
@@ -364,6 +301,8 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
                 )
                 refreshSchemaSwitches()
             }
+            // 切换/初始化方案后立即推送该方案的学习词快照，避免首个按键拿不到学习词。
+            UserPhraseManager.syncToNative(service, currentSchemaId)
         }
     }
 

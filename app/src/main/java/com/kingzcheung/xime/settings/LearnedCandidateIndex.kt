@@ -7,16 +7,6 @@ internal data class LearnedCandidateEntry(
 )
 
 internal object LearnedCandidateIndex {
-    fun frontCandidatesForRimePage(front: List<String>, pageNo: Int): List<String> =
-        if (pageNo == 0) front else emptyList()
-
-    fun tailCandidatesForRimePage(
-        tail: List<String>,
-        pageNo: Int,
-        hasNextPage: Boolean,
-    ): List<String> =
-        if (pageNo == 1 || (pageNo == 0 && !hasNextPage)) tail else emptyList()
-
     fun parse(line: String): LearnedCandidateEntry? {
         val lastTab = line.lastIndexOf('\t')
         if (lastTab > 0) {
@@ -75,23 +65,6 @@ internal object LearnedCandidateIndex {
 
         val nextScore = (entries.maxOfOrNull { it.score } ?: 0L).coerceAtLeast(0L) + 1L
         return ordered(entries + LearnedCandidateEntry(inputCode, word, nextScore))
-    }
-
-    fun bumpWord(
-        entries: List<LearnedCandidateEntry>,
-        input: String,
-        word: String,
-        increment: Long = 1L,
-    ): List<LearnedCandidateEntry> {
-        val inputKey = input.trim().lowercase()
-        val index = entries.indexOfFirst {
-            it.word == word && (inputKey.isEmpty() || it.inputCode.lowercase().startsWith(inputKey))
-        }.takeIf { it >= 0 } ?: entries.indexOfFirst { it.word == word }
-        if (index < 0) return entries
-        return ordered(entries.toMutableList().also { current ->
-            val entry = current[index]
-            current[index] = entry.copy(score = entry.score + increment)
-        })
     }
 
     fun demoteWord(

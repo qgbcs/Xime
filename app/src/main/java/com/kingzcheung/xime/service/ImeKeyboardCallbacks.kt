@@ -128,9 +128,9 @@ internal fun rememberImeKeyboardCallbacks(
                             val cs = service.candidateState.value
                             val displayedIndex = cs.candidates.indexOf(word)
                             val rimeCandidates = service.rimeEngine.getCandidates()
-                            // 显示索引 = front 注入词数 + rime 页内索引；app 前置词也可能同时存在于
-                            // rime 用户词典（两份表），此时按文本回查 rime 索引，确保两边都删。
-                            var rimeIndex = displayedIndex - cs.customPhraseCount
+                            // 候选全部来自 rime（学习词由 native translator 注入），
+                            // 显示索引即当前页 rime 索引；按文本回查兜底防止错位。
+                            var rimeIndex = displayedIndex
                             if (rimeIndex < 0 || rimeIndex >= rimeCandidates.size ||
                                 rimeCandidates[rimeIndex] != word
                             ) {

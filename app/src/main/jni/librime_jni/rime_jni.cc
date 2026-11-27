@@ -16,6 +16,7 @@
 #include "t9_processor.h"
 #include "t9_patch_utils.h"
 #include "t9_digit_userdict.h"
+#include "learned_phrase_translator.h"
 #include "rime_candidate_selection.h"
 #include <jni.h>
 #include <android/log.h>
@@ -24,6 +25,7 @@
 #include <vector>
 #include <unistd.h>  // for usleep
 #include <cstring>   // for strcmp
+#include <cstdlib>   // for strtoll
 #include <utility>   // for std::pair
 #include <ctime>     // for time
 
@@ -2015,12 +2017,9 @@ static jboolean DoEnsureT9SchemaPatches(
             }
         }
     }
-    if (!is_t9_schema) {
-        return JNI_FALSE;
-    }
     // 未找到 schema 文件 → 方案可能已卸载，不写补丁。
     if (schema_content.empty()) {
-        LOGI("T9Patches: schema file for '%s' not found on disk, skip", schema);
+        LOGI("Patches: schema file for '%s' not found on disk, skip", schema);
         return JNI_FALSE;
     }
 
@@ -2032,6 +2031,14 @@ static jboolean DoEnsureT9SchemaPatches(
     // 收集需要追加的补丁行（幂等：schema 或 custom 已含该组件则跳过）。
     std::vector<std::string> patch_lines;
 
+    // T9 专属补丁状态（非 T9 方案保持默认值，仅供后续收尾逻辑使用）。
+    bool need_remove_derive = false;
+    bool legacy_date_before0 = false;
+    bool need_packs_patch = false;
+    std::string packs_name;
+    std::string actual_pack_name;
+
+    if (is_t9_schema) {
     // 方案自带 preedit 管理型 lua filter（如带声调方案的 super_comment_preedit，
     // HasPreeditLuaFilter 判定）→ 默认 isDisplayOriginalPreedit: true（透传，
     // 让方案 lua 管理 preedit）；否则（t9_pinyin 无声调方案）默认 false。
@@ -2057,7 +2064,7 @@ static jboolean DoEnsureT9SchemaPatches(
     }
     // t9_user_translator 占据 translators 首位。
     // 旧版 t9_date_translator 注入在 @before 0，与新 user 冲突，迁移到 @after 0。
-    const bool legacy_date_before0 =
+    legacy_date_before0 =
         existing_content.find("\"engine/translators/@before 0\": t9_date_translator") != std::string::npos;
     if (schema_content.find("t9_user_translator") == std::string::npos &&
         existing_content.find("t9_user_translator") == std::string::npos) {
@@ -2076,12 +2083,11 @@ static jboolean DoEnsureT9SchemaPatches(
     // 清理已废弃的 enable_abbrev_recall 产物
     const bool has_derive = existing_content.find("derive/^([a-z])") != std::string::npos;
     const bool has_abbrev_custom = existing_content.find("enable_abbrev_recall") != std::string::npos;
-    bool need_remove_derive = has_derive || has_abbrev_custom;
+    need_remove_derive = has_derive || has_abbrev_custom;
 
     // translator/packs 个人词库：合法保留 / 畸形修复 / 缺失交由 PersonalDictManager。
-    const std::string packs_name = "user_" + rime::t9_patch_utils::SanitizePackName(schema);
-    bool need_packs_patch = false;
-    std::string actual_pack_name;  // 实际生效的个人词库名（用于词库编译判定）
+    packs_name = "user_" + rime::t9_patch_utils::SanitizePackName(schema);
+    // actual_pack_name：实际生效的个人词库名（用于词库编译判定）
     if (!packs_name.empty()) {
         switch (rime::t9_patch_utils::EvaluatePacksState(existing_content, &actual_pack_name)) {
           case rime::t9_patch_utils::PacksState::kKeep:
@@ -2095,6 +2101,43 @@ static jboolean DoEnsureT9SchemaPatches(
     }
     if (need_packs_patch) {
         patch_lines.push_back("  \"translator/packs\": [\"" + packs_name + "\"]");
+    }
+    }  // if (is_t9_schema)
+
+    // 判断 YAML 是否声明了指定列表键（按行首缩进后的 "key:" 匹配）。
+    auto has_key = [](const std::string& text, const char* key) {
+        const std::string needle = std::string(key) + ":";
+        size_t start = 0;
+        while (start < text.size()) {
+            size_t nl = text.find('\n', start);
+            if (nl == std::string::npos) nl = text.size();
+            size_t b = start;
+            while (b < nl && (text[b] == ' ' || text[b] == '\t')) ++b;
+            if (text.compare(b, needle.size(), needle) == 0) return true;
+            if (nl == text.size()) break;
+            start = nl + 1;
+        }
+        return false;
+    };
+
+    // ── 学习词统一排序组件（所有方案，含非 T9）──
+    // 原生 translator 将学习词作为普通候选注入，与词典候选一起按 quality
+    // 统一排序；原生 filter 负责同名去重与降频词沉底。Kotlin 侧不再前置注入。
+    if (schema_content.find("learned_phrase_translator") == std::string::npos &&
+        existing_content.find("learned_phrase_translator") == std::string::npos) {
+        patch_lines.push_back(
+            "  \"engine/translators/@after last\": learned_phrase_translator");
+    }
+    if (schema_content.find("learned_phrase_filter") == std::string::npos &&
+        existing_content.find("learned_phrase_filter") == std::string::npos) {
+        if (has_key(schema_content, "filters") || has_key(existing_content, "filters")) {
+            patch_lines.push_back(
+                "  \"engine/filters/@after last\": learned_phrase_filter");
+        } else {
+            // 方案未声明 filters 列表：直接给整个列表赋值。
+            patch_lines.push_back(
+                "  \"engine/filters\": [learned_phrase_filter]");
+        }
     }
 
     // 无改动 → 仅判断词库是否仍需编译。
@@ -2179,6 +2222,53 @@ Java_com_kingzcheung_xime_rime_RimeEngine_nativeEnsureT9SchemaPatches(
         Rime::Instance().get_shared_data_dir());
     env->ReleaseStringUTFChars(schema_id, schema);
     return result;
+}
+
+// 侧信道：接收 Kotlin 推送的应用学习词快照（每行 "inputCode\tword\tscore"）。
+// payload 为空表示清空该方案；此调用只写进程内缓存，不碰 rime 会话/全局锁。
+JNIEXPORT void JNICALL
+Java_com_kingzcheung_xime_rime_RimeEngine_nativeSetLearnedPhrases(
+    JNIEnv* env,
+    jobject /*thiz*/,
+    jstring schema_id,
+    jstring payload
+) {
+    const char* schema =
+        schema_id ? env->GetStringUTFChars(schema_id, nullptr) : nullptr;
+    const char* text =
+        payload ? env->GetStringUTFChars(payload, nullptr) : nullptr;
+    std::vector<rime::learned_phrase::Entry> entries;
+    if (text) {
+        const std::string all(text);
+        size_t start = 0;
+        while (start <= all.size()) {
+            size_t nl = all.find('\n', start);
+            if (nl == std::string::npos) nl = all.size();
+            std::string line = all.substr(start, nl - start);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (!line.empty()) {
+                const size_t first = line.find('\t');
+                const size_t second = first == std::string::npos
+                                          ? std::string::npos
+                                          : line.find('\t', first + 1);
+                if (second != std::string::npos) {
+                    rime::learned_phrase::Entry entry;
+                    entry.code = line.substr(0, first);
+                    entry.word = line.substr(first + 1, second - first - 1);
+                    entry.score =
+                        std::strtoll(line.c_str() + second + 1, nullptr, 10);
+                    if (!entry.code.empty() && !entry.word.empty()) {
+                        entries.push_back(std::move(entry));
+                    }
+                }
+            }
+            if (nl == all.size()) break;
+            start = nl + 1;
+        }
+    }
+    rime::learned_phrase::SetSnapshot(schema ? schema : "", std::move(entries));
+    if (text) env->ReleaseStringUTFChars(payload, text);
+    if (schema) env->ReleaseStringUTFChars(schema_id, schema);
 }
 
 // 获取可用方案列表

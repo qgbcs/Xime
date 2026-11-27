@@ -415,8 +415,6 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
             .put("partial_candidates", partialCandidatesArray)
             .put("page_no", pageInfo.pageNo)
             .put("page_size", pageInfo.pageSize)
-            .put("front", cs.customPhraseCount)
-            .put("tail", cs.demotedPhraseCount)
             .put("has_next", cs.hasNextPage)
             .put("has_prev", cs.hasPrevPage)
     }
@@ -435,18 +433,14 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         val learnedByWord = learned.associateBy { it.word }
         val rimeCandidates = rimeEngine.getCandidatesWithComments().map { it.text }
         val visibleItems = com.kingzcheung.xime.ui.keyboard.EnglishCandidateDisplayPolicy
-            .prepare(cs.candidates, cs.demotedPhraseCount)
+            .prepare(cs.candidates)
             .associateBy { it.index }
         val candidateRows = org.json.JSONArray()
         cs.candidates.forEachIndexed { index, word ->
-            val isFrontLearned = index < cs.customPhraseCount
-            val isTailLearned = cs.demotedPhraseCount > 0 &&
-                index >= cs.candidates.size - cs.demotedPhraseCount
             val learnedEntry = learnedByWord[word]
             val visible = visibleItems[index]
             val source = when {
-                isFrontLearned -> "learned_front"
-                isTailLearned -> "learned_tail"
+                learnedEntry != null -> "learned"
                 word in rimeCandidates -> "rime"
                 else -> "other"
             }

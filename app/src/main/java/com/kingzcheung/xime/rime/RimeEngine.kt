@@ -481,6 +481,20 @@ class RimeEngine {
         return nativeGetOption(option)
     }
 
+    /**
+     * 把当前方案的学习词快照推送给 native translator（侧信道）。
+     * 学习词随后作为普通候选由 Rime 内部统一排序；只更新内存缓存，
+     * 不重建会话、不改配置，因此可安全地在候选刷新路径中调用。
+     */
+    fun setLearnedPhrases(schemaId: String, payload: String) {
+        if (!isInitialized || schemaId.isBlank()) return
+        try {
+            nativeSetLearnedPhrases(schemaId, payload)
+        } catch (_: Throwable) {
+            // 边缘功能：推送失败仅降级为「学习词本次不进入候选集」，不影响输入主流程
+        }
+    }
+
     fun setPageSize(schemaId: String, pageSize: Int) {
         if (!isInitialized) return
         // 会写方案配置并在必要时 session->ApplySchema 重建组件（重），必须独占引擎；
@@ -824,6 +838,7 @@ class RimeEngine {
     private external fun nativeGetOption(option: String): Boolean
     private external fun nativeSwitchSchema(schemaId: String): Boolean
     private external fun nativeEnsureT9SchemaPatches(schemaId: String): Boolean
+    private external fun nativeSetLearnedPhrases(schemaId: String, payload: String)
 
     /**
      * 部署后主动触发：遍历已部署 schema 目录，对每个方案调用 nativeEnsureT9SchemaPatches。
