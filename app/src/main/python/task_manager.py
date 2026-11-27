@@ -5,11 +5,16 @@ Kotlin NetworkEventMonitor 负责网络边沿事件（WiFi 连/断、网络通/�
 Python 负责任务注册表、状态持久化、执行统计与接力下一次调度。
 
 任务一律由 RPC 远程下发，APK 内不硬编码任何任务（init 只从 JSON 恢复）。
-任务支持两种触发方式：
-  1) 定时（interval）：用 OneTimeWorkRequest 自接力突破 15 分钟下限；
-  2) 每日定时（daily）：at="HH:MM"，按本地时区每天到点触发，执行后自接力；
-  3) 事件（event/events）：订阅 Kotlin 上报的事件（网络边沿、开机完成），见
+触发方式统一为“事件”，可任意组合（定时/时刻 + 系统事件可同时绑定）：
+  1) 定时（interval）：OneTimeWorkRequest 自接力突破 15 分钟下限，到点以
+     伪事件 interval 分发；
+  2) 指定时刻（at）：绝对 "YYYY-MM-DD HH:MM[:SS]" 一次性，或 "HH:MM[:SS]"
+     表示下一次该时刻；到点以伪事件 at 分发，触发后自动停用；
+  3) 每日定时（daily）：at="HH:MM"，按本地时区每天到点触发，伪事件 daily；
+  4) 系统事件（events）：订阅 Kotlin 上报的事件（网络边沿、开机完成），见
      EVENTS 说明；一个任务可绑定多个事件（events 列表），任一命中即执行。
+定时/时刻/每日到点后与系统事件走同一个分发函数 _execute，任务代码里的
+event 变量就是 "interval" / "at" / "daily" 或真实系统事件名。
 
 任务动作支持两种载体（二选一，code 优先）：
   - code：随任务下发的任意 Python 源码（运行在独立工作线程，print 既进 App
@@ -55,9 +60,14 @@ Python 负责任务注册表、状态持久化、执行统计与接力下一次�
   keyboard_shown/keyboard_hidden  输入法可见性，payload source
   clipboard_changed        剪切板变化（仅输入法可见时；payload 只有 has_text/length，不落内容）
 
-RPC 示例：
-  r=task_manager.add_daily_task("dailytest", "08:30",
+RPC 示例（add_task 是唯一入口；add_daily_task/add_at_task/add_event_task 只是
+兼容包装，内部均转调 add_task）：
+  r=task_manager.add_task("dailytest", at="08:30", repeat=True,
   ...   code='print("[每日] 触发", task_id)')
+  r=task_manager.add_at_task("once", "2026-12-01 08:30:00",
+  ...   code='print("[一次性] 触发", event)')
+  r=task_manager.add_task("tick", interval=60, events=["wifi_connected"],
+  ...   code='print("tick", event, payload)')   # 定时 + 系统事件同一个任务
   r=task_manager.add_event_task("wifilog", ["wifi_connected", "boot_completed"],
   ...   code='print("[事件] WiFi 已连接", payload)')
   r=task_manager.test_event("wifi_connected", {"wifi": True})   # 本地模拟
@@ -66,6 +76,7 @@ RPC 示例：
   r=task_manager.system_events(100, True)   # 多行文本，每行一个事件（本地时间格式化）
   r=task_manager.network_state()            # 当前网络快照 {wifi, online, validated, initialized, ts}
 """
+import datetime
 import io
 import json
 import os
@@ -171,6 +182,11 @@ EVENTS = (
     "speech_recorded",
 )
 
+# 伪事件名：定时/时刻/每日到点后也以“事件”形式进入统一分发路径（_execute），
+# 任务代码里的 event 变量即这三个名字之一。它们永远不会被同步给 Kotlin 订阅
+# 集合（否则 Kotlin 会等一个永远不会有广播的“事件”）。
+PSEUDO_EVENTS = ("interval", "at", "daily")
+
 # ---- 任务函数注册表：name -> callable() -> object（少量内置示例函数） ----
 JOB_FUNCS = {}
 
@@ -208,26 +224,38 @@ def init(files_dir):
                 _STATE["tasks"] = data["tasks"]
         except (OSError, ValueError):
             pass
-        interval_n = daily_n = event_n = 0
-        for task_id, t in _STATE["tasks"].items():
-            if not t.get("enabled", True):
-                continue
-            kind = _kind(t)
-            if kind == "interval":
-                _schedule(task_id, t.get("interval", 60))
-                interval_n += 1
-            elif kind == "daily":
-                _schedule(task_id, _daily_delay(t))
-                daily_n += 1
-            else:
-                event_n += 1
+        interval_n = at_n = daily_n = event_n = 0
+        for task_id, t in list(_STATE["tasks"].items()):
+            # 单个旧/脏任务恢复失败只降级，不能拖垮 init 与主流程
+            try:
+                _normalize_task(t)
+                if not t.get("enabled", True):
+                    continue
+                kind = _kind(t)
+                if kind == "interval":
+                    _arm(task_id, t)
+                    interval_n += 1
+                elif kind == "at":
+                    # 重算 next_epoch；一次性 at 已过期（_delay_of 返回 1）
+                    # 则 1 秒后立即执行一次，由 execute_task 置 enabled=False。
+                    _arm(task_id, t)
+                    at_n += 1
+                elif kind == "daily":
+                    _arm(task_id, t)
+                    daily_n += 1
+                else:
+                    event_n += 1
+            except Exception:
+                print(f"[task_manager] 恢复任务 {task_id} 失败:\n"
+                      + traceback.format_exc(limit=2))
+        _save()
         _LOADED = True
     _sync_system_events()
     _ensure_event_worker()
     _replay_pre_init_events()
     consume_boot_pending()
     print(f"[task_manager] init done, {len(_STATE['tasks'])} tasks, "
-          f"{interval_n} interval + {daily_n} daily rescheduled, "
+          f"{interval_n} interval + {at_n} at + {daily_n} daily rescheduled, "
           f"{event_n} event tasks armed")
     return True
 
@@ -258,7 +286,32 @@ def _save():
 
 
 def _kind(t):
-    return t.get("kind", "interval")
+    kind = t.get("kind")
+    if kind in PSEUDO_EVENTS or kind == "event":
+        return kind
+    # 旧/脏数据缺 kind：有 at 视为每日，否则按历史默认当定时任务
+    return "daily" if t.get("at") else "interval"
+
+
+def _is_periodic(kind):
+    """interval / at / daily 都由 WorkManager 排程，event 纯被动。"""
+    return kind in PSEUDO_EVENTS
+
+
+def _pseudo_event(kind):
+    """kind -> 伪事件名；纯事件任务返回 None。"""
+    return kind if kind in PSEUDO_EVENTS else None
+
+
+def _normalize_task(t):
+    """就地补齐旧任务字段（events 列表、kind），脏数据只降级不抛错。"""
+    if not isinstance(t, dict):
+        return t
+    if not isinstance(t.get("events"), list):
+        t["events"] = _system_events_of(t)
+    if _kind(t) != t.get("kind"):
+        t["kind"] = _kind(t)
+    return t
 
 
 def _norm_events(event=None, events=None):
@@ -301,6 +354,11 @@ def _events_of(t):
     return names
 
 
+def _system_events_of(t):
+    """任务订阅的系统事件（排除 interval/at/daily 伪事件名）。"""
+    return [e for e in _events_of(t) if e not in PSEUDO_EVENTS]
+
+
 # ============================ WorkManager 桥 ============================
 
 def _schedule(task_id, delay_seconds):
@@ -322,21 +380,29 @@ _SYSTEM_MONITOR = "com.kingzcheung.xime.task.SystemEventMonitor"
 _NETWORK_MONITOR = "com.kingzcheung.xime.task.NetworkEventMonitor"
 
 
-def _sync_system_events():
-    """把当前启用的事件任务的事件名集合同步给 Kotlin SystemEventMonitor。
+def _subscribed_events():
+    """所有启用任务订阅的系统事件并集（已排除伪事件名），供 Kotlin 订阅用。"""
+    with _LOCK:
+        names = set()
+        for t in _STATE["tasks"].values():
+            if not isinstance(t, dict) or not t.get("enabled", True):
+                continue
+            names.update(_system_events_of(t))
+        return sorted(names)
 
+
+def _sync_system_events():
+    """把所有启用任务订阅的系统事件集合同步给 Kotlin SystemEventMonitor。
+
+    定时（interval）、一次性 at、每日 daily 等任务也可以同时订阅系统事件，
+    因此这里不再按 kind 过滤，而是汇总全部任务的 events（排除伪事件名）。
     Kotlin 只对集合内的事件调用 fire_event；未订阅的系统广播仅写入 Kotlin
     环形缓冲，不产生任何 Chaquopy/Python 调用，避免无谓耗电。
     """
     if _jclass is None:
         return
-    with _LOCK:
-        names = set()
-        for t in _STATE["tasks"].values():
-            if _kind(t) == "event" and t.get("enabled", True):
-                names.update(_events_of(t))
-        names = sorted(names)
     try:
+        names = _subscribed_events()
         _jclass(_SYSTEM_MONITOR).syncRegisteredEvents(json.dumps(names))
         print(f"[task_manager] 系统事件订阅同步: {names}")
     except Exception:
@@ -345,71 +411,141 @@ def _sync_system_events():
 
 # ============================ RPC：任务生命周期 ============================
 
-def add_task(task_id, func_name=None, interval=60, code=None, enabled=True):
-    """新增/覆盖一个【定时】任务。interval 秒；code 为任意 Python 源码。"""
-    if not code and func_name not in JOB_FUNCS:
-        return {"ok": False,
-                "error": "必须提供 code，或使用已注册 func",
-                "funcs": sorted(JOB_FUNCS)}
-    with _LOCK:
-        _STATE["tasks"][task_id] = {
-            "kind": "interval",
-            "func": func_name,
-            "code": code,
-            "interval": int(interval),
-            "enabled": bool(enabled),
-            "run_count": 0,
-            "last_run": None,
-            "last_result": None,
-            "created": time.strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        _save()
-        if enabled:
-            _schedule(task_id, int(interval))
-    print(f"[task_manager] add interval {task_id} interval={interval}s")
-    return {"ok": True, "id": task_id, "kind": "interval"}
+# add_task 允许的 opts 键；出现其他键直接报错（不静默忽略）
+ALLOWED = {"interval", "at", "repeat", "events", "debounce"}
 
 
-def add_event_task(task_id, event=None, code=None, func_name=None,
-                   debounce=0.0, enabled=True, events=None):
-    """新增/覆盖一个【事件】任务，支持一个任务绑定多个事件。
+def add_task(task_id, func_name=None, code=None, enabled=True, **opts):
+    """新增/覆盖一个任务（**唯一的建任务入口**）。
 
-    :param event: 事件名，或事件名列表，见 EVENTS（也可自定义，以后端实际派发为准）
-    :param events: 事件名列表，与 event 合并去重；二者任意一个即可
-    :param code:  事件触发时执行的 Python 源码；可用 event/payload/task_id/jclass
-    :param debounce: 秒；同一任务两次触发的最小间隔，0 表示不节流
+    设计参考 APScheduler（``add_job(..., trigger=date|interval|cron,
+    **trigger_args)``）与 matrix-planner（``every`` / ``cron`` / ``once``）：
+    用一组关键字参数描述触发源，由本函数归一成任务字典，而不是为每种触发源
+    各开一个入口。add_event_task / add_at_task / add_daily_task 只是兼容包装。
+
+    opts 只允许下列 5 个键（未知键直接报错，不静默忽略）：
+      - interval：秒，>=1 → kind="interval"；若同时给 at，interval 优先；
+        到点以伪事件 interval 分发，执行完自动接力下一次。
+      - at：``YYYY-MM-DD HH:MM[:SS]`` / ``HH:MM[:SS]``（Python 侧也接受
+        ``datetime.datetime``）→ 一次性 kind="at"，触发后自动 enabled=False；
+        配合 repeat=True（仅 ``HH:MM[:SS]``）→ 每日 kind="daily"。
+      - events：系统事件名（字符串或列表），可与任意触发源叠加。
+      - repeat：仅对 at=HH:MM[:SS] 生效，表示每日重复。
+      - debounce：秒；同一任务两次触发的最小间隔，0 表示不节流。
+    interval / at / events 三者都没有 → 报错。
+
+    定时/时刻/每日到点后都以伪事件 interval / at / daily 走统一分发 _execute。
+
+    :param func_name: 内置函数名（JOB_FUNCS）；与 code 二选一，code 优先
+    :param code: 触发时执行的 Python 源码；可用 event/payload/task_id/jclass
     """
-    names = _norm_events(event, events)
-    if not names:
+    unknown = sorted(k for k in opts if k not in ALLOWED)
+    if unknown:
         return {"ok": False,
-                "error": "必须提供至少一个合法事件名（event 或 events）",
-                "event": event, "events": events}
+                "error": "不支持的参数: %s" % unknown,
+                "allowed": sorted(ALLOWED)}
+    interval = opts.get("interval")
+    at = opts.get("at")
+    repeat = bool(opts.get("repeat", False))
+    events = opts.get("events")
+    debounce = opts.get("debounce", 0.0)
+    names = _norm_events(None, events)
+    if names is None:
+        return {"ok": False, "error": "events 必须是字符串或字符串列表",
+                "events": events}
+    seconds = None
+    if interval is not None:
+        try:
+            seconds = max(1, int(interval))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "interval 必须是正整数秒",
+                    "interval": interval}
+    at_epoch, at_norm, at_abs = None, None, False
+    has_at = at is not None and (isinstance(at, datetime.datetime)
+                                 or str(at).strip())
+    if has_at:
+        try:
+            at_epoch, at_norm, at_abs = _parse_at(at)
+        except (ValueError, TypeError) as e:
+            return {"ok": False, "error": str(e), "at": at}
+        if repeat and at_abs:
+            return {"ok": False,
+                    "error": "repeat=True 只支持 HH:MM[:SS]，绝对日期时间请用 repeat=False",
+                    "at": at}
+    if seconds is not None:
+        kind = "interval"
+    elif at_norm is not None:
+        kind = "daily" if repeat else "at"
+    elif names:
+        kind = "event"
+    else:
+        return {"ok": False,
+                "error": "需要 interval / at / events 至少一个",
+                "interval": interval, "at": at, "events": events}
     if not code and func_name not in JOB_FUNCS:
         return {"ok": False,
                 "error": "必须提供 code，或使用已注册 func",
                 "funcs": sorted(JOB_FUNCS)}
+    try:
+        gap = float(debounce or 0.0)
+    except (TypeError, ValueError):
+        gap = 0.0
     with _LOCK:
-        _STATE["tasks"][task_id] = {
-            "kind": "event",
-            "event": names[0],
+        t = {
+            "kind": kind,
             "events": names,
             "func": func_name,
             "code": code,
-            "debounce": float(debounce or 0.0),
+            "debounce": gap,
             "enabled": bool(enabled),
             "run_count": 0,
             "last_run": None,
             "last_result": None,
-            "last_event": None,
-            "last_payload": None,
             "created": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
+        if names:
+            t["event"] = names[0]
+            t["last_event"] = None
+            t["last_payload"] = None
+        if seconds is not None:
+            t["interval"] = seconds
+        if at_norm is not None:
+            t["at"] = at_norm
+            t["next_epoch"] = (int(round(time.time() + _daily_delay(t)))
+                               if kind == "daily" else int(at_epoch))
+        _STATE["tasks"][task_id] = t
+        delay = None
+        if enabled and _is_periodic(kind):
+            delay = _delay_of(t)
+            _arm(task_id, t, delay)
         _save()
-    _sync_system_events()
-    print(f"[task_manager] add event {task_id} on={names} debounce={debounce}s "
-          f"enabled={enabled}")
-    return {"ok": True, "id": task_id, "kind": "event", "event": names[0],
-            "events": names}
+    if names:
+        _sync_system_events()
+    print(f"[task_manager] add {kind} {task_id} interval={seconds} "
+          f"at={at_norm} events={names} debounce={gap}s enabled={enabled}")
+    return {"ok": True, "id": task_id, "kind": kind,
+            "interval": seconds, "at": at_norm,
+            "next_epoch": t.get("next_epoch"), "next_in": delay,
+            "events": names, "event": names[0] if names else None}
+
+
+def add_event_task(task_id, event=None, code=None, func_name=None,
+                   debounce=0.0, enabled=True, events=None,
+                   interval=None, at=None):
+    """兼容包装，等价于 add_task(..., events=...)：event/events 合并去重后转调。
+
+    :param event: 事件名，或事件名列表，见 EVENTS（也可自定义，以后端实际派发为准）
+    :param events: 事件名列表，与 event 合并去重
+    :param debounce: 秒；同一任务两次触发的最小间隔，0 表示不节流
+    :param interval: 可选，同时作为定时任务（秒）
+    :param at: 可选，同时作为一次性时刻任务
+    """
+    names = _norm_events(event, events)
+    if names is None:
+        return {"ok": False, "error": "event/events 必须是字符串或字符串列表",
+                "event": event, "events": events}
+    return add_task(task_id, func_name=func_name, interval=interval, code=code,
+                    enabled=enabled, events=names, at=at, debounce=debounce)
 
 
 def _parse_hms(at):
@@ -417,17 +553,56 @@ def _parse_hms(at):
     parts = str(at).strip().split(":")
     if len(parts) not in (2, 3):
         raise ValueError("时间格式应为 HH:MM 或 HH:MM:SS")
-    hh, mm = int(parts[0]), int(parts[1])
-    ss = int(parts[2]) if len(parts) == 3 else 0
+    try:
+        hh, mm = int(parts[0]), int(parts[1])
+        ss = int(parts[2]) if len(parts) == 3 else 0
+    except (TypeError, ValueError):
+        raise ValueError("时间格式应为 HH:MM 或 HH:MM:SS")
     if not (0 <= hh < 24 and 0 <= mm < 60 and 0 <= ss < 60):
         raise ValueError("时间超出范围")
     return hh, mm, ss
 
 
-def _daily_delay(t):
+# 绝对一次性 at 支持的格式（归一到 "YYYY-MM-DD HH:MM:SS"）
+_AT_ABS_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M")
+
+
+def _at_tod_epoch(hh, mm, ss, now=None):
+    """HH:MM:SS 的下一次出现（本地时区）epoch；当天已过则顺延到明天。"""
+    now = time.time() if now is None else now
+    lt = time.localtime(now)
+    target = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, hh, mm, ss, 0, 0, -1))
+    if target <= now:
+        target += 86400
+    return target
+
+
+def _parse_at(at, now=None):
+    """解析 at 表达式，返回 (epoch, 规范化字符串, 是否绝对时间)；非法抛 ValueError。
+
+    支持两种写法：
+      - 绝对一次性：``2026-12-01 08:30:00`` / ``2026-12-01 08:30``
+      - 时刻一次性：``HH:MM`` / ``HH:MM:SS``（今天已过则取明天）
+    也接受 ``datetime.datetime``（按绝对一次性处理，忽略 now）。
+    """
+    if isinstance(at, datetime.datetime):
+        return (int(at.timestamp()),
+                at.strftime("%Y-%m-%d %H:%M:%S"), True)
+    s = str(at).strip()
+    for fmt in _AT_ABS_FORMATS:
+        try:
+            st = time.strptime(s, fmt)
+        except ValueError:
+            continue
+        return time.mktime(st), time.strftime("%Y-%m-%d %H:%M:%S", st), True
+    hh, mm, ss = _parse_hms(s)
+    return _at_tod_epoch(hh, mm, ss, now), s, False
+
+
+def _daily_delay(t, now=None):
     """距下一次 at 时刻的秒数（本地时区；当天已过则顺延到明天）。"""
     hh, mm, ss = _parse_hms(t.get("at", "00:00"))
-    now = time.time()
+    now = time.time() if now is None else now
     lt = time.localtime(now)
     target = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, hh, mm, ss, 0, 0, -1))
     if target <= now:
@@ -435,36 +610,62 @@ def _daily_delay(t):
     return int(max(1, target - now))
 
 
-def add_daily_task(task_id, at="00:00", code=None, func_name=None, enabled=True):
-    """新增/覆盖一个【每天定时】任务。at 为本地时间 "HH:MM" 或 "HH:MM:SS"。"""
-    if not code and func_name not in JOB_FUNCS:
-        return {"ok": False,
-                "error": "必须提供 code，或使用已注册 func",
-                "funcs": sorted(JOB_FUNCS)}
+def _delay_of(t, now=None):
+    """按 kind 计算距下次触发的秒数（>=1）；无排程来源返回 0。
+
+    一次性 at 已过期时返回 1，即“立即执行一次”。
+    """
+    now = time.time() if now is None else now
+    kind = _kind(t)
+    if kind == "interval":
+        return max(1, int(t.get("interval", 60) or 60))
+    if kind == "daily":
+        return _daily_delay(t, now)
+    if kind == "at":
+        try:
+            epoch, _norm, _abs = _parse_at(t.get("at", ""), now)
+        except (ValueError, TypeError):
+            return 0
+        return max(1, int(round(epoch - now)))
+    return 0
+
+
+def _arm(task_id, t, delay=None):
+    """计算/使用给定延迟交给 WorkManager，并记下 next_epoch。
+
+    任何异常只降级（返回 False），绝不向外抛。
+    """
     try:
-        _parse_hms(at)
-    except (ValueError, TypeError) as e:
-        return {"ok": False, "error": str(e), "at": at}
-    at = str(at).strip()
-    with _LOCK:
-        _STATE["tasks"][task_id] = {
-            "kind": "daily",
-            "at": at,
-            "func": func_name,
-            "code": code,
-            "enabled": bool(enabled),
-            "run_count": 0,
-            "last_run": None,
-            "last_result": None,
-            "created": time.strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        _save()
-        delay = _daily_delay(_STATE["tasks"][task_id])
-    if enabled:
-        _schedule(task_id, delay)
-    print(f"[task_manager] add daily {task_id} at={at} next={delay}s")
-    return {"ok": True, "id": task_id, "kind": "daily", "at": at,
-            "next_in": delay}
+        if delay is None:
+            delay = _delay_of(t)
+        delay = int(delay or 0)
+        if delay <= 0:
+            return False
+        t["next_epoch"] = int(round(time.time() + delay))
+        return _schedule(task_id, delay)
+    except Exception:
+        print(f"[task_manager] 排程 {task_id} 失败:\n"
+              + traceback.format_exc(limit=2))
+        return False
+
+
+def add_at_task(task_id, at, code=None, func_name=None, enabled=True,
+                events=None, interval=None):
+    """兼容包装，等价于 add_task(..., at=at)（一次性时刻任务）。
+
+    :param at: "YYYY-MM-DD HH:MM[:SS]" 绝对一次性；或 "HH:MM[:SS]" 表示下一次该时刻
+    :param events: 可选，同时订阅的系统事件（字符串或列表）
+    :param interval: 可选，给定时 kind 取 interval（interval > at 优先级）
+    触发后一次性 at 自动置 enabled=False，并保留 last_run/last_result。
+    """
+    return add_task(task_id, func_name=func_name, interval=interval, code=code,
+                    enabled=enabled, events=events, at=at)
+
+
+def add_daily_task(task_id, at="00:00", code=None, func_name=None, enabled=True):
+    """兼容包装，等价于 add_task(..., at=at, repeat=True)（每日任务）。"""
+    return add_task(task_id, func_name=func_name, code=code, enabled=enabled,
+                    at=at, repeat=True)
 
 
 def remove_task(task_id):
@@ -472,7 +673,7 @@ def remove_task(task_id):
         t = _STATE["tasks"].pop(task_id, None)
         existed = t is not None
         _save()
-    if existed and _kind(t) == "interval" and _jclass is not None:
+    if existed and _is_periodic(_kind(t)) and _jclass is not None:
         try:
             _jclass("com.kingzcheung.xime.task.TaskScheduler").cancel(task_id)
         except Exception:
@@ -489,8 +690,8 @@ def pause_task(task_id):
             return {"ok": False, "error": "not found"}
         t["enabled"] = False
         _save()
-        is_interval = _kind(t) == "interval"
-    if is_interval and _jclass is not None:
+        periodic = _is_periodic(_kind(t))
+    if periodic and _jclass is not None:
         try:
             _jclass("com.kingzcheung.xime.task.TaskScheduler").cancel(task_id)
         except Exception:
@@ -505,16 +706,13 @@ def resume_task(task_id):
         if not t:
             return {"ok": False, "error": "not found"}
         t["enabled"] = True
-        _save()
         kind = _kind(t)
-        delay = t.get("interval", 60)
-        if kind == "daily":
-            delay = _daily_delay(t)
-        events = _events_of(t)
+        events = _system_events_of(t)
+        if _is_periodic(kind):
+            # 重算下一次（at 过期则 1 秒后补发一次）
+            _arm(task_id, t)
         _save()
     _sync_system_events()
-    if kind in ("interval", "daily"):
-        _schedule(task_id, delay)
     return {"ok": True, "kind": kind,
             "event": events[0] if events else None, "events": events}
 
@@ -525,19 +723,37 @@ def run_now(task_id):
         if not t:
             return {"ok": False, "error": "not found"}
         kind = _kind(t)
-    if kind == "event":
-        # 事件任务立即执行一次（当前无真实负载，payload 为空；多事件取第一个）
-        events = _events_of(t)
-        if events:
-            _EVENT_Q.put((events[0], None, task_id))
-    else:
-        _schedule(task_id, 0)
+    try:
+        if kind == "event":
+            # 事件任务立即执行一次（无真实负载，payload 为空；多事件取第一个）
+            events = _system_events_of(t)
+            if events:
+                _ensure_event_worker()
+                _EVENT_Q.put((events[0], None, task_id))
+        elif not _schedule(task_id, 0):
+            # 非 Android（无 TaskScheduler）：直接入队伪事件分发一次
+            _ensure_event_worker()
+            _EVENT_Q.put((_pseudo_event(kind),
+                          {"task_id": task_id, "source": "run_now"}, task_id))
+    except Exception:
+        print(f"[task_manager] run_now {task_id} 失败:\n"
+              + traceback.format_exc(limit=2))
     return {"ok": True, "kind": kind}
 
 
 def list_tasks():
+    """全部任务及其状态（深拷贝）；补齐 events/at/next_epoch，不删旧键。"""
     with _LOCK:
-        return json.loads(json.dumps(_STATE["tasks"], ensure_ascii=False))
+        try:
+            snap = json.loads(json.dumps(_STATE["tasks"], ensure_ascii=False))
+        except (TypeError, ValueError):
+            snap = {}
+    for t in snap.values():
+        if isinstance(t, dict):
+            t.setdefault("events", [])
+            t.setdefault("at", None)
+            t.setdefault("next_epoch", None)
+    return snap
 
 
 def list_events():
@@ -688,10 +904,11 @@ def fire_event(event_name, payload=None, source="system", record=True):
                 del _PRE_INIT_EVENTS[:-_PRE_INIT_MAX]
             matches = []
         else:
+            # 定时/时刻/每日任务也可以同时订阅系统事件，故不按 kind 过滤
             matches = [
                 tid for tid, t in _STATE["tasks"].items()
-                if _kind(t) == "event" and t.get("enabled", True)
-                and event_name in _events_of(t)
+                if isinstance(t, dict) and t.get("enabled", True)
+                and event_name in _system_events_of(t)
             ]
     _ensure_event_worker()
     for tid in matches:
@@ -751,18 +968,25 @@ def _ensure_event_worker():
 def _event_worker():
     while True:
         event_name, payload, task_id = _EVENT_Q.get()
-        with _LOCK:
-            t = _STATE["tasks"].get(task_id)
-        if t is None or not t.get("enabled", True) or event_name not in _events_of(t):
-            continue
-        # debounce 节流
-        now = time.time()
-        gap = float(t.get("debounce", 0.0) or 0.0)
-        last = float(t.get("_last_fire_epoch", 0.0) or 0.0)
-        if gap > 0 and now - last < gap:
-            continue
-        t["_last_fire_epoch"] = now
-        _execute(task_id, t, event_name, payload)
+        # 任何异常都只降级：绝不能让守护线程退出
+        try:
+            with _LOCK:
+                t = _STATE["tasks"].get(task_id)
+            if t is None or not t.get("enabled", True):
+                continue
+            if event_name not in PSEUDO_EVENTS and event_name not in _system_events_of(t):
+                continue
+            # debounce 节流
+            now = time.time()
+            gap = float(t.get("debounce", 0.0) or 0.0)
+            last = float(t.get("_last_fire_epoch", 0.0) or 0.0)
+            if gap > 0 and now - last < gap:
+                continue
+            t["_last_fire_epoch"] = now
+            _execute(task_id, t, event_name, payload)
+        except Exception:
+            print(f"[task_manager] 事件分发 {task_id} 异常:\n"
+                  + traceback.format_exc(limit=2))
 
 
 # ============================ 任务执行 ============================
@@ -816,33 +1040,68 @@ def _execute(task_id, t, event_name=None, payload=None):
         error = traceback.format_exc(limit=3)
         print(f"[task_manager] task {task_id} 异常:\n{error}")
     finally:
-        with _LOCK:
-            t["run_count"] = int(t.get("run_count", 0)) + 1
-            t["last_run"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            t["last_result"] = (str(result)[:500] if error is None
-                                else "ERROR: " + error.splitlines()[-1])
-            if event_name is not None:
-                t["last_event"] = event_name
-                t["last_payload"] = payload
-            kind = _kind(t)
-            delay = t.get("interval", 60)
-            if kind == "daily":
-                delay = _daily_delay(t)
-            enabled = t.get("enabled", True)
-            _save()
-        # 定时/每日任务执行后接力下一次；事件任务不调度
-        if kind in ("interval", "daily") and enabled:
-            _schedule(task_id, delay)
+        delay = None
+        try:
+            with _LOCK:
+                t["run_count"] = int(t.get("run_count", 0)) + 1
+                t["last_run"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                t["last_result"] = (str(result)[:500] if error is None
+                                    else "ERROR: " + error.splitlines()[-1])
+                if event_name is not None:
+                    t["last_event"] = event_name
+                    t["last_payload"] = payload
+                kind = _kind(t)
+                enabled = t.get("enabled", True)
+                # 只有“排程到点”才接力下一次；系统事件不重复排程
+                if kind == "interval" and event_name == "interval":
+                    delay = max(1, int(t.get("interval", 60) or 60))
+                elif kind == "daily" and event_name == "daily":
+                    delay = _daily_delay(t)
+                elif kind == "at" and event_name == "at":
+                    # 一次性 at：触发后自动停用，保留 last_run/last_result
+                    t["enabled"] = False
+                    t["next_epoch"] = None
+                    enabled = False
+                _save()
+            if enabled and delay:
+                with _LOCK:
+                    _arm(task_id, t, delay)
+                    _save()
+        except Exception:
+            # 收尾（统计/持久化/接力）失败只降级，不影响事件 worker 线程
+            print(f"[task_manager] task {task_id} 收尾失败:\n"
+                  + traceback.format_exc(limit=2))
     return "ok" if error is None else "error"
 
 
 def execute_task(task_id):
-    """WorkManager（PythonTaskWorker）回调入口：执行定时任务并接力。"""
-    with _LOCK:
-        t = _STATE["tasks"].get(task_id)
-    if t is None:
-        print(f"[task_manager] execute {task_id}: 未注册，忽略")
-        return "not_found"
-    if _kind(t) not in ("interval", "daily"):
-        return "not_periodic_task"
-    return _execute(task_id, t)
+    """WorkManager（PythonTaskWorker）回调入口。
+
+    按任务的排程类型决定伪事件名（interval / at / daily）后走统一分发
+    _execute；interval 执行完接力下一次，一次性 at 自动停用，daily 排明天。
+    """
+    try:
+        with _LOCK:
+            t = _STATE["tasks"].get(task_id)
+        if t is None:
+            print(f"[task_manager] execute {task_id}: 未注册，忽略")
+            return "not_found"
+        if not t.get("enabled", True):
+            return "disabled"
+        kind = _kind(t)
+        name = _pseudo_event(kind)
+        if name is None:
+            return "not_periodic_task"
+        payload = {"task_id": task_id,
+                   "scheduled_at": t.get("next_epoch"),
+                   "fired_at": int(time.time())}
+        if kind == "interval":
+            payload["interval"] = t.get("interval")
+        else:
+            payload["at"] = t.get("at")
+        return _execute(task_id, t, name, payload)
+    except Exception:
+        print(f"[task_manager] execute {task_id} 异常:\n"
+              + traceback.format_exc(limit=2))
+        return "error"
+

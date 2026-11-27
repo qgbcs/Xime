@@ -1,6 +1,8 @@
 # task_manager 使用说明
 
-高可靠后台任务框架（Python 侧），支持**定时**、**每日定时**、**事件驱动**三类任务。
+高可靠后台任务框架（Python 侧），支持**定时 interval**、**指定时刻 at（一次性）**、
+**每日定时 daily**、**事件驱动 event**四类触发方式，并可在同一个任务上组合
+（定时/时刻 + 系统事件）。
 任务一律由 RPC 远程下发，APK 内不硬编码任何任务（`init` 只从 JSON 恢复），
 状态持久化在 `filesDir/task_manager.json`，重启/进程被杀后自动恢复。
 
@@ -19,6 +21,12 @@
 （`PeriodicWorkRequest` 最小 15 分钟，不满足需求），执行完在 Python 侧重新入队下一次。
 
 ## 触发方式
+
+所有触发方式都统一到 `add_task(task_id, func_name=None, code=None, enabled=True, **opts)`；
+`opts` 只接受 `interval` / `at` / `repeat` / `events` / `debounce` 五个键，出现未知键
+直接返回 `{"ok": False, "error": "不支持的参数: [...]", "allowed": [...]}`。
+`add_daily_task` / `add_at_task` / `add_event_task` 只是保留的兼容包装（内部转调 `add_task`）。
+`interval` 优先于 `at`，`at` 优先于 `events`。
 
 ### 1. 定时 interval
 
@@ -46,6 +54,41 @@ r = task_manager.add_event_task("wifilog", "wifi_connected",
 r = task_manager.add_event_task("npboot", "boot_completed",
                                 code='print("[开机]", payload)')
 ```
+
+### 4. 指定时刻 at（一次性）
+
+`at` 支持两种写法，到点后以**伪事件 `at`** 分发，只触发一次，触发后自动置
+`enabled=false`（`last_run` / `last_result` 保留）：
+
+```python
+# 绝对日期时间（只触发一次）
+r = task_manager.add_at_task("once", "2026-12-01 08:30:00", code='print("一次性", event)')
+# 当天 20:15（已过则顺延到明天），同样只触发一次
+r = task_manager.add_at_task("tonight", "20:15", code='print("今晚", event)')
+# 返回 {"ok": True, "id": ..., "kind": "at", "at": "2026-12-01 08:30:00",
+#        "next_epoch": 1796..., "next_in": 秒数, "events": []}
+```
+
+### 组合：定时/时刻 + 系统事件
+
+同一个任务可以既有排程又有系统事件订阅，`events` 始终记录系统事件：
+
+```python
+# 每 60 秒跑一次，同时 WiFi 一连上也跑一次（event 为 interval 或 wifi_connected）
+r = task_manager.add_task("tick", interval=60, events=["wifi_connected"],
+                          code='print("tick", event, payload)')
+
+# 用 add_event_task 也能叠加排程
+r = task_manager.add_event_task("mix", events=["boot_completed"], interval=300,
+                                code='print("mix", event)')
+```
+
+`kind` 取主调度类型，优先级 `interval > at > daily > event`；`events` 不受影响。
+Kotlin 只对 `events` 里列出的真实系统事件回调 Python（`interval`/`at`/`daily`
+这三个伪事件名永远不会同步给 Kotlin）。
+
+定时到点后任务代码拿到的 `event` 分别是 `"interval"` / `"at"` / `"daily"`；
+payload 里带 `task_id`、`scheduled_at`、`fired_at`，以及 `interval` 或 `at`。
 
 #### 事件清单
 
@@ -129,9 +172,9 @@ if (!deliver) return                               //    未订阅：到此结�
 SystemEventMonitor.deliverToPython(name, payloadJson)
 ```
 
-- `registered` 是 Python 写的订阅集合：`_sync_system_events()` 遍历所有
-  `kind=="event"` 且 `enabled` 的任务，把它们的 `events` 并集、排序后交给
-  `syncRegisteredEvents()`。增删/暂停/恢复/`init` 后都会重同步。
+- `registered` 是 Python 写的订阅集合：`_sync_system_events()` 汇总**所有启用任务**
+  （含 interval / at / daily）的 `events` 并集，排除 `interval`/`at`/`daily` 三个伪事件名
+  后排序交给 `syncRegisteredEvents()`。增删/暂停/恢复/`init` 后都会重同步。
 - 因此：**没订阅的事件不会进 Python**，只进 Kotlin 缓冲。`time_tick`、
   `battery_changed` 这类高频事件默认就是这种状态，不需要担心耗电。
 - 反过来，即便没订阅，也能用 `system_events()` 回读历史，不丢。
@@ -145,12 +188,13 @@ SystemEventMonitor.deliverToPython(name, payloadJson)
 
 | 函数 | 说明 |
 |---|---|
-| `add_task(task_id, func_name=None, interval=60, code=None, enabled=True)` | 新增/覆盖定时任务；`interval` 单位秒 |
-| `add_daily_task(task_id, at="00:00", code=None, func_name=None, enabled=True)` | 新增/覆盖每日任务；返回带 `next_in` 秒数 |
-| `add_event_task(task_id, event=None, code=None, func_name=None, debounce=0.0, enabled=True, events=None)` | 新增/覆盖事件任务；`event` 与 `events` 可同时给，去重合并 |
+| `add_task(task_id, func_name=None, code=None, enabled=True, **opts)` | **统一建任务入口**。`opts` 只允许 `interval` / `at` / `repeat` / `events` / `debounce`，出现未知键直接返回 `{"ok": false, "error": "不支持的参数: [...]", "allowed": [...]}`。`interval`（秒）→ interval；否则 `at`（`YYYY-MM-DD HH:MM[:SS]` / `HH:MM[:SS]`，Python 侧也接受 `datetime.datetime`）→ 一次性（`repeat=True` 且 `HH:MM[:SS]` 时为每日）；否则 `events` → 纯事件；三者至少一个。`interval` 优先于 `at`，`events` 可与任意 kind 叠加 |
+| `add_daily_task(task_id, at="00:00", code=None, func_name=None, enabled=True)` | 兼容包装 → `add_task(..., at=at, repeat=True)` |
+| `add_at_task(task_id, at, code=None, func_name=None, enabled=True, events=None, interval=None)` | 兼容包装 → `add_task(..., at=at)`（一次性时刻） |
+| `add_event_task(task_id, event=None, code=None, func_name=None, debounce=0.0, enabled=True, events=None, interval=None, at=None)` | 兼容包装 → `add_task`（`event`/`events` 合并去重） |
 | `remove_task(task_id)` | 删除任务并取消调度 |
 | `pause_task(task_id)` / `resume_task(task_id)` | 暂停 / 恢复（恢复时重新接力下一次） |
-| `run_now(task_id)` | 立即执行一次（定时任务按 0 延迟调度，事件任务直接入队） |
+| `run_now(task_id)` | 立即执行一次（排程类按 0 延迟调度，事件任务直接入队；at 任务同样可用） |
 | `list_tasks()` | 全部任务及其状态 |
 | `list_events()` | 59 个可订阅事件名（**不含** GPS 的 20 个） |
 | `recent_events(limit=20)` | Python 侧最近事件环形缓冲（最多 50 条） |
@@ -200,13 +244,22 @@ SystemEventMonitor.deliverToPython(name, payloadJson)
 
 ```json
 {
-  "kind": "daily", "at": "08:30", "code": "...", "enabled": true,
+  "kind": "daily", "at": "08:30", "next_epoch": 1793075400,
+  "events": ["wifi_connected"], "code": "...", "enabled": true,
   "run_count": 3, "last_run": "2026-10-27 08:30:00",
   "last_result": "[每日] 触发",
-  "last_event": "boot_completed", "last_payload": {...},
+  "last_event": "daily", "last_payload": {...},
   "created": "2026-10-26 11:11:08", "_last_fire_epoch": 1793075961.7
 }
 ```
+
+- `kind`：`interval` / `at` / `daily` / `event`；混合时取主调度类型
+  （优先级 `interval > at > daily > event`）。
+- `events`：系统事件名列表，**每个任务都有**（无订阅为 `[]`），与排程互不影响。
+- `interval`：定时秒数（仅 interval 类任务）。
+- `at` / `next_epoch`：一次性或每日任务的目标时刻与下次触发 epoch 秒。
+  `list_tasks()` 总会补齐 `at` / `next_epoch` / `events`（缺失为 `null` / `[]`），
+  不删任何旧键。
 
 ## 时间语义与观测陷阱
 
@@ -293,6 +346,8 @@ r = task_manager.add_event_task("boot_timesync", "boot_completed", code=CODE)
   Python 未就绪期间的事件会排队补投，不丢。
 - 修改设备时间是特权操作，`code` 内的 `su -c "date ..."` 需要设备已 root。
 - 任务执行异常不会中断框架，异常信息写入 `last_result`（以 `ERROR:` 开头）。
+- 热更新：把新版 `task_manager.py` 放到 `filesDir/site-packages` 后执行
+  `import app; app.reload_module("task_manager")`，会按 sys.path 重新导入并 `init` 恢复任务调度。
 
 ## RPC 调用示例
 

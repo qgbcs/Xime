@@ -1,8 +1,8 @@
 # task_manager 事件复合条件（AND）调研
 
-> 状态：**设计调研，未实施**。日期 2026-11-19。
+> 状态：**AND 条件（本文档主题）为设计调研，未实施**。日期 2026-11-19。
 > 目标：判断 `task_manager` 是否支持“多个条件同时成立（AND）再触发”，给出不改代码与改代码两条路径的边界。
-> 配套文档：`docs/task-manager.md`（使用说明与 API 参考）。
+> 配套文档：`docs/task-manager.md`（使用说明与 API 参考；建任务统一入口为 `add_task`）。
 
 ## 1. 结论
 
@@ -15,13 +15,13 @@
 
 | 能力 | 实现 | 位置 |
 |---|---|---|
-| 多事件订阅并集 | 遍历 `kind=="event"` 且 `enabled` 的任务取 `events` 并集 | `task_manager.py` `_sync_system_events()` |
-| 事件匹配 | `event_name in _events_of(t)`，只要在集合内就选中 | `fire_event()` |
+| 多事件订阅并集 | 汇总所有 `enabled` 任务（含 interval / at / daily）的系统事件并集，排除伪事件名 | `task_manager.py` `_sync_system_events()` |
+| 事件匹配 | 任意 `enabled` 任务且 `event_name in _system_events_of(t)` 即选中（伪事件名除外） | `fire_event()` |
 | 串行执行 | 单守护线程消费 `_EVENT_Q` | `_event_worker()` |
 | 节流 | `debounce` 是**任务级、跨事件共享**的最小间隔 | `_event_worker()` |
 | 动作执行 | `code` 优先，其次 `func` | `_execute()` / `_run_code()` |
 | 状态持久化 | 整个 `_STATE` 原子写 `filesDir/task_manager.json` | `_save()`，`_execute()` 的 `finally` 每次都会调用 |
-| 每日定时 | 仅支持 `HH:MM[:SS]`，无日期区间 | `add_daily_task()` / `_daily_delay()` |
+| 定时 / 时刻 / 每日 | 统一入口 `add_task(**opts)`：`interval` 秒、`at` 绝对日期或 `HH:MM[:SS]`（`repeat=True` 为每日）；到点以伪事件 `interval`/`at`/`daily` 分发，一次性 at 触发后 `enabled=False` | `add_task()` / `_delay_of()` / `_execute()` |
 | 显著运动 | 触发后 1s 自动 rearm | `LocationEventMonitor.significantMotionListener` / `rearmSignificantMotion()` |
 | 定位状态快照 | `{running, first_fix, last{lat,lon,acc,ts,provider}, anchor{...}, distance_*, activity}` | `LocationEventMonitor.getState()` |
 
@@ -143,6 +143,9 @@ r = task_manager.add_event_task(
 )
 ```
 
+等价 `add_task` 写法：`task_manager.add_task("home_morning_move", events=[...], debounce=0, code=CODE)`；
+`add_event_task` 只是兼容包装。
+
 说明：
 
 - `_execute()` 的 `finally` 一定会 `_save()`，所以代码里改过的 `t["state"]` 会自动落盘，**不需要额外调用 `_save()`**；显式调用只是多一次写盘。
@@ -157,6 +160,8 @@ task_manager.add_daily_task("win_off", at="12:00",
     code="task_manager.pause_task('home_morning_move')")
 ```
 
+等价 `add_task` 写法：`task_manager.add_task("win_on", at="08:00", repeat=True, code=...)`。
+
 - `pause_task()` 把 `enabled` 置 False，`fire_event()` 不再匹配，同时 `_sync_system_events()` 重算订阅集合，`LocationEventMonitor` 在集合里没有 GPS 事件时**注销监听并退出线程**。
 - 边界由 WorkManager（`daily` → `OneTimeWorkRequest`）保证，不依赖 `time_tick`。
 - 注意：`pause` 只影响本任务的订阅；如果**其他 enabled 任务**仍订阅 GPS 事件，传感器不会停（见 6.6）。
@@ -168,6 +173,7 @@ task_manager.test_event("significant_motion", {"sensor": "significant_motion"}) 
 task_manager.run_now("home_morning_move")   # 事件任务以 events[0] + payload=None 入队
 task_manager.recent_events(20)              # Python 侧最近 50 条
 task_manager.system_events(50, True)         # Kotlin 侧最近 500 条，含 registered 集合
+import app; app.reload_module("task_manager")  # 放入 site-packages 后热更新并重新 init
 ```
 
 ## 6. 路径 A 的坑（全部有代码依据）
@@ -194,7 +200,7 @@ task_manager.system_events(50, True)         # Kotlin 侧最近 500 条，含 re
 
 ### 6.6 省电取决于整个订阅集合
 
-`_sync_system_events()` 取的是所有 enabled 事件任务的并集。只要还有别的任务订阅 GPS 事件，`pause_task('home_morning_move')` 之后传感器仍在线。
+`_sync_system_events()` 汇总所有 enabled 任务（含 interval / at / daily）的系统事件并集（排除伪事件名）。只要还有别的任务订阅 GPS 事件，`pause_task('home_morning_move')` 之后传感器仍在线。
 
 ### 6.7 日志噪音
 
@@ -202,7 +208,7 @@ task_manager.system_events(50, True)         # Kotlin 侧最近 500 条，含 re
 
 ### 6.8 `time_tick` 不是调度器
 
-`ACTION_TIME_TICK` 在 Doze / 进程冻结下会延迟、合并、跳变。时间窗边界只能用 WorkManager 或 `interval` 任务。
+`ACTION_TIME_TICK` 在 Doze / 进程冻结下会延迟、合并、跳变。时间窗边界只能用 WorkManager 排程（`interval` / `at` / `daily` 任务）。
 
 ### 6.9 进程被杀与 Doze
 
