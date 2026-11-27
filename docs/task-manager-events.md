@@ -281,3 +281,23 @@ import app; app.reload_module("task_manager")  # 放入 site-packages 后热更�
 - Home Assistant 自动化（trigger / condition / action）：<https://www.home-assistant.io/docs/automation/>
 - eKuiper 边缘规则引擎：<https://ekuiper.org/docs/en/latest/>
 - Microsoft Fabric Activator（有状态规则求值）：learn.microsoft.com / fabric / data-activator
+
+## 11. v2 进展：条件已原生落地的一部分
+
+v2 不需要改 Kotlin，已在 `task_manager.py` 内实现了路径 B 的部分能力，可直接用于上面的场景：
+
+| 能力 | v2 写法 | 对应本文诉求 |
+| --- | --- | --- |
+| 字段过滤（AND） | `when={"wifi": True, "network.validated": {"op": "eq", "value": True}}` | 第 5.1 节的条件 4（围栏等）以外的精确字段判断 |
+| 类型校验 | `schema={"ssid": "str", "rssi": "int"}` | 避免脏 payload 进入任务 |
+| 冷却窗口 | `dedupe=1800` + `idem="id"`（或默认 payload 指纹） | 第 5.1 节的条件 5（冷却） |
+| 任务状态门控 | `depends_on=["..."]`（依赖任务最近一次成功） | 跨任务的先决条件 |
+| 高频合并 | `coalesce=True`（排队期间只留最新一次） | 高频事件合并（保留最新） |
+| 事件不丢 | `persist_events=True` + `replay_events()` | 关键事件持久化/重放 |
+
+仍未声明式化的（继续用第 5 节的 code 内判断）：时间窗、日期区间、坐标新鲜度、地理围栏。
+如果要按事件优先级排队，给任务设 `priority` 即可（事件队列按优先级出队）。
+
+注意：`when` 只支持相等/包含/正则/大小比较这类无状态判断，**不支持**“最近 N 秒内
+另一个事件也发生过”这类需要跨事件记忆的条件，后者仍需 code 侧自建状态。
+

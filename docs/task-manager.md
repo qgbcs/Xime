@@ -386,3 +386,132 @@ d = client_mqtt.rpc('import task_manager as tm; print(tm.list_tasks())',
 d = client_mqtt.rpc(CODE, request_topic="<设备主题>", timeout=30, k=<私钥>,
                     timestamp_ms=d["server_time"])
 ```
+
+## 高级能力（v2）
+
+v2 在保持 add_task/add_event_task/add_at_task/add_daily_task 旧写法完全兼容的前提
+下，补齐了可靠性、事件、编排与可观测性能力。全部能力都只通过 RPC 配置，APK 内
+不硬编码任何任务。
+
+### 1. cron 触发
+
+```python
+r = tm.add_task("qa_cron", cron="*/5 * * * *", code='print("tick", event)')
+r = tm.validate_cron("*/5 9-18 * * 1-5")   # 合法返回 {ok:True, next_epoch}
+```
+
+- 5 段标准格式：分 时 日 月 周；支持 `*` `*/n` `a-b` `a,b` 与 `?`。
+- 每次触发后按当前时间推进到下一个匹配点再交给调度器接力，kind 为 `cron`。
+- `interval` > `cron` > `at`/`repeat` 的优先级不变；旧 daily/at/interval 定义照常可用。
+
+### 2. 可靠性
+
+| 能力 | 配置 | 说明 |
+| --- | --- | --- |
+| 超时 | `timeout=秒`（任务级）或全局 `task_timeout` | 到点标记 timeout、置 cancel_event、记 timeout_count；Python 线程无法强杀，超时后返回的结果会被丢弃 |
+| 重试 | `retry=次数`、`retry_delay=基础秒`、`retry_max_delay=上限秒` | 指数退避 `base*2^attempt`，耗尽进死信队列 |
+| 死信 | - | `tm.dead_letters()` 读取；`tm.clear_dead_letters()` 清理 |
+| 看门狗 | `watch_interval` | 心跳、到期重试回投、排程失败自动重排（30 秒间隔）、指标事件 |
+| 并发控制 | `workers`、`lock_wait`、`queue_max` | 同一任务 per-task 锁串行；队列满丢新并计入 dropped |
+| 调度失败 | - | 失败写 `last_schedule_error`，看门狗重排；连续失败进 alerts |
+
+### 3. 触发语义：misfire / coalesce / catchup
+
+| 配置 | 含义 |
+| --- | --- |
+| `misfire_grace=秒` | 过期超过宽限不再补跑（一次性 at 标记 MISSED） |
+| `coalesce=True` | 同一任务排队期间多次触发只保留一次，payload 取最新；`coalesce_mode` 可选 |
+| `catchup=True` | 进程重启恢复时，按错过的周期数补跑（上限由 missed 计数控制） |
+
+### 4. 事件增强（任务侧）
+
+```python
+r = tm.add_task("qa_evt", events=["wifi_connected"],
+                when={"wifi": True},                  # 字段过滤，支持 eq/ne/in/contains/regex/gt/gte/lt/lte/exists
+                schema={"ssid": "str", "rssi": "int"}, # payload 类型校验，缺字段/类型错直接 skip
+                dedupe=30, idem="id",                  # 幂等键 + 去重窗口（秒）
+                persist_events=True,                   # 关键事件落盘，可用 replay_events 重放
+                code='print(event, payload)')
+```
+
+- `when` 支持点路径（如 `network.wifi`）与 `{"op": ..., "value": ...}` 形式。
+- 去重窗口内同一 idem 键（缺省为 payload 指纹）重复事件计 `deduped` 并跳过。
+- 落盘事件存 `task_history.json` 的 `events`，受 `config: persist_events_max` 限制。
+
+### 5. 任务编排
+
+- `depends_on=["a", "b"]`：所依赖任务最近一次 `last_status` 必须为 ok，否则 skip 并记原因
+  （`dependency_failed:<id>` / `dependency_missing:<id>`）。
+- `then=["c"]`：本任务成功（ok）后链式触发，payload 带 `{from, event, status}`。
+- `priority=数字`：事件队列按优先级出队（大者先）。
+- `group="名字"`、`tags=[...]`：用于 `list_groups()` 与批量操作。
+
+### 6. 观测与运维
+
+| RPC | 作用 |
+| --- | --- |
+| `metrics()` / `metrics_json()` | 队列、任务、计数、死信、告警、持久事件等完整指标 |
+| `export_metrics()` | 指标包装成可 MQTT/HTTP 下发的 JSON 文本 |
+| `health()` | 健康检查：`problems` 列出 dead_letters/consecutive_failures/queue_full/schedule_errors 等 |
+| `heartbeat()` | 最近心跳（epoch 秒） |
+| `history(task_id, limit)` | 最近 N 次执行（耗时、错误、输出摘要） |
+| `dead_letters(limit)` / `clear_dead_letters()` | 死信队列 |
+| `alerts(limit)` / `clear_alerts()` | 告警（timeout / dead_letter / schedule_failed / schedule_recovered） |
+| `persisted_events()` / `replay_events()` / `clear_persisted_events()` | 落盘事件读取与重放 |
+| `recent_events(limit, since_seq)` | 环形缓冲按 seq 增量读取 |
+| `list_tasks(page, page_size, group, enabled, include_code, detail)` | 分页与摘要；`page_size>0` 返回 `{page,page_size,total,count,tasks}`，默认仍返回旧 dict |
+- 列表默认不回传全量 `code`，只给 `code_bytes`；需要源码时 `get_task(id, include_code=True)`。
+
+### 7. 批量 / 模板 / 导入导出
+
+```python
+tm.batch_tasks("disable", ids=["a", "b"])   # action: enable/disable/remove/run
+tm.save_template("netlog", task_id="a")      # 或 definition={...}
+tm.add_task("a2", template="netlog")         # 模板 + 局部覆盖
+exp = tm.export_tasks(ids=["a"], include_code=True)
+tm.import_tasks(exp, overwrite=True)
+```
+
+导出/导入保留长代码原文（内部 `_json_copy`），不会像状态记账那样截断到 256 字符。
+
+### 8. 调度后端与约束（需要 v2 Kotlin 桥）
+
+```python
+tm.add_task("qa_alarm", interval=10, backend="alarm", ...)          # AlarmManager 精确闹钟
+tm.add_task("qa_net", interval=60, constraints={"network": "connected"}, ...)
+```
+
+- `backend="alarm"`：走 `TaskScheduler.scheduleExact`（setExactAndAllowWhileIdle；
+  无精确闹钟权限时自动降级 setAndAllowWhileIdle），到点由 `TaskAlarmReceiver` 拉起 Python。
+- `constraints`：`network`(connected/unmetered/not_roaming/metered/not_required)、
+  `charging`、`battery_not_low`、`storage_not_low`、`device_idle`，映射到 WorkManager Constraints。
+- Kotlin 侧不可用时自动回退普通 WorkManager 排程，只降级不影响主流程。
+
+### 9. 持久化：三文件拆分与迁移
+
+| 文件 | 内容 |
+| --- | --- |
+| `task_manager.json` | 任务静态定义 + 模板（结构变更立即落盘） |
+| `task_runtime.json` | 运行统计、next_epoch、待重试项（3 秒合并写） |
+| `task_history.json` | 每任务执行历史、死信、告警、持久事件（3 秒合并写） |
+
+- 旧版单文件 `task_manager.json` 启动时自动迁移，缺失的 runtime/history 文件按需创建。
+- 解析失败会备份为 `*.bad.<epoch>` 并从空表启动，绝不阻塞启动。
+- 写盘统一 `_atomic_write`：临时文件 + fsync + os.replace，并对不可序列化对象做降级。
+
+### 10. 可配置项（set_config）
+
+```python
+tm.set_config(queue_max=512, workers=6, min_interval=5,
+              history_max=100, output_max=32768,
+              task_timeout=120, retry_max_delay=600,
+              watch_interval=5, metrics_events=60, persist_events_max=500)
+```
+
+`get_config()` 读取当前值；所有键都有安全上下限，非法值被拒绝并返回错误。
+
+### 11. 热更新与停机开关
+
+`app.reload_module("task_manager")` 导入新实例时，会通过 `builtins._tm_stop_event`
+给旧实例的守护线程发停机信号：旧的事件分发线程、看门狗、写盘、单次执行收尾都会
+检测到并立即退出，不会出现两个实例同时写状态文件或重复排程。

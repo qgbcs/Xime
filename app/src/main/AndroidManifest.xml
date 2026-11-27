@@ -484,6 +484,12 @@
             android:exported="false"
             android:foregroundServiceType="camera|microphone|location|mediaPlayback" />
 
+        <!-- 精确闹钟调度后端（task_manager backend=alarm）：到点后拉起 Python 执行 -->
+        <receiver
+            android:name=".task.TaskAlarmReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
         <!-- 开机完成事件：写待发标记并拉起 Python 补发 boot_completed -->
         <receiver
             android:name=".task.BootEventReceiver"
