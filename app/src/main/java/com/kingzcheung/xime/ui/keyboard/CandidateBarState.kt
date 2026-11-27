@@ -13,7 +13,6 @@ sealed interface CandidateBarState {
         val preeditText: String = "",
         val hasMore: Boolean = false,
         val associationCandidates: List<String> = emptyList(),
-        val demotedCandidateCount: Int = 0,
         /** 与 candidates 等长的候选来源集合，长按菜单按来源路由。 */
         val candidateSources: List<Set<CandidateSource>> = emptyList(),
     ) : CandidateBarState
@@ -53,7 +52,6 @@ sealed interface CandidateBarState {
             isShowingRecentClipboard: Boolean,
             hasNextPage: Boolean,
             isCalculatorActive: Boolean = false,
-            demotedCandidateCount: Int = 0,
             candidateSources: List<Set<CandidateSource>> = emptyList(),
         ): CandidateBarState {
             val hasCandidates = candidates.isNotEmpty()
@@ -72,7 +70,6 @@ sealed interface CandidateBarState {
                         preeditText = preeditText,
                         hasMore = hasCandidates && hasNextPage,
                         associationCandidates = associationCandidates,
-                        demotedCandidateCount = demotedCandidateCount,
                         candidateSources = candidateSources,
                     )
                 !isComposing && !hasInput && hasAssociations && !hasCandidates ->
@@ -87,7 +84,6 @@ sealed interface CandidateBarState {
                         inputText = inputText,
                         preeditText = preeditText,
                         hasMore = hasCandidates && hasNextPage,
-                        demotedCandidateCount = demotedCandidateCount,
                         candidateSources = candidateSources,
                     )
                 else -> Idle

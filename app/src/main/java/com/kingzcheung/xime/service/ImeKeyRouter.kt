@@ -819,39 +819,6 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
 
         val isT9 = isT9Schema(service.uiState.value.currentSchemaId)
 
-        val frontCount = candState.customPhraseCount
-        val tailCount = candState.demotedPhraseCount
-        val totalCount = candState.candidates.size
-        val canSelectInjectedCandidate = clickedCandidate == null || hasCurrentCandidate
-        val isFrontInject = !isT9 && canSelectInjectedCandidate &&
-            frontCount > 0 && effectiveIndex in 0 until frontCount
-        val tailStart = totalCount - tailCount
-        val isTailInject = !isT9 && canSelectInjectedCandidate &&
-            tailCount > 0 && effectiveIndex in tailStart until totalCount
-        if (isFrontInject || isTailInject) {
-            // 点击的是 app 层注入的自动学习词（前置或沉底）：直接上屏，不经过 rime 选词，也不重建会话。
-            val word = candState.candidates.getOrElse(effectiveIndex) { "" }
-            if (word.isNotEmpty()) {
-                // 记一次使用：分值 +1，降频词被再次选中后逐步回升到前排。
-                com.kingzcheung.xime.settings.UserPhraseManager.bumpAutoWordOnPick(
-                    service, service.uiState.value.currentSchemaId, word, candState.inputText
-                )
-                val fullText = service.partialCandidateSegments.joinToString("") { it.text } + word
-                withContext(Dispatchers.Main) { service.commitText(fullText) }
-            }
-            service.partialCandidateSegments.clear()
-            service.rimeEngine.clearComposition()
-            withContext(Dispatchers.Main) {
-                service.candidateState.value = CandidateState()
-                service.endComposingInputBox()
-            }
-            return CandidateSelectionOutcome(
-                accepted = word.isNotEmpty(),
-                rimeCommitText = "",
-                committedText = if (word.isEmpty()) null else word,
-            )
-        }
-
         val candidatePinyin = if (isT9 && hasCurrentCandidate &&
             effectiveIndex < candState.candidateComments.size
         ) {
@@ -873,7 +840,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
             false
         }
 
-        val baseIndex = (effectiveIndex - frontCount).coerceAtLeast(0)
+        val baseIndex = effectiveIndex.coerceAtLeast(0)
         val expectedComment = if (hasCurrentCandidate) {
             candState.candidateComments.getOrNull(effectiveIndex)
         } else {

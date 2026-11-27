@@ -163,10 +163,7 @@ fun CandidateBar(
             showLeftIcon = true
         }
         is CandidateBarState.ChineseCandidates -> {
-            candidateDisplayItems = EnglishCandidateDisplayPolicy.prepare(
-                s.candidates,
-                demotedCandidateCount = s.demotedCandidateCount,
-            )
+            candidateDisplayItems = EnglishCandidateDisplayPolicy.prepare(s.candidates)
             val taken = candidateDisplayItems.map { it.candidate }
             displayCandidates = taken
             displayComments = s.comments

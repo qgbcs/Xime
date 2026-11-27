@@ -18,9 +18,10 @@ import kotlinx.coroutines.withContext
  *
  * 1) 自动学习词（回车原始上屏的英文串、完整选中的中英文候选）：
  *    由本管理器在内存中直管（[getAutoPhrases]/add/delete/moveToEnd），
- *    按输入编码前缀匹配，以共享频率分值注入候选栏；点击应用层词条时直接上屏。
- *    独立持久化到 app filesDir（auto_phrase/<schema>.txt），rime 完全不加载，
- *    因此增删改立即生效，且绝不销毁/重建 rime 会话、不持有引擎全局锁
+ *    每次变更后把整表快照经 [syncToNative] 推送给 native learned_phrase_translator，
+ *    学习词以普通候选身份参与 Rime 内部统一排序（分页/选词均归 Rime）。
+ *    独立持久化到 app filesDir（auto_phrase/<schema>.txt），增删改即时生效，
+ *    且绝不销毁/重建 rime 会话、不持有引擎全局锁
  *    （根除重建会话导致的卡死、丢候选、第二次无候选）。
  *
  * 2) 手动 custom_phrase（设置页维护，db_class=stabledb）：
@@ -34,24 +35,16 @@ object UserPhraseManager {
     /** 手动 custom_phrase 的沉底权重。 */
     private const val BOTTOM_WEIGHT = -100000
     private const val DEPLOY_DEBOUNCE_MS = 2000L
-    /** 每段（前置/降频）最多注入候选栏的自动词数量。 */
-    private const val MAX_INJECT_COUNT = 8
-    /** 最小负分即可把学习词从前排移到当前 Rime 候选之后。 */
-    private const val DEMOTED_SCORE = -1L
-    /** 每点击上屏一次自动词，其分值加一；降频词再次选中一次即可恢复到非负分。 */
-    private const val SELECT_BUMP = 1L
 
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val fileMutex = Mutex()
     @Volatile private var deployScheduled = false
 
-    // ── 自动学习词：内存直管，独立存储，不经过 rime 会话 ──
-    /** 中英文共用同一按输入编码关联的频率分值；负分词追加到 Rime 候选之后。 */
-    /** 前缀匹配结果：[front] 为前排词，[tail] 为降频后置于当前 Rime 候选之后的词。 */
-    class AutoMatch(val front: List<String>, val tail: List<String>)
-
+    // ── 自动学习词：内存直管，独立存储；候选排序统一交给 native translator ──
     /** schemaId -> 词条（始终按分值降序、同分稳定保序）；所有读写在 object 监视器内同步。 */
     private val autoCache = HashMap<String, List<LearnedCandidateEntry>>()
+    /** schemaId -> 最近一次成功推送给 native 的 payload（变更检测，避免重复跨 JNI）。 */
+    private val syncedNativePayload = HashMap<String, String>()
     private val autoSaveMutex = Mutex()
 
     /**
@@ -196,7 +189,7 @@ object UserPhraseManager {
         return getEntries(context, schemaId).map { it.word }.distinct()
     }
 
-    /** 新增自动词：使用输入编码与词条组成身份；新词取共用频率最高分 +1。 */
+    /** 新增自动词：使用输入编码与词条组成身份，按 RIME 调频模型记一次使用。 */
     @Synchronized
     fun addAutoPhrase(context: Context, schemaId: String, word: String, inputCode: String = word) {
         updateLearnedPhrase(context, schemaId, inputCode.trim().lowercase(), word, bumpExisting = false)
@@ -215,6 +208,7 @@ object UserPhraseManager {
         if (updated == current) return
         autoCache[schemaId] = updated
         bumpPhraseRevision()
+        syncToNative(context, schemaId)
         persistAutoAsync(context, schemaId)
         val score = updated.first {
             it.inputCode.equals(inputCode, ignoreCase = true) && it.word == word
@@ -229,30 +223,22 @@ object UserPhraseManager {
         if (cur.none { it.word == word }) return
         autoCache[schemaId] = cur.filterNot { it.word == word }
         bumpPhraseRevision()
+        syncToNative(context, schemaId)
         persistAutoAsync(context, schemaId)
     }
 
     /**
-     * 降低自动词频率：分值置为 [DEMOTED_SCORE]（负分），排到 Rime 当前页候选之后。
-     * 以后点击该词每次加 [SELECT_BUMP]，分值回到 0 即重新前置注入（多次使用逐步提升）。
+     * 降低自动词频率：置为降频态（baseWeight=-1），由 native filter 压到 Rime 候选之后。
+     * 以后每选中该词一次即恢复使用记录（dee/commits 重新累积），回到正常排序。
      */
     @Synchronized
     fun moveAutoWordToSecondPage(context: Context, schemaId: String, word: String) {
         val cur = getEntries(context, schemaId)
-        if (cur.none { it.word == word && it.score != DEMOTED_SCORE }) return
-        val next = LearnedCandidateIndex.demoteWord(cur, word, DEMOTED_SCORE)
+        if (cur.none { it.word == word && it.baseWeight >= 0L }) return
+        val next = LearnedCandidateIndex.demoteWord(cur, word)
         autoCache[schemaId] = next
         bumpPhraseRevision()
-        persistAutoAsync(context, schemaId)
-    }
-
-    /** 点击上屏自动词后调用：分值 +[SELECT_BUMP] 并重排（落盘异步），使常用词逐步靠前。 */
-    @Synchronized
-    fun bumpAutoWordOnPick(context: Context, schemaId: String, word: String, input: String = "") {
-        val cur = getEntries(context, schemaId)
-        val next = LearnedCandidateIndex.bumpWord(cur, input, word, SELECT_BUMP)
-        if (next == cur) return
-        autoCache[schemaId] = next
+        syncToNative(context, schemaId)
         persistAutoAsync(context, schemaId)
     }
 
@@ -288,17 +274,26 @@ object UserPhraseManager {
     }
 
     /**
-     * 前缀匹配：
-     * - front：分值 >= 0 的词，按分值降序，注入候选栏前部；
-     * - tail：负分（降频）词，按分值升序，追加到当前 Rime 候选之后。
+     * 把当前方案的学习词快照推送给 native translator（侧信道）。
+     *
+     * 只在内容变化时跨 JNI，避免每次候选刷新都复制整张表；native 侧按
+     * schemaId 整表替换缓存，随后由 learned_phrase_translator 以普通候选参与
+     * Rime 统一排序（页大小、候选身份、选词全部留在 Rime 内部）。
+     * 推送失败（引擎未就绪等）仅降级为「本次不出现学习词」，不影响输入。
      */
     @Synchronized
-    fun matchAutoPhrases(context: Context, schemaId: String, input: String): AutoMatch {
-        val matched = LearnedCandidateIndex.matching(getEntries(context, schemaId), input)
-        val front = matched.filter { it.score >= 0L }.take(MAX_INJECT_COUNT).map { it.word }
-        // 缓存按降序存储，负分段反转即得升序（-1 在前、DEMOTED_SCORE 在最后）。
-        val tail = matched.filter { it.score < 0L }.asReversed().take(MAX_INJECT_COUNT).map { it.word }
-        return AutoMatch(front, tail)
+    fun syncToNative(context: Context, schemaId: String) {
+        if (schemaId.isBlank() || !RimeEngine.isInitialized()) return
+        val payload = getEntries(context, schemaId).joinToString("\n") {
+            LearnedCandidateIndex.serialize(it)
+        }
+        if (syncedNativePayload[schemaId] == payload) return
+        try {
+            RimeEngine.getInstance().setLearnedPhrases(schemaId, payload)
+            syncedNativePayload[schemaId] = payload
+        } catch (e: Exception) {
+            FileLogger.w(TAG, "sync learned phrases failed: ${e.message}")
+        }
     }
 
     data class LearnedCandidateDiagnostic(val inputCode: String, val word: String, val score: Long)
@@ -313,7 +308,7 @@ object UserPhraseManager {
             LearnedCandidateDiagnostic(it.inputCode, it.word, it.score)
         }
 
-    /** 异步落盘：锁内保存内存中的最新快照（word<TAB>score 每行），保证快速连续修改后最终一致。 */
+    /** 异步落盘：锁内保存内存中的最新快照（6 列 code/word/baseWeight/commits/dee/lastTick）。 */
     private fun persistAutoAsync(context: Context, schemaId: String) {
         val app = context.applicationContext
         ioScope.launch {

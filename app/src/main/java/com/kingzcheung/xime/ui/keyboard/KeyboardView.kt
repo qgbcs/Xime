@@ -300,7 +300,7 @@ fun KeyboardView(
             val candidateBarState = remember(
                 cs.candidates, cs.candidateComments, cs.inputText, cs.preeditText, cs.isComposing,
                 cs.associationCandidates, cs.pendingEnglishText, cs.isShowingRecentClipboard, cs.hasNextPage,
-                cs.demotedPhraseCount, state.isCalculatorMode, handwritingCandidates, handwritingComments,
+                cs.candidateSources, state.isCalculatorMode, handwritingCandidates, handwritingComments,
                 showHandwritingCandidates,
             ) {
                 if (showHandwritingCandidates) {
@@ -324,7 +324,6 @@ fun KeyboardView(
                         isShowingRecentClipboard = cs.isShowingRecentClipboard,
                         hasNextPage = cs.hasNextPage,
                         isCalculatorActive = state.isCalculatorMode,
-                        demotedCandidateCount = cs.demotedPhraseCount,
                         candidateSources = cs.candidateSources,
                     )
                 }

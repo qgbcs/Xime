@@ -5,6 +5,7 @@
 #include "t9_processor.h"
 #include "t9_filter.h"
 #include "t9_date_translator.h"
+#include "learned_phrase_translator.h"
 
 using namespace rime;
 
@@ -16,6 +17,11 @@ static void rime_t9_initialize() {
     r.Register("t9_processor", new Component<T9Processor>);
     r.Register("t9_filter", new Component<T9Filter>);
     r.Register("t9_date_translator", new Component<T9DateTranslator>);
+    // 应用学习词：原生 translator 注入 + filter 去重/降频抑制。
+    r.Register("learned_phrase_translator",
+               new Component<learned_phrase::LearnedPhraseTranslator>);
+    r.Register("learned_phrase_filter",
+               new Component<learned_phrase::LearnedPhraseFilter>);
 }
 
 static void rime_t9_finalize() {

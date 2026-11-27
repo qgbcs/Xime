@@ -16,11 +16,9 @@ internal object EnglishCandidateDisplayPolicy {
 
     fun prepare(
         candidates: List<String>,
-        demotedCandidateCount: Int = 0,
         maxCandidates: Int = 20,
     ): List<CandidateDisplayItem> {
-        val primaryCount = candidates.size - demotedCandidateCount.coerceIn(0, candidates.size)
-        val indexed = candidates.take(primaryCount).take(maxCandidates).mapIndexed { index, candidate ->
+        val indexed = candidates.take(maxCandidates).mapIndexed { index, candidate ->
             CandidateDisplayItem(index, candidate, candidate)
         }
         val english = indexed.filter { isEnglishWord(it.candidate) }
