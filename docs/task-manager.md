@@ -4,7 +4,9 @@
 **每日定时 daily**、**事件驱动 event**四类触发方式，并可在同一个任务上组合
 （定时/时刻 + 系统事件）。
 任务一律由 RPC 远程下发，APK 内不硬编码任何任务（`init` 只从 JSON 恢复），
-状态持久化在 `filesDir/task_manager.json`，重启/进程被杀后自动恢复。
+状态持久化在 `filesDir/task_manager.json`（`{"version": 1, "tasks": {...}}`，紧凑 JSON，
+`flush` + `fsync` + `os.replace` 原子替换）；文件损坏时先备份为 `task_manager.json.bad.<epoch>`
+再重建，重启/进程被杀后自动恢复。
 
 ## 架构
 
@@ -19,11 +21,17 @@
 
 定时任务的调度模型：Python 用 `OneTimeWorkRequest` **自接力**实现任意秒级周期
 （`PeriodicWorkRequest` 最小 15 分钟，不满足需求），执行完在 Python 侧重新入队下一次。
+下一次排程在 `trigger()` 入队前就已完成，因此本次执行失败或进程被杀也不会断链。
+
+执行模型：Kotlin 回调（`fire_event`）、WorkManager 到点（`execute_task`）、RPC `run_now`
+全部汇到 `trigger()`，写入有界队列 `_EVENT_Q`（上限 256），由唯一守护线程
+`PyTaskEvent` 串行取出执行；队列满时丢弃并累计 `_RUN_DROPPED`，绝不阻塞调用方。
+每个任务带自增 `gen`，覆盖/删除后旧代际的已入队触发自动失效。
 
 ## 触发方式
 
 所有触发方式都统一到 `add_task(task_id, func_name=None, code=None, enabled=True, **opts)`；
-`opts` 只接受 `interval` / `at` / `repeat` / `events` / `debounce` 五个键，出现未知键
+`opts` 只接受 `interval` / `at` / `repeat` / `events` / `debounce` / `misfire_grace` 六个键，出现未知键
 直接返回 `{"ok": False, "error": "不支持的参数: [...]", "allowed": [...]}`。
 `add_daily_task` / `add_at_task` / `add_event_task` 只是保留的兼容包装（内部转调 `add_task`）。
 `interval` 优先于 `at`，`at` 优先于 `events`。
@@ -46,7 +54,8 @@ r = task_manager.add_daily_task("daily_report", "08:30", code='print("[每日] �
 
 ### 3. 事件 event
 
-订阅 Kotlin 侧事件，`debounce` 为同一任务两次触发的最小间隔（秒，0 表示不节流）。
+订阅 Kotlin 侧事件。`debounce` 是**任务级**最小触发间隔（秒，0 表示不节流），
+对事件、定时、`run_now` 一视同仁，统一在 `trigger()` 里判定。
 
 ```python
 r = task_manager.add_event_task("wifilog", "wifi_connected",
@@ -68,6 +77,10 @@ r = task_manager.add_at_task("tonight", "20:15", code='print("今晚", event)')
 # 返回 {"ok": True, "id": ..., "kind": "at", "at": "2026-12-01 08:30:00",
 #        "next_epoch": 1796..., "next_in": 秒数, "events": []}
 ```
+
+`misfire_grace`（默认 60 秒，仅绝对一次性 `at` 生效）：设备休眠/进程被杀导致错过目标
+时刻时，未超宽限则立即补跑一次；超过宽限则不再补跑，直接置 `enabled=false`、
+`next_epoch=null`，`last_result="MISSED: 过期超过 misfire_grace"`。
 
 ### 组合：定时/时刻 + 系统事件
 
@@ -111,6 +124,8 @@ GPS / 围栏 / 活动 / GNSS 另有 **20 个**事件，由 `LocationEventMonitor
 要点：
 
 - `boot_completed`：`BootEventReceiver` 写标记，首次 `init` 后补发，payload 带 `boot_epoch`。
+  同一进程内最多派发一次（预初始化补发与 boot marker 撞车会自动去重）；
+  `consume_boot_pending()` 在派发成功后才删除 marker，宁可崩溃重发一次也不静默丢。
 - `screen_rotation_changed` 与 `call_state_changed` **不是广播**：前者来自
   `DisplayManager.DisplayListener`（payload `rotation` 0~3、`degrees`），后者来自
   `TelephonyCallback`（payload `state=idle/ringing/offhook`、`state_code`、
@@ -188,16 +203,16 @@ SystemEventMonitor.deliverToPython(name, payloadJson)
 
 | 函数 | 说明 |
 |---|---|
-| `add_task(task_id, func_name=None, code=None, enabled=True, **opts)` | **统一建任务入口**。`opts` 只允许 `interval` / `at` / `repeat` / `events` / `debounce`，出现未知键直接返回 `{"ok": false, "error": "不支持的参数: [...]", "allowed": [...]}`。`interval`（秒）→ interval；否则 `at`（`YYYY-MM-DD HH:MM[:SS]` / `HH:MM[:SS]`，Python 侧也接受 `datetime.datetime`）→ 一次性（`repeat=True` 且 `HH:MM[:SS]` 时为每日）；否则 `events` → 纯事件；三者至少一个。`interval` 优先于 `at`，`events` 可与任意 kind 叠加 |
+| `add_task(task_id, func_name=None, code=None, enabled=True, **opts)` | **统一建任务入口**。`opts` 只允许 `interval` / `at` / `repeat` / `events` / `debounce` / `misfire_grace`，出现未知键直接返回 `{"ok": false, "error": "不支持的参数: [...]", "allowed": [...]}`。`interval`（秒）→ interval；否则 `at`（`YYYY-MM-DD HH:MM[:SS]` / `HH:MM[:SS]`，Python 侧也接受 `datetime.datetime`）→ 一次性（`repeat=True` 且 `HH:MM[:SS]` 时为每日）；否则 `events` → 纯事件；三者至少一个。`interval` 优先于 `at`，`events` 可与任意 kind 叠加 |
 | `add_daily_task(task_id, at="00:00", code=None, func_name=None, enabled=True)` | 兼容包装 → `add_task(..., at=at, repeat=True)` |
 | `add_at_task(task_id, at, code=None, func_name=None, enabled=True, events=None, interval=None)` | 兼容包装 → `add_task(..., at=at)`（一次性时刻） |
 | `add_event_task(task_id, event=None, code=None, func_name=None, debounce=0.0, enabled=True, events=None, interval=None, at=None)` | 兼容包装 → `add_task`（`event`/`events` 合并去重） |
 | `remove_task(task_id)` | 删除任务并取消调度 |
 | `pause_task(task_id)` / `resume_task(task_id)` | 暂停 / 恢复（恢复时重新接力下一次） |
-| `run_now(task_id)` | 立即执行一次（排程类按 0 延迟调度，事件任务直接入队；at 任务同样可用） |
+| `run_now(task_id)` | 手动执行一次（`mode="manual"`）：不接力下一次、不消耗一次性 `at`、不改 `enabled`；返回 `trigger()` 的结构化结果 |
 | `list_tasks()` | 全部任务及其状态 |
 | `list_events()` | 59 个可订阅事件名（**不含** GPS 的 20 个） |
-| `recent_events(limit=20)` | Python 侧最近事件环形缓冲（最多 50 条） |
+| `recent_events(limit=20)` | Python 侧最近事件环形缓冲（`_RECENT_MAX=50`，深拷贝；`limit` 取 1~200，非法回退默认 20） |
 | `network_state()` | 当前网络快照 `{wifi, online, validated, initialized, ts}` |
 | `system_events(limit=50, return_str=False)` | Kotlin 系统事件缓冲（最多 500 条），见下节 |
 | `clear_system_events()` | 清空 Kotlin 系统事件缓冲，返回 `{ok: true}` |
@@ -206,9 +221,11 @@ SystemEventMonitor.deliverToPython(name, payloadJson)
 | `is_initialized()` | Python 任务表是否已 `init` |
 | `register_func(name, func)` | 注册内置函数供 `func_name` 引用 |
 | `fire_event(event_name, payload=None, source="system")` | **内部入口**，Kotlin 回调专用，不对外 |
-| `execute_task(task_id)` | **内部入口**，Worker 触发单次执行 |
+| `execute_task(task_id)` | **内部入口**，Worker 到点只做校验并入队后立即返回，不在 WorkManager 线程跑任务代码 |
 
-同一 `task_id` 再次添加即为**覆盖**（`run_count` 等统计归零）。
+同一 `task_id` 再次添加即为**覆盖**：`run_count` 等统计归零，`gen` 递增，旧的 WorkManager
+排程会被取消，已入队的旧触发与执行结果按代际丢弃；订阅集合无条件重新同步
+（即使覆盖成无 `events` 的任务，也会清掉 Kotlin 侧旧订阅）。
 
 ## 事件缓冲与读取
 
@@ -260,6 +277,15 @@ SystemEventMonitor.deliverToPython(name, payloadJson)
 - `at` / `next_epoch`：一次性或每日任务的目标时刻与下次触发 epoch 秒。
   `list_tasks()` 总会补齐 `at` / `next_epoch` / `events`（缺失为 `null` / `[]`），
   不删任何旧键。
+- `last_payload` / `recent_events` 存的是 `_brief()` 摘要：字符串 >256 字符截断为
+  `...<len=N>`，列表 >16 项、字典 >32 键截断，`bytes` 转 `<bytes len=N>`；
+  任务 `code` 拿到的仍是原始 payload。
+- 写盘分两档：结构变更（增删/覆盖/暂停/恢复/一次性 `at` 触发）立即 `_save()`；
+  执行统计（`run_count` / `last_*`）走 `save_soft()`，最多每 3 秒合并一次。
+- `_arm()` 只有 WorkManager 排程成功才更新 `next_epoch`；失败原因写入
+  `last_schedule_error`，下一次成功排程时清除。
+- `time_changed` / `timezone_changed` 到达时会 `reschedule_all()` 重排全部
+  `daily` / `at` 任务，避免改时后错位。
 
 ## 时间语义与观测陷阱
 

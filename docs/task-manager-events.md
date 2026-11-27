@@ -18,9 +18,9 @@
 | 多事件订阅并集 | 汇总所有 `enabled` 任务（含 interval / at / daily）的系统事件并集，排除伪事件名 | `task_manager.py` `_sync_system_events()` |
 | 事件匹配 | 任意 `enabled` 任务且 `event_name in _system_events_of(t)` 即选中（伪事件名除外） | `fire_event()` |
 | 串行执行 | 单守护线程消费 `_EVENT_Q` | `_event_worker()` |
-| 节流 | `debounce` 是**任务级、跨事件共享**的最小间隔 | `_event_worker()` |
+| 节流 | `debounce` 是**任务级、跨事件共享**的最小间隔（事件/定时/手动统一判定） | `trigger()` |
 | 动作执行 | `code` 优先，其次 `func` | `_execute()` / `_run_code()` |
-| 状态持久化 | 整个 `_STATE` 原子写 `filesDir/task_manager.json` | `_save()`，`_execute()` 的 `finally` 每次都会调用 |
+| 状态持久化 | 整个 `_STATE` 原子写 `filesDir/task_manager.json` | 结构变更 `_save()` 立即落盘；执行统计走 `save_soft()`（最多每 3s 合并） |
 | 定时 / 时刻 / 每日 | 统一入口 `add_task(**opts)`：`interval` 秒、`at` 绝对日期或 `HH:MM[:SS]`（`repeat=True` 为每日）；到点以伪事件 `interval`/`at`/`daily` 分发，一次性 at 触发后 `enabled=False` | `add_task()` / `_delay_of()` / `_execute()` |
 | 显著运动 | 触发后 1s 自动 rearm | `LocationEventMonitor.significantMotionListener` / `rearmSignificantMotion()` |
 | 定位状态快照 | `{running, first_fix, last{lat,lon,acc,ts,provider}, anchor{...}, distance_*, activity}` | `LocationEventMonitor.getState()` |
@@ -148,7 +148,9 @@ r = task_manager.add_event_task(
 
 说明：
 
-- `_execute()` 的 `finally` 一定会 `_save()`，所以代码里改过的 `t["state"]` 会自动落盘，**不需要额外调用 `_save()`**；显式调用只是多一次写盘。
+- `_execute()` 结束时会把任务状态落盘（结构变更立即 `_save()`，其余走 `save_soft()` 合并写），
+  代码里改过的 `t["state"]` 会随之保存，一般**不需要额外调用 `_save()`**。
+  注意：任务执行期间若被 `remove_task()` 或同名覆盖，本次结果会按代际丢弃、不落盘。
 - 状态放在任务字典里会出现在 `list_tasks()` 输出中；不想污染可以改写到 `filesDir` 下的独立 JSON（目录用 `os.path.dirname(task_manager._STATE_PATH)` 取）。
 
 ### 5.2 时间窗武装（省电）
@@ -170,7 +172,7 @@ task_manager.add_daily_task("win_off", at="12:00",
 
 ```python
 task_manager.test_event("significant_motion", {"sensor": "significant_motion"})  # 走同一队列
-task_manager.run_now("home_morning_move")   # 事件任务以 events[0] + payload=None 入队
+task_manager.run_now("home_morning_move")   # manual：不接力、不改 enabled；事件任务以 events[0] + payload=None 入队
 task_manager.recent_events(20)              # Python 侧最近 50 条
 task_manager.system_events(50, True)         # Kotlin 侧最近 500 条，含 registered 集合
 import app; app.reload_module("task_manager")  # 放入 site-packages 后热更新并重新 init
@@ -180,7 +182,7 @@ import app; app.reload_module("task_manager")  # 放入 site-packages 后热更�
 
 ### 6.1 `debounce` 是任务级、跨事件共享
 
-`_event_worker()` 用同一个 `debounce` 对所有事件节流。若设成 1800，一次 `location_changed` 就会把紧随其后的 `significant_motion` 挡掉。**必须 `debounce=0`，冷却自己记。**
+`trigger()` 用同一个 `debounce` 对所有触发（事件、定时、`run_now`）节流。若设成 1800，一次 `location_changed` 就会把紧随其后的 `significant_motion` 挡掉。**必须 `debounce=0`，冷却自己记。**
 
 ### 6.2 `run_count` / `last_run` 不再代表“真正触发”
 
