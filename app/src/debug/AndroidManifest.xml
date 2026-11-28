@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- debug 包桌面图标：脚本按图标文件自动生成 legacy 位图或 adaptive XML，
+         统一指向 @mipmap/app_launcher_icon；删除 roundIcon，避免走另一套遮罩。 -->
+    <application
+        android:icon="@mipmap/app_launcher_icon"
+        tools:replace="android:icon"
+        tools:remove="android:roundIcon">
         <!--
           Compose UI 测试的宿主 Activity。
 

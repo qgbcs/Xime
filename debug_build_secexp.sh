@@ -22,7 +22,9 @@ VERSION_CODE="${VERSION_CODE:-20261128}"
 
 APP_CHINESE_NAME="${APP_CHINESE_NAME:-随手}"
 APP_NAME="${APP_CHINESE_NAME}输入法"
-APP_ICON_PATH="$PROJECT_DIR/app/icons/iFly_xunfei/1760.png"
+APP_ICON_PATH="${APP_ICON_PATH:-$PROJECT_DIR/app/icons/iFly_xunfei/official_app_high_icon.png}"
+# 图标模式：auto=按文件自动判断；legacy=强制旧式位图；adaptive=强制自适应图标。
+APP_ICON_MODE="${APP_ICON_MODE:-auto}"
 
 #APP_NAME="${VERSION_CODE: -4}输入法"
 #APP_ICON_PATH="${APP_ICON_PATH:-$PROJECT_DIR/app/src/main/res/drawable/ic_launcher_foreground.xml}"
@@ -64,6 +66,79 @@ fi
 APP_ICON_PATH="$(realpath -- "$APP_ICON_PATH")"
 printf '%s 应用图标文件：%s\n' $VERSION_CODE "$APP_ICON_PATH"
 
+# ============================================================
+# 桌面启动图标：自动判断旧式位图 / 自适应图标，统一生成为 @mipmap/app_launcher_icon。
+#   legacy   : mipmap-xxhdpi/app_launcher_icon.png（位图/矢量，走 legacy 渲染）
+#   adaptive : mipmap-anydpi-v26/app_launcher_icon.xml（自适应图标）
+# 判定：XML 含 <adaptive-icon> => adaptive；位图与普通 XML 矢量 => legacy。
+# 位图会先裁掉透明留白并居中到正方形，避免 Launcher 二次缩放后视觉偏小。
+# 可用 APP_ICON_MODE=legacy|adaptive 强制覆盖 auto。
+# ============================================================
+ICON_DEBUG_RES="$PROJECT_DIR/app/src/debug/res"
+ICON_MIPMAP_DIR="$ICON_DEBUG_RES/mipmap-xxhdpi"
+ICON_ADAPTIVE_DIR="$ICON_DEBUG_RES/mipmap-anydpi-v26"
+mkdir -p "$ICON_MIPMAP_DIR" "$ICON_ADAPTIVE_DIR"
+
+ICON_MODE="$APP_ICON_MODE"
+if [[ "$ICON_MODE" == "auto" ]]; then
+    ICON_MODE="$(python3 - "$APP_ICON_PATH" <<'PYICONMODE'
+import os, sys
+p = sys.argv[1]
+if os.path.splitext(p)[1].lower() == ".xml":
+    data = open(p, "r", encoding="utf-8", errors="ignore").read()
+    print("adaptive" if "<adaptive-icon" in data else "legacy")
+else:
+    print("legacy")
+PYICONMODE
+)"
+fi
+if [[ "$ICON_MODE" != "legacy" && "$ICON_MODE" != "adaptive" ]]; then
+    echo "错误: APP_ICON_MODE 只能是 auto/legacy/adaptive，当前: $ICON_MODE" >&2
+    exit 1
+fi
+
+# 清掉旧版构建遗留的图标资源，避免同名资源互相覆盖
+rm -f "$ICON_DEBUG_RES/drawable-xxhdpi/app_high_icon.png"
+rmdir "$ICON_DEBUG_RES/drawable-xxhdpi" 2>/dev/null || true
+
+if [[ "$ICON_MODE" == "legacy" ]]; then
+    rm -f "$ICON_ADAPTIVE_DIR/app_launcher_icon.xml" "$ICON_MIPMAP_DIR/app_launcher_icon.xml"
+    python3 - "$APP_ICON_PATH" "$ICON_MIPMAP_DIR/app_launcher_icon.png" <<'PYLEGACY'
+import os, shutil, sys
+from PIL import Image
+
+src, dst = sys.argv[1], sys.argv[2]
+if os.path.splitext(src)[1].lower() == ".xml":
+    shutil.copyfile(src, os.path.join(os.path.dirname(dst), "app_launcher_icon.xml"))
+    sys.exit(0)
+im = Image.open(src).convert("RGBA")
+bbox = im.getchannel("A").getbbox()
+if not bbox:
+    raise SystemExit("错误: 图标内容全透明: " + src)
+if bbox != (0, 0, im.width, im.height):
+    im = im.crop(bbox)
+    side = max(im.width, im.height)
+    canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    canvas.alpha_composite(im, ((side - im.width) // 2, (side - im.height) // 2))
+    im = canvas
+    im.save(dst, "PNG", optimize=True)
+else:
+    shutil.copyfile(src, dst)
+PYLEGACY
+    if [[ -f "$ICON_MIPMAP_DIR/app_launcher_icon.xml" ]]; then
+        rm -f "$ICON_MIPMAP_DIR/app_launcher_icon.png"
+    fi
+    printf '%s 桌面图标模式: legacy（旧式位图/矢量）\n' $VERSION_CODE
+else
+    rm -f "$ICON_MIPMAP_DIR/app_launcher_icon.png"
+    if [[ "${APP_ICON_PATH##*.}" != "xml" ]]; then
+        echo "错误: adaptive 模式要求 APP_ICON_PATH 为 <adaptive-icon> XML" >&2
+        exit 1
+    fi
+    cp -f "$APP_ICON_PATH" "$ICON_ADAPTIVE_DIR/app_launcher_icon.xml"
+    printf '%s 桌面图标模式: adaptive（自适应图标 XML）\n' $VERSION_CODE
+fi
+
 # 启动图标：直接落到 debug 专属资源目录，保证一定参与资源合并。
 # 历史问题：app/build.gradle.kts 的 generateAppIconResources 会生成
 #   build/generated/appIcon/res/drawable-nodpi/ic_launcher_foreground.png，
@@ -73,6 +148,7 @@ printf '%s 应用图标文件：%s\n' $VERSION_CODE "$APP_ICON_PATH"
 ICON_RES_DIR="$PROJECT_DIR/app/src/debug/res/drawable-nodpi"
 mkdir -p "$ICON_RES_DIR"
 rm -f "$ICON_RES_DIR"/ic_launcher_foreground.*
+if [[ "${APP_ICON_PATH##*.}" != "xml" ]]; then
 python3 - "$APP_ICON_PATH" "$ICON_RES_DIR/ic_launcher_foreground.png" <<'PYICON'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
@@ -89,6 +165,9 @@ except Exception:
     shutil.copyfile(src, dst)
 PYICON
 printf '%s 已注入 debug 启动图标：%s\n' $VERSION_CODE "$ICON_RES_DIR/ic_launcher_foreground.png"
+else
+    printf '%s 图标为 XML，跳过 debug 前景位图注入（沿用主资源）\n' $VERSION_CODE
+fi
 
 # ============================================================
 # 新增环境隔离：强制让 Gradle 和 Android 工具依赖外层工作区目录
@@ -775,4 +854,21 @@ rm -f "$SIGNED_APK" "$APK_PATH"
 
 echo
 echo "SECEXP=$SECEXP"
+echo "ICON_MODE=$ICON_MODE"
 echo "APK=$OUT_APK"
+
+# 构建后自检：输出 APK 实际生效的桌面图标资源，确认与选定模式一致
+AAPT_BIN="$(find "$ANDROID_HOME_DEFAULT/build-tools" -maxdepth 2 -type f -name aapt -print 2>/dev/null | sort -V | tail -n 1)"
+if [[ -n "$AAPT_BIN" ]]; then
+    ICON_RES="$("$AAPT_BIN" dump badging "$OUT_APK" | sed -n "s/^application: .* icon='\([^']*\)'.*/\1/p" | head -n 1)"
+    echo "ICON_RES=$ICON_RES"
+fi
+
+# 可选安装：INSTALL_APK=1 且本机有 adb 时直接覆盖安装
+if [[ "${INSTALL_APK:-0}" == "1" ]]; then
+    if command -v adb >/dev/null 2>&1; then
+        adb install -r "$OUT_APK"
+    else
+        echo "警告: 未找到 adb，跳过安装（在带 adb 的机器上用 INSTALL_APK=1 可自动安装）" >&2
+    fi
+fi

@@ -72,8 +72,12 @@ __pycache__/
 /out/
 /app/build/
 app/build/outputs/
-# debug_build_secexp.sh 构建时注入的启动图标（构建产物，不提交）
+# debug_build_secexp.sh 构建时注入的图标资源（构建产物，不提交）
 app/src/debug/res/drawable-nodpi/ic_launcher_foreground.png
+app/src/debug/res/mipmap-xxhdpi/app_launcher_icon.png
+app/src/debug/res/mipmap-xxhdpi/app_launcher_icon.xml
+app/src/debug/res/mipmap-anydpi-v26/app_launcher_icon.xml
+app/src/debug/res/values/ic_launcher_background.xml
 *.apk
 *.aab
 
