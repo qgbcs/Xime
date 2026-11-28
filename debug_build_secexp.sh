@@ -20,7 +20,7 @@ fi
 unset APPLICATION_ID VERSION_CODE VERSION_NAME APP_NAME
 VERSION_CODE="${VERSION_CODE:-20261128}"
 
-APP_CHINESE_NAME="${APP_CHINESE_NAME:-随手}"
+APP_CHINESE_NAME="${APP_CHINESE_NAME:-讯飞}"
 APP_NAME="${APP_CHINESE_NAME}输入法"
 APP_ICON_PATH="${APP_ICON_PATH:-$PROJECT_DIR/app/icons/iFly_xunfei/official_app_high_icon.png}"
 # 图标模式：auto=按文件自动判断；legacy=强制旧式位图；adaptive=强制自适应图标。
