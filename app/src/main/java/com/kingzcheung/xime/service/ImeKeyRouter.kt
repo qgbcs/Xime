@@ -598,7 +598,9 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                             candidates = filteredTexts,
                             candidateComments = filteredComments,
                             isComposing = capturedInputText.isNotEmpty(),
-                            associationCandidates = if ((capturedIsAscii || !service.isChineseMode) && pendingEnglish.isEmpty()) emptyList() else service.candidateState.value.associationCandidates,
+                            associationCandidates = if (pendingEnglish.isEmpty() &&
+                                (capturedIsAscii || !service.isChineseMode || capturedInputText.isNotEmpty())
+                            ) emptyList() else service.candidateState.value.associationCandidates,
                             isShowingRecentClipboard = false,
                             hasNextPage = capturedHasNext,
                             hasPrevPage = capturedHasPrev
@@ -931,7 +933,15 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
 
         // 部分候选选中后仍有输入与候选时，上方已先刷新组合态并返回，避免 commit 消耗尾码。
         // T9：跳过 service.rimeEngine.commit()，用用户点选的 selectedCandidate 作为权威上屏文本。
-        val committedText = if (isT9) "" else service.rimeEngine.commit()
+        val rawCommittedText = if (isT9) "" else service.rimeEngine.commit()
+        // full_shape（全角）开启时 librime 的 shape_formatter 会把整段上屏文本转全角，
+        // 英文候选也会变成全角字母（如 vps -> ｖｐｓ）。英文候选应原样上屏，
+        // 这里只在候选本身是纯 ASCII 且提交文本确为其全角形态时还原为半角。
+        val committedText = if (!isT9 && selectedCandidate != null &&
+            selectedCandidate.isNotEmpty() &&
+            selectedCandidate.all { it.code in 0x20..0x7e } &&
+            toHalfWidthAscii(rawCommittedText) == selectedCandidate
+        ) selectedCandidate else rawCommittedText
         val committedCandidate = selectedCandidate
         if (!isT9 && resolvedRimeIndex >= 0 &&
             shouldCommitDisplayedCandidate(
@@ -1118,6 +1128,19 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
             committedText = fullCandidate,
             fallbackUsed = true,
         )
+    }
+
+    /** 全角 ASCII（U+FF01..FF5E）与全角空格（U+3000）还原为半角。 */
+    private fun toHalfWidthAscii(text: String): String = buildString(text.length) {
+        for (ch in text) {
+            append(
+                when {
+                    ch == '\u3000' -> ' '
+                    ch.code in 0xFF01..0xFF5E -> (ch.code - 0xFEE0).toChar()
+                    else -> ch
+                }
+            )
+        }
     }
 
     /** 读取当前 rime 会话的菜单签名（候选有序序列 + 分页标志），不修改会话。 */

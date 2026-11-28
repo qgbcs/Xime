@@ -125,7 +125,9 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             candidates = displayCandidates,
             candidateComments = displayComments,
             isComposing = isComposing,
-            associationCandidates = if ((isAsciiMode || !service.isChineseMode) && pendingEnglish.isEmpty()) emptyList() else service.candidateState.value.associationCandidates,
+            associationCandidates = if (pendingEnglish.isEmpty() &&
+                (isAsciiMode || !service.isChineseMode || isComposing)
+            ) emptyList() else service.candidateState.value.associationCandidates,
             isShowingRecentClipboard = false,
             hasNextPage = hasNextPage,
             hasPrevPage = hasPrevPage,
@@ -237,7 +239,9 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             candidates = displayCandidates,
             candidateComments = displayComments,
             isComposing = isComposing,
-            associationCandidates = if ((isAsciiMode || !service.isChineseMode) && pendingEnglish.isEmpty()) emptyList() else service.candidateState.value.associationCandidates,
+            associationCandidates = if (pendingEnglish.isEmpty() &&
+                (isAsciiMode || !service.isChineseMode || isComposing)
+            ) emptyList() else service.candidateState.value.associationCandidates,
             isShowingRecentClipboard = false,
             hasNextPage = result.hasNextPage,
             hasPrevPage = result.hasPrevPage,
