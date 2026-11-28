@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.update
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.RandomAccessFile
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.ArrayDeque
 import java.util.Locale
@@ -392,17 +394,109 @@ object RpcUiController {
         }
     }
 
-    /** 构建时刻由构建脚本在签名前原地写入 apk 内 assets/build_time.txt（固定 48 字节）。
-     *  运行时读取；读不到（旧包或异常）返回 unknown，不影响 buildInfo 其它字段。
+    /** APK 签名块内自定义构建时间戳 pair 的 ID（未知 ID，验证器忽略）。 */
+    private const val SIGNING_BLOCK_TIME_ID = 0x51474254
+    private val APK_SIG_BLOCK_MAGIC = "APK Sig Block 42".toByteArray(Charsets.US_ASCII)
+
+    /** 构建时刻写在 APK 签名块内的自定义 pair（固定 48 字节）。
+     *  运行时解析 EOCD0→定位签名块→扫描 pair 读取；读不到（旧包或异常）
+     *  返回 unknown，不影响 buildInfo 其它字段。
      */
     private fun readBuildTimeStamp(): String {
         return try {
-            context?.assets?.open("build_time.txt")?.use { input ->
-                input.readBytes().toString(Charsets.UTF_8).trim().ifEmpty { "unknown" }
-            } ?: "unknown"
+            val apkPath = context?.applicationInfo?.sourceDir ?: return "unknown"
+            RandomAccessFile(apkPath, "r").use { raf ->
+                val fileLen = raf.length()
+                if (fileLen < 32) return "unknown"
+                // EOCD 位于文件尾 22 + 最大注释(0xFFFF) 范围内
+                val scanLen = minOf(fileLen, 22L + 0xFFFF).toInt()
+                val tail = ByteArray(scanLen)
+                raf.seek(fileLen - scanLen)
+                raf.readFully(tail)
+                val eocd = findEocd(tail) ?: return "unknown"
+                // 中央目录偏移即签名块结尾
+                val cdOffset = readU32LE(tail, eocd + 16)
+                if (cdOffset < 32L || cdOffset > fileLen) return "unknown"
+                // 签名块尾部：size(8) + magic(16)
+                val footer = ByteArray(24)
+                raf.seek(cdOffset - 24)
+                raf.readFully(footer)
+                if (!footer.copyOfRange(8, 24).contentEquals(APK_SIG_BLOCK_MAGIC)) {
+                    return "unknown"
+                }
+                val size = readU64LE(footer, 0) // pairs 区长度 + 24
+                val pairsLen = size - 24L
+                if (pairsLen < 0 || pairsLen > cdOffset - 32L) return "unknown"
+                val pairs = ByteArray(pairsLen.toInt())
+                raf.seek(cdOffset - size) // 块首为 size(8)，pairs 紧随其后
+                raf.readFully(pairs)
+                var p = 0
+                while (p + 12 <= pairs.size) {
+                    val pairLen = readU64LE(pairs, p)
+                    val id = readU32LE(pairs, p + 8)
+                    if (pairLen < 4L || pairLen - 4L > (pairs.size - p - 12).toLong()) {
+                        return "unknown"
+                    }
+                    if (id == SIGNING_BLOCK_TIME_ID.toLong()) {
+                        val valueLen = (pairLen - 4L).toInt()
+                        return String(pairs, p + 12, valueLen, Charsets.UTF_8)
+                            .trim().ifEmpty { "unknown" }
+                    }
+                    p += 8 + pairLen.toInt()
+                }
+                "unknown"
+            }
         } catch (e: Exception) {
             "unknown"
         }
+    }
+
+    /** 从尾部缓冲区查找 ZIP EOCD（PK\x05\x06）。 */
+    private fun findEocd(buf: ByteArray): Int? {
+        for (i in buf.size - 22 downTo 0) {
+            if (buf[i] == 0x50.toByte() && buf[i + 1] == 0x4B.toByte() &&
+                buf[i + 2] == 0x05.toByte() && buf[i + 3] == 0x06.toByte()
+            ) {
+                return i
+            }
+        }
+        return null
+    }
+
+    private fun readU32LE(buf: ByteArray, off: Int): Long {
+        return (buf[off].toLong() and 0xFF) or
+            ((buf[off + 1].toLong() and 0xFF) shl 8) or
+            ((buf[off + 2].toLong() and 0xFF) shl 16) or
+            ((buf[off + 3].toLong() and 0xFF) shl 24)
+    }
+
+    private fun readU64LE(buf: ByteArray, off: Int): Long {
+        return readU32LE(buf, off) or (readU32LE(buf, off + 4) shl 32)
+    }
+
+    /** APK 文件 SHA-256（构建产物指纹）。首次调用后缓存，失败返回 unknown。 */
+    @Volatile
+    private var apkSha256Cache: String? = null
+
+    private fun apkSha256(): String {
+        apkSha256Cache?.let { return it }
+        val value = try {
+            val apkPath = context?.applicationInfo?.sourceDir ?: return "unknown"
+            val md = MessageDigest.getInstance("SHA-256")
+            File(apkPath).inputStream().use { input ->
+                val buf = ByteArray(1 shl 16)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    md.update(buf, 0, n)
+                }
+            }
+            md.digest().joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            "unknown"
+        }
+        apkSha256Cache = value
+        return value
     }
 
     /** 构建期 BUILD_TIME 只含构建机本地时间与时区偏移（yyyy-MM-dd HH:mm:ss Z）。
@@ -438,6 +532,7 @@ object RpcUiController {
             .put("git_hash", BuildConfig.GIT_HASH)
             .put("source_fingerprint", BuildConfig.SOURCE_FINGERPRINT)
             .put("build_time", buildTimeWithBeijing(readBuildTimeStamp()))
+            .put("apk_sha256", apkSha256())
         // 递归 submodule commit 表（构建期固化）。默认不返回，需显式传 gitSubmodules=True。
         if (gitSubmodules) {
             info.put("git_submodules", try {

@@ -22,12 +22,25 @@ chaquopy {
         // 远端构建容器的 buildPython 必须与目标主次版本一致
         buildPython = listOf("/usr/bin/python$pyVersion")
         pip {
-            install("pip")
-            install("wheel")
-            install("setuptools")
-            install("paho-mqtt")
-            install("ecdsa")
-            install("requests")
+            // 精确版本清单由 debug_build_secexp.sh 依据 pip-app-lock.json + PyPI 生成：
+            // 同主版本沿用上次构建的精确版本，仅主版本跃迁时升级。
+            // 清单缺失（如 IDE 直接构建）时回退到无版本的基础依赖，不阻断构建。
+            val lockedRequirements = rootProject.file("build/pip-app-requirements.txt")
+                .takeIf { it.isFile }
+                ?.readLines()
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() && !it.startsWith("#") }
+                .orEmpty()
+            if (lockedRequirements.isEmpty()) {
+                install("pip")
+                install("wheel")
+                install("setuptools")
+                install("paho-mqtt")
+                install("ecdsa")
+                install("requests")
+            } else {
+                lockedRequirements.forEach { install(it) }
+            }
         }
     }
 }
@@ -59,6 +72,12 @@ fun getSourceFingerprint(): String {
     val sourceFiles = sourceRoots
         .flatMap { root ->
             if (root.isFile) listOf(root) else root.walkTopDown().filter { it.isFile }.toList()
+        }
+        // english_trie.bin 由 tasks-native.gradle.kts 从 english.txt 生成，属构建产物；
+        // 它只影响运行期数据，不该进源码指纹，否则同一份源码在不同环境会得到不同指纹。
+        .filterNot {
+            it.relativeTo(rootProject.projectDir).invariantSeparatorsPath ==
+                "app/src/main/assets/english_trie.bin"
         }
         .sortedBy { it.relativeTo(rootProject.projectDir).invariantSeparatorsPath }
     val digest = MessageDigest.getInstance("SHA-256")
@@ -184,8 +203,9 @@ val escapedAppName = configuredAppName.replace("\\", "\\\\").replace("\"", "\\\"
 val escapedChineseAppName = configuredChineseAppName.replace("\\", "\\\\").replace("\"", "\\\"")
 
 // 构建时刻不进 BuildConfig（会进 classes.dex，破坏可重复构建）。
-// 改由构建收尾阶段原地写入 apk 内 assets/build_time.txt（固定 48 字节、STORED），
-// 运行时按需读取；同一份源码的两次构建只在该戳与签名块上有差异。
+// 改由 apk_sign.py 签名时写入 APK 签名块内的自定义 pair（固定 48 字节，
+// 不在 v2/v3 摘要覆盖范围），运行时解析签名块读取；同一份源码的两次构建
+// 只在签名块这一小段时间字段上不同，签名值完全一致。
 
 // 加载签名配置
 val keystorePropertiesFile = rootProject.file("app/keystore.properties")
@@ -241,7 +261,7 @@ android {
         // submodule 精确 commit（递归），构建期固化；buildInfo 仅在传参时返回
         val escapedGitSubmodules = getGitSubmodules().replace("\\", "\\\\").replace("\"", "\\\"")
         buildConfigField("String", "GIT_SUBMODULES", "\"$escapedGitSubmodules\"")
-        // 构建时刻不进编译产物：由脚本在签名前写入 assets/build_time.txt。
+        // 构建时刻不进编译产物：由 apk_sign.py 写入 APK 签名块内的自定义 pair。
     }
 
     signingConfigs {

@@ -327,6 +327,8 @@ CHUNK_MAX_SIZE_BYTES = 1024 * 1024   # 1MB 分块
 V3_MAX_SDK = 0x7FFFFFFF
 SIGNING_BLOCK_PADDING_ID = 0x42726577   # AOSP verity padding 对，验证器忽略
 SIGNING_BLOCK_TARGET_SIZE = 4096        # 固定签名块总长，避免中央目录位移
+SIGNING_BLOCK_TIME_ID = 0x51474254      # 自定义构建时间戳对（未知 ID，验证器忽略）
+BUILD_TIME_FIELD_SIZE = 48              # 时间戳固定字节数（右侧空格补齐，长度恒定）
 
 
 def private_key_from_pem(pem_path: Path) -> ec.EllipticCurvePrivateKey:
@@ -588,9 +590,33 @@ def _build_signer_values(
     return one_signer(False), one_signer(True)
 
 
-def _build_signing_block(v2_value: bytes, v3_value: bytes) -> bytes:
+def _format_build_time(raw: str | None) -> bytes:
+    """把构建时间格式化为固定 48 字节（右侧空格补齐），保证签名块长度恒定。"""
+    value = (raw or "").strip()
+    if not value:
+        value = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+    encoded = value.encode("utf-8")
+    if len(encoded) > BUILD_TIME_FIELD_SIZE:
+        raise ValueError(
+            f"构建时间过长（{len(encoded)} > {BUILD_TIME_FIELD_SIZE} 字节）: {value!r}"
+        )
+    return encoded + b" " * (BUILD_TIME_FIELD_SIZE - len(encoded))
+
+
+def _build_signing_block(
+    v2_value: bytes, v3_value: bytes, build_time: bytes
+) -> bytes:
+    """构造函数签名块。
+
+    时间戳写入自定义 ID 的 pair（长度固定 48 字节），它位于签名块内、
+    不在 v2/v3 摘要覆盖范围，因此改时间只改这些字节，签名值完全不变。
+    """
     pairs = b""
-    for block_id, value in ((V2_BLOCK_ID, v2_value), (V3_BLOCK_ID, v3_value)):
+    for block_id, value in (
+        (V2_BLOCK_ID, v2_value),
+        (V3_BLOCK_ID, v3_value),
+        (SIGNING_BLOCK_TIME_ID, build_time),
+    ):
         pairs += struct.pack("<Q", 4 + len(value))
         pairs += struct.pack("<I", block_id)
         pairs += value
@@ -622,8 +648,13 @@ def sign_apk_deterministic(
     cert_der: bytes,
     output_path: Path,
     min_sdk: int = 24,
+    build_time: str | None = None,
 ) -> Path:
-    """对未签名 APK 写入确定性 v2+v3 签名块，返回输出路径。"""
+    """对未签名 APK 写入确定性 v2+v3 签名块，返回输出路径。
+
+    build_time 写入签名块内的自定义 pair；缺省取当前本地时间。
+    时间戳不进 v2/v3 摘要，改时间不影响签名值（整包仅时间字节不同）。
+    """
     if not apk_path.is_file():
         raise FileNotFoundError(f"找不到需要签名的 APK: {apk_path}")
 
@@ -646,7 +677,7 @@ def sign_apk_deterministic(
     v2_value, v3_value = _build_signer_values(
         private_key, cert_der, digest, min_sdk
     )
-    block = _build_signing_block(v2_value, v3_value)
+    block = _build_signing_block(v2_value, v3_value, _format_build_time(build_time))
 
     # 写回：条目区 + 签名块 + 中央目录 + EOCD（CD 偏移加上块长度）
     struct.pack_into("<I", eocd, 16, cd_off + len(block))
@@ -716,6 +747,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sdk", help="Android SDK 路径（用于签名后 apksigner 自检），默认读取 ANDROID_HOME")
     parser.add_argument("--min-sdk", type=int, default=24, help="v3 签名块声明的 minSdk（默认 24）")
     parser.add_argument(
+        "--build-time",
+        help="写入签名块内的构建时间（缺省取当前本地时间）",
+    )
+    parser.add_argument(
         "--test-deterministic",
         action="store_true",
         help="验证同一 key + message 的确定性 ECDSA 输出是否完全一致",
@@ -769,7 +804,12 @@ def main() -> int:
 
     output_path = signed_path(args.apk)
     sign_apk_deterministic(
-        args.apk, private_key, cert_der, output_path, min_sdk=args.min_sdk
+        args.apk,
+        private_key,
+        cert_der,
+        output_path,
+        min_sdk=args.min_sdk,
+        build_time=args.build_time,
     )
     if not verify_with_apksigner(output_path, args.sdk):
         return 1

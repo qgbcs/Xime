@@ -236,10 +236,12 @@ if [[ -f "$PWD/.gitmodules" ]]; then
         fi
         if [[ "$current_section" == "$SUBMODULE_SECTION" ]]; then
             if [[ "$line" =~ ^[[:space:]]*path[[:space:]]*=[[:space:]]*(.*)$ ]]; then
-                SUBMODULE_PATH_VALUE="${line##*=}"
+                # 用捕获组取完整值；不能用 ${line##*=}，那是最长前缀匹配，
+                # 会截断含 '=' 的值（如带查询参数的 URL token=abc 只剩 abc）。
+                SUBMODULE_PATH_VALUE="${BASH_REMATCH[1]}"
                 SUBMODULE_PATH_VALUE="${SUBMODULE_PATH_VALUE//[[:space:]]/}"
             elif [[ "$line" =~ ^[[:space:]]*url[[:space:]]*=[[:space:]]*(.*)$ ]]; then
-                SUBMODULE_URL_VALUE="${line##*=}"
+                SUBMODULE_URL_VALUE="${BASH_REMATCH[1]}"
                 SUBMODULE_URL_VALUE="${SUBMODULE_URL_VALUE//[[:space:]]/}"
             fi
         fi
@@ -304,18 +306,27 @@ ensure_native_dependency() {
     local destination="$2"
     local marker="$destination/CMakeLists.txt"
     if [[ -f "$marker" ]]; then
-        return
+        return 0
     fi
 
     local temporary_directory
     temporary_directory="$(mktemp -d)"
-    trap 'rm -rf "$temporary_directory"' RETURN
+    # 显式清理，不用 RETURN trap：本函数在 `|| true` 下调用，set -e 会被禁用，
+    # trap 一旦在异常路径残留，之后每次函数返回都会误执行 rm -rf。
     echo "缺少 native 依赖，正在下载: $repository"
-    git clone --depth 1 --recurse-submodules "$repository" "$temporary_directory/source"
+    if ! git clone --depth 1 --recurse-submodules "$repository" "$temporary_directory/source"; then
+        echo "警告: 下载 native 依赖失败: $repository" >&2
+        rm -rf "$temporary_directory"
+        return 1
+    fi
     mkdir -p "$destination"
-    cp -a "$temporary_directory/source/." "$destination/"
-    trap - RETURN
+    if ! cp -a "$temporary_directory/source/." "$destination/"; then
+        echo "警告: 复制 native 依赖失败: $repository -> $destination" >&2
+        rm -rf "$temporary_directory"
+        return 1
+    fi
     rm -rf "$temporary_directory"
+    return 0
 }
 
 ensure_native_dependency "https://github.com/google/snappy.git" "app/src/main/jni/snappy" || true
@@ -404,6 +415,129 @@ link_librime_plugin lua librime-lua
 [ ! -f "$PWD/app/src/main/python/aliyun_git.py" ] && wget -q -O "$PWD/app/src/main/python/aliyun_git.py" https://github.com/QGB/git.bat/raw/refs/heads/master/aliyun_git.py || true
 # ============================================================
 
+# 3a) APK 内 pip 依赖锁定：同一主版本沿用上次构建的精确版本，主版本跃迁才升级。
+#     结果写入 build/pip-app-requirements.txt，供 app/build.gradle.kts 的 pip{} 读取。
+#     联网失败/解析失败只告警：有旧清单就沿用，没有就回退无版本依赖，绝不阻断构建。
+mkdir -p "$PROJECT_DIR/build"
+python3 - "$PROJECT_DIR" <<'PY' || echo "警告: pip 依赖锁定失败，沿用现有清单或回退无版本依赖。" >&2
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+DEFAULT_DIRECT = ["pip", "wheel", "setuptools", "paho-mqtt", "ecdsa", "requests"]
+INDEXES = ["https://pypi.org/simple", "https://pypi.tuna.tsinghua.edu.cn/simple"]
+
+project = Path(sys.argv[1])
+lock_path = project / "pip-app-lock.json"
+out_path = project / "build" / "pip-app-requirements.txt"
+
+
+def major(version):
+    return str(version).split(".")[0]
+
+
+def read_lock():
+    try:
+        return json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def pip_dry_run(specs, index_url):
+    """只解析不安装，从 --report 拿完整依赖图；任何异常都视为失败。"""
+    handle, name = tempfile.mkstemp(prefix="xime-pip-app-", suffix=".json")
+    report_path = Path(name)
+    try:
+        command = [
+            sys.executable, "-m", "pip", "install",
+            "--dry-run", "--ignore-installed", "--disable-pip-version-check",
+            "--no-input", "--quiet", "--report", str(report_path),
+            "-i", index_url,
+        ]
+        if "tuna" in index_url:
+            command += ["--trusted-host", "pypi.tuna.tsinghua.edu.cn"]
+        command += specs
+        result = subprocess.run(command, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            return False, {}
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        packages = {}
+        for item in report.get("install", []):
+            metadata = item.get("metadata", {})
+            package = str(metadata.get("name", "")).strip().lower().replace("_", "-")
+            version = str(metadata.get("version", "")).strip()
+            if package and version:
+                packages[package] = version
+        return bool(packages), packages
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False, {}
+    finally:
+        report_path.unlink(missing_ok=True)
+
+
+def main():
+    lock = read_lock()
+    locked = {name: str(info.get("version", ""))
+              for name, info in (lock.get("packages") or {}).items()}
+    direct = lock.get("direct") or DEFAULT_DIRECT
+
+    latest = {}
+    for index in INDEXES:
+        ok, packages = pip_dry_run(list(direct), index)
+        if ok:
+            latest = packages
+            break
+    if not latest:
+        if out_path.is_file():
+            print("[pip] 包索引不可用，沿用上一份精确依赖清单（离线构建）。")
+        else:
+            print("[pip] 包索引不可用且无历史清单，回退无版本依赖。")
+        return 0
+
+    targets, added, jumps = {}, [], []
+    for name, version in latest.items():
+        old = locked.get(name)
+        if not old:
+            targets[name] = version
+            added.append(name)
+        elif major(old) == major(version):
+            # 小版本/补丁差异一律沿用上次构建的精确版本。
+            targets[name] = old
+        else:
+            targets[name] = version
+            jumps.append((name, old, version))
+
+    specs = [f"{name}=={version}" for name, version in sorted(targets.items())]
+    installable = False
+    for index in INDEXES:
+        installable, _ = pip_dry_run(specs, index)
+        if installable:
+            break
+    if not installable:
+        # 例如直接依赖的新主版本与传递依赖上界冲突：放开全图重新解析。
+        print("[pip] 锁定集合无法同时安装，放开全图重新解析。")
+        targets = dict(latest)
+
+    lines = [f"{name}=={version}" for name, version in sorted(targets.items())]
+    payload = "\n".join(lines) + "\n"
+    if out_path.is_file() and out_path.read_text(encoding="utf-8") == payload:
+        print("[pip] 精确依赖未变化: " + ", ".join(lines))
+        return 0
+    out_path.write_text(payload, encoding="utf-8")
+    print("[pip] 精确依赖: " + ", ".join(lines))
+    if added:
+        print("[pip] 新增: " + ", ".join(sorted(added)))
+    for name, old, new in jumps:
+        print(f"[pip] 主版本跃迁: {name} {old} -> {new}")
+    return 0
+
+
+sys.exit(main())
+PY
+# ============================================================
+
 
 # 2) 清理旧产物，确保输出是这个 secexp 对应的新包
 find "$OUT_DIR" -maxdepth 1 -type f -name "${APK_BASENAME}-*.apk" -delete 2>/dev/null || true
@@ -439,9 +573,83 @@ if [[ -z "$APK_PATH" ]]; then
     exit 1
 fi
 
+# 4b) 回写 pip 锁：以 APK 内实际安装的 dist-info 为准（Chaquopy 自己解析依赖，
+#     可能与主机解析不同，锁必须记录真正进包的那一套）。失败只告警，不影响出包。
+python3 - "$APK_PATH" "$PROJECT_DIR/pip-app-lock.json" <<'PY' || echo "警告: 回写 APK pip 锁失败（不影响出包）。" >&2
+import io
+import json
+import re
+import sys
+import zipfile
+from pathlib import Path
+
+DEFAULT_DIRECT = ["pip", "wheel", "setuptools", "paho-mqtt", "ecdsa", "requests"]
+apk = Path(sys.argv[1])
+lock_path = Path(sys.argv[2])
+
+packages = {}
+with zipfile.ZipFile(apk) as archive:
+    for name in archive.namelist():
+        if not (name.startswith("assets/chaquopy/requirements-") and name.endswith(".imy")):
+            continue
+        with zipfile.ZipFile(io.BytesIO(archive.read(name))) as imy:
+            for entry in imy.namelist():
+                if not re.match(r"[^/]+\.dist-info/METADATA$", entry):
+                    continue
+                text = imy.read(entry).decode("utf-8", "replace")
+                meta_name = ""
+                meta_version = ""
+                for line in text.splitlines():
+                    if line.startswith("Name: "):
+                        meta_name = line[6:].strip()
+                    elif line.startswith("Version: "):
+                        meta_version = line[9:].strip()
+                if meta_name and meta_version:
+                    key = meta_name.lower().replace("_", "-")
+                    packages[key] = {"version": meta_version}
+
+if not packages:
+    print("[pip] APK 内未找到 dist-info，跳过锁回写。")
+    sys.exit(0)
+
+try:
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+except (OSError, ValueError):
+    lock = {}
+
+previous = lock.get("packages") or {}
+for name in sorted(set(previous) | set(packages)):
+    before = (previous.get(name) or {}).get("version", "-")
+    after = (packages.get(name) or {}).get("version", "-")
+    if before != after:
+        print(f"[pip] 锁刷新: {name} {before} -> {after}")
+
+lock.setdefault("schema", 1)
+lock.setdefault("policy", "same-major-reuse")
+lock.setdefault(
+    "note",
+    "APK 内 pip 依赖锁：同主版本沿用已锁精确版本，仅主版本跃迁时升级；由 debug_build_secexp.sh 生成/刷新。",
+)
+lock.setdefault("python", "")
+lock.setdefault("direct", DEFAULT_DIRECT)
+lock["packages"] = {name: packages[name] for name in sorted(packages)}
+payload = json.dumps(lock, indent=2, ensure_ascii=False) + "\n"
+if lock_path.is_file() and lock_path.read_text(encoding="utf-8") == payload:
+    print("[pip] APK pip 锁未变化。")
+else:
+    lock_path.write_text(payload, encoding="utf-8")
+    print(f"[pip] 已更新 APK pip 锁: {lock_path}")
+PY
+
 # 5) 先把 ZIP 元数据归一化，消除时间戳和文件顺序造成的差异，再签名
+#    Chaquopy 的 imy 内嵌 .pyc，头部带源码 mtime（等于构建时刻），不归一
+#    app.imy/requirements-*.imy 永远对不上；改完 imy 必须同步 build.json 的 sha1。
 REPACKED_APK="$PROJECT_DIR/app/build/outputs/apk/debug/repacked-${VERSION_CODE}-${BUILD_ABIS}.apk"
 python3 - "$APK_PATH" "$REPACKED_APK" <<'PY'
+import hashlib
+import io
+import json
+import struct
 import sys
 import zipfile
 from pathlib import Path
@@ -449,23 +657,78 @@ from pathlib import Path
 src = Path(sys.argv[1])
 dst = Path(sys.argv[2])
 
+
+def normalize_pyc(raw):
+    """pyc 头归一：magic(4) + flags(4) + mtime(4) + source_size(4)。
+
+    flags bit0=1 表示 hash-based pyc（尾部是源哈希），改写会破坏校验，保持原样；
+    timestamp-based 只把 mtime 置 0，source_size 保留。
+    """
+    if len(raw) < 16:
+        return raw
+    flags = struct.unpack("<I", raw[4:8])[0]
+    if flags & 1:
+        return raw
+    return raw[:8] + b"\x00\x00\x00\x00" + raw[12:]
+
+
+def repack_imy(raw):
+    """imy 是标准 zip：条目排序 + 固定时间戳，内部 pyc 的 mtime 归零。"""
+    with zipfile.ZipFile(io.BytesIO(raw)) as zin:
+        members = sorted(zin.infolist(), key=lambda info: info.filename)
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zout:
+            for info in members:
+                data = zin.read(info.filename)
+                if info.filename.endswith(".pyc"):
+                    data = normalize_pyc(data)
+                new_info = zipfile.ZipInfo(info.filename, (1980, 1, 1, 0, 0, 0))
+                new_info.compress_type = info.compress_type
+                new_info.create_system = 3
+                new_info.external_attr = info.external_attr
+                new_info.internal_attr = info.internal_attr
+                new_info.extra = b""
+                new_info.comment = b""
+                zout.writestr(new_info, data)
+        return buffer.getvalue()
+
+
 with zipfile.ZipFile(src, 'r') as zin:
     members = sorted(zin.infolist(), key=lambda i: i.filename)
-    with zipfile.ZipFile(dst, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zout:
-        for info in members:
-            data = zin.read(info.filename)
-            new_info = zipfile.ZipInfo(info.filename)
-            new_info.compress_type = info.compress_type
-            # 构建时间戳占位文件必须 STORED：签名前要定长就地改写，DEFLATE 流做不到。
-            if info.filename == "assets/build_time.txt":
-                new_info.compress_type = zipfile.ZIP_STORED
-            new_info.date_time = (1980, 1, 1, 0, 0, 0)
-            new_info.extra = b''
-            new_info.comment = b''
-            new_info.create_system = 3
-            new_info.external_attr = info.external_attr
-            new_info.internal_attr = info.internal_attr
-            zout.writestr(new_info, data)
+    contents = {info.filename: zin.read(info.filename) for info in members}
+
+imy_names = [name for name in contents
+             if name.startswith("assets/chaquopy/") and name.endswith(".imy")]
+for name in imy_names:
+    try:
+        contents[name] = repack_imy(contents[name])
+    except Exception as error:
+        print(f"警告: 归一化 {name} 失败，保留原样: {error}", file=sys.stderr)
+
+# build.json 记录每个 imy 的 sha1，imy 字节变了必须同步，否则 Chaquopy 运行期校验失败。
+build_json_name = "assets/chaquopy/build.json"
+if imy_names and build_json_name in contents:
+    try:
+        metadata = json.loads(contents[build_json_name].decode("utf-8"))
+        assets_map = metadata.setdefault("assets", {})
+        for name in imy_names:
+            assets_map[Path(name).name] = hashlib.sha1(contents[name]).hexdigest()
+        contents[build_json_name] = json.dumps(metadata, indent=4).encode("utf-8")
+    except Exception as error:
+        print(f"警告: 同步 build.json 失败，保留原样: {error}", file=sys.stderr)
+
+with zipfile.ZipFile(dst, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zout:
+    for info in members:
+        data = contents[info.filename]
+        new_info = zipfile.ZipInfo(info.filename)
+        new_info.compress_type = info.compress_type
+        new_info.date_time = (1980, 1, 1, 0, 0, 0)
+        new_info.extra = b''
+        new_info.comment = b''
+        new_info.create_system = 3
+        new_info.external_attr = info.external_attr
+        new_info.internal_attr = info.internal_attr
+        zout.writestr(new_info, data)
 PY
 rm -f "$APK_PATH"
 APK_PATH="$REPACKED_APK"
@@ -485,26 +748,19 @@ rm -f "$APK_PATH"
 APK_PATH="$ALIGNED_APK"
 "$ZIPALIGN_BIN" -c -p 4 "$APK_PATH"
 
-# 5c) 构建时间戳：zipalign 之后、签名之前，原地写入 assets/build_time.txt。
-#     固定 48 字节、STORED、长度不变，只改数据区 + 本地头/中央目录两处 CRC；
-#     所以同一份源码的两次构建只在这个戳与签名块上有差异。
-#     BUILD_TIME_VALUE 可固定时间（可重复性测试），缺省取当前构建机本地时间。
-STAMP_OK=1
+# 6) 使用 apk_sign.py 通过 secexp 确定性生成签名密钥并签名。
+#    构建时间由签名脚本写入签名块内的自定义 pair（不在 v2/v3 摘要范围内），
+#    改时间不改变签名值，整包只在签名块的 48 字节时间字段上不同。
+#    BUILD_TIME_VALUE 可固定时间（可重复性测试），缺省取当前构建机本地时间。
+SIGN_TIME_ARGS=()
 if [[ -n "${BUILD_TIME_VALUE:-}" ]]; then
-    python3 "$PROJECT_DIR/scripts/apk_build_time_stamp.py" set "$APK_PATH" \
-        --value "$BUILD_TIME_VALUE" || STAMP_OK=0
-else
-    python3 "$PROJECT_DIR/scripts/apk_build_time_stamp.py" set "$APK_PATH" || STAMP_OK=0
+  SIGN_TIME_ARGS+=(--build-time "$BUILD_TIME_VALUE")
 fi
-if [[ "$STAMP_OK" != "1" ]]; then
-    echo "警告: 写入构建时间戳失败，build_time 将保持占位值（不影响主流程）。" >&2
-fi
-
-# 6) 使用 apk_sign.py 通过 secexp 确定性生成签名密钥并签名
 python3 "$PROJECT_DIR/apk_sign.py" "$APK_PATH" \
   --mode secexp \
   --secexp "$SECEXP" \
-  --sdk "$ANDROID_HOME_DEFAULT"
+  --sdk "$ANDROID_HOME_DEFAULT" \
+  "${SIGN_TIME_ARGS[@]}"
 
 SIGNED_APK="${APK_PATH%.apk}-signed.apk"
 if [[ ! -f "$SIGNED_APK" ]]; then

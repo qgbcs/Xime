@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "policy": "same-major-reuse",
+  "note": "APK 内 pip 依赖锁：同主版本沿用已锁精确版本，仅主版本跃迁时升级；由 debug_build_secexp.sh 生成/刷新。",
+  "python": "3.13",
+  "direct": [
+    "pip",
+    "wheel",
+    "setuptools",
+    "paho-mqtt",
+    "ecdsa",
+    "requests"
+  ],
+  "packages": {
+    "certifi": {
+      "version": "2026.11.20"
+    },
+    "charset-normalizer": {
+      "version": "3.5.3"
+    },
+    "ecdsa": {
+      "version": "0.19.2"
+    },
+    "idna": {
+      "version": "3.20"
+    },
+    "packaging": {
+      "version": "26.4"
+    },
+    "paho-mqtt": {
+      "version": "2.2.0"
+    },
+    "pip": {
+      "version": "26.3"
+    },
+    "requests": {
+      "version": "2.34.2"
+    },
+    "setuptools": {
+      "version": "84.2.1"
+    },
+    "six": {
+      "version": "1.17.0"
+    },
+    "urllib3": {
+      "version": "2.8.0"
+    },
+    "wheel": {
+      "version": "0.48.0"
+    }
+  }
+}
